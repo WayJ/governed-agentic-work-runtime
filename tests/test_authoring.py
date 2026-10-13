@@ -1394,5 +1394,85 @@ class PackagedExampleTests(unittest.TestCase):
                                  sop_digest(reorder_keys(load_card(name))))
 
 
+
+FIXTURES_DIR = Path(__file__).resolve().parents[1] / "examples" / "sop"
+
+FIXTURE_EXPECTATIONS = {
+    "missing-root-field.json": ["MISSING_FIELD"],
+    "unknown-root-field.json": ["UNKNOWN_FIELD"],
+    "wrong-schema-version.json": ["INVALID_VALUE"],
+    "boolean-schema-version.json": ["TYPE_MISMATCH"],
+    "nonfinite-limit.json": ["NONFINITE_FLOAT"],
+    "empty-values.json": ["EMPTY_VALUE", "EMPTY_VALUE"],
+    "wrong-enums.json": ["INVALID_VALUE", "INVALID_VALUE", "INVALID_VALUE"],
+    "type-mismatches.json": ["TYPE_MISMATCH", "TYPE_MISMATCH", "TYPE_MISMATCH"],
+    "malformed-source.json": ["MISSING_FIELD", "UNKNOWN_FIELD"],
+    "duplicate-ids.json": ["DUPLICATE_ID"],
+    "duplicate-capability.json": ["DUPLICATE_ID"],
+    "duplicate-depends-on.json": ["DUPLICATE_ID"],
+    "reserved-tokens.json": ["INVALID_VALUE", "INVALID_VALUE"],
+    "unknown-scope.json": ["UNKNOWN_REFERENCE"],
+    "unknown-deadline.json": ["UNKNOWN_REFERENCE"],
+    "unknown-depends-on.json": ["UNKNOWN_REFERENCE"],
+    "rule-cycle.json": ["CYCLE"],
+    "long-chain-cycle.json": ["CYCLE"],
+    "empty-rules.json": ["NO_MANDATORY_RULE"],
+}
+
+
+def load_fixture(name):
+    with open(FIXTURES_DIR / name, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+class FixtureFileTests(unittest.TestCase):
+    """Invalid bounded fixtures under examples/sop (varied, not mirrors)."""
+
+    def test_fixture_set_and_codes_match_expectations(self):
+        actual = sorted(path.name for path in FIXTURES_DIR.glob("*.json"))
+        self.assertEqual(actual, sorted(FIXTURE_EXPECTATIONS))
+        for name, expected in sorted(FIXTURE_EXPECTATIONS.items()):
+            with self.subTest(name=name):
+                result = lint_sop(load_fixture(name))
+                self.assertEqual(codes_of(result), expected)
+                self.assertEqual(
+                    result,
+                    sorted(result, key=lambda d: (d["path"], d["code"], d["message"])))
+
+    def test_every_fixture_diagnoses_something(self):
+        for name in sorted(FIXTURE_EXPECTATIONS):
+            with self.subTest(name=name):
+                self.assertTrue(lint_sop(load_fixture(name)))
+
+    def test_rule_cycle_fixture_anchor_and_message(self):
+        result = lint_sop(load_fixture("rule-cycle.json"))
+        self.assertEqual(result[0]["path"], "/rules/0")
+        self.assertEqual(result[0]["message"],
+                         "rule dependency cycle component: 'R1' (+1 more members)")
+
+    def test_long_chain_cycle_single_component_diagnostic(self):
+        result = lint_sop(load_fixture("long-chain-cycle.json"))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["path"], "/rules/0")
+        self.assertEqual(result[0]["message"],
+                         "rule dependency cycle component: 'CH0000' "
+                         "(+79 more members)")
+
+    def test_reserved_tokens_fixture_paths(self):
+        result = lint_sop(load_fixture("reserved-tokens.json"))
+        self.assertEqual([d["path"] for d in result],
+                         ["/collections/0/id", "/policy/capabilities/0"])
+
+    def test_nonfinite_fixture_is_python_loadable_json(self):
+        card = load_fixture("nonfinite-limit.json")
+        self.assertNotIn("NOT_JSON_NATIVE", codes_of(lint_sop(card)))
+
+    def test_fixture_digests_raise_value_error(self):
+        for name in sorted(FIXTURE_EXPECTATIONS):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    sop_digest(load_fixture(name))
+
+
 if __name__ == "__main__":
     unittest.main()
