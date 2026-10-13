@@ -1,5 +1,7 @@
 """Content publication domain tests: policy rules, adapter, runtime flow, demo, CLI."""
 
+import contextlib
+import io
 import json
 import secrets
 import sqlite3
@@ -12,6 +14,7 @@ from work_runtime import Runtime
 from work_runtime.ingress import SignedEvidenceGateway, sign_evidence
 from work_runtime.policy import digest
 from work_runtime.publishing import FakePublisher, PublishingPolicy
+from work_runtime.publishing_demo import run_demo
 
 try:
     from adapter_conformance import AdapterConformanceMixin
@@ -201,6 +204,44 @@ class PublishingEvaluateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublishingDemoTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+
+    def run_capture(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            folder = run_demo(directory=self.temp.name)
+        return folder, buffer.getvalue()
+
+    def test_demo_story_and_independent_publication_count(self):
+        folder, output = self.run_capture()
+        for expected in ("1.", "2.", "3.", "4.", "5.", "6.", "BLOCKED",
+                         "EVIDENCE_AUTHENTICATION_FAILED", "published artifacts: 1",
+                         "--policy content-publish"):
+            self.assertIn(expected, output)
+        runtime_path = Path(folder) / "runtime.sqlite"
+        publisher_path = Path(folder) / "publisher.sqlite"
+        self.assertTrue(runtime_path.exists())
+        self.assertTrue(publisher_path.exists())
+        with sqlite3.connect(str(publisher_path)) as db:
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM publications").fetchone()[0], 1)
+        self.assertNotRegex(output, "[0-9a-f]{64}")
+
+    def test_demo_runs_repeatably_in_fresh_directories(self):
+        first, first_output = self.run_capture()
+        second, second_output = self.run_capture()
+        self.assertIn("published artifacts: 1", first_output)
+        self.assertIn("published artifacts: 1", second_output)
+        self.assertNotEqual(first, second)
+        for folder in (first, second):
+            with sqlite3.connect(str(Path(folder) / "publisher.sqlite")) as db:
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM publications").fetchone()[0], 1)
 
 
 class CountingPublisher:
