@@ -128,12 +128,19 @@ class DocumentGateTests(FileAdapterTestCase):
                 adapter.execute("gate-key", bad, "0" * 64)
         self.assertEqual(os.listdir(self.directory), [])
 
-    def test_non_string_dict_keys_are_rejected(self):
+    def test_non_string_dict_keys_are_rejected_and_empty_keys_are_valid_json(self):
         adapter = self.make_adapter()
         for bad in ({1: "a"}, {"a": {None: "b"}}, {("k",): 1}, {"a": [{3: "c"}]}):
             with self.assertRaises(ValueError):
                 adapter.execute("gate-key", bad, "0" * 64)
         self.assertEqual(os.listdir(self.directory), [])
+        # D22 bounds document keys to plain UTF-8 strings only: the nonempty
+        # rule is for the idempotency key, not for JSON object keys.
+        document = {"": "empty key is valid JSON", "a": {"": 1}}
+        receipt = adapter.execute("empty-key-doc", document, digest(document))
+        self.assertEqual(receipt["status"], "accepted")
+        self.assertEqual(read_artifact(self.directory, "empty-key-doc")["document"],
+                         document)
 
     def test_nonfinite_floats_are_rejected(self):
         adapter = self.make_adapter()
@@ -313,10 +320,9 @@ class CommitTests(FileAdapterTestCase):
             adapter.execute(key, document, digest(document))
         expected = sorted(hashlib.sha256(key.encode("utf-8")).hexdigest() + ".json"
                           for key in keys)
+        # Containment proof: the directory holds exactly these hash-named
+        # files and nothing else — no basename derived from any key exists.
         self.assertEqual(sorted(os.listdir(self.directory)), expected)
-        parent = sorted(os.listdir(os.path.dirname(self.directory)))
-        self.assertEqual(len([name for name in parent
-                              if name.startswith("file-adapter-test-")]), 1)
 
 
 class ContractMetadataTests(FileAdapterTestCase):

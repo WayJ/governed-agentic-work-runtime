@@ -34,7 +34,7 @@ DIGEST_MESSAGE = "content digest must be a nonempty string"
 ROOT_MESSAGE = "document must be a plain dict"
 NATIVE_MESSAGE = ("document values must be plain JSON-native types "
                   "(dict, list, str, int, float, bool, null)")
-KEY_TYPE_MESSAGE = "document keys must be plain nonempty UTF-8 strings"
+KEY_TYPE_MESSAGE = "document keys must be plain UTF-8 strings"
 DEPTH_MESSAGE = "document exceeds the maximum JSON container depth of 64"
 CYCLE_MESSAGE = "document contains a reference cycle"
 FLOAT_MESSAGE = "document floats must be finite"
@@ -88,7 +88,9 @@ def _snapshot_document(document):
             active.discard(id(source))
             continue
         if is_dict:
-            if type(key) is not str or not key:
+            # Document keys are bounded to plain UTF-8 strings (D22 B4); the
+            # nonempty rule applies to the idempotency key, not JSON keys.
+            if type(key) is not str:
                 raise ValueError(KEY_TYPE_MESSAGE)
             _check_utf8(key)
         kind = type(value)

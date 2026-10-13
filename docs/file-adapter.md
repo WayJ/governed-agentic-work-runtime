@@ -102,7 +102,8 @@ module (the two were developed in parallel with disjoint ownership):
 - document must be a plain `dict`; exact types only (`dict`, `list`, `str`,
   `int`, `float`, `bool`, `null`) — subclasses, tuples, sets, bytes and custom
   objects are rejected;
-- dict keys must be plain nonempty UTF-8 strings; strings must encode to
+- dict keys must be plain UTF-8 strings (the *nonempty* rule applies to the
+  idempotency key, not to JSON object keys); strings must encode to
   UTF-8 (lone surrogates rejected);
 - floats must be finite; integers bounded to `abs(value) <= 2^53 - 1`
   (booleans pass as JSON booleans, not integers);
