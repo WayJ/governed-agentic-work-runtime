@@ -42,6 +42,8 @@ Amendment 2026-10-13: expanded original two-line DoD into observable S2 criteria
 | D6 | Two independent foundations then dependent domain | Disjoint ownership; integration owns foundation merges, not developer self-merges. No pretend parallelism over missing interfaces. | 2026-10-13 | [design](../specs/2026-10-13-s2-trusted-boundaries.md) |
 | D7 | One policy per database remains in prototype | Shared engine is verified through two domains; multi-policy database recovery requires separate design. | 2026-10-13 | [design](../specs/2026-10-13-s2-trusted-boundaries.md) |
 
+| D8 | Ratify builder-check error/source/conformance decisions; reserve accepted ingress | Prevent divergent interfaces, silent serialization coercions and unsigned business completion assumptions before implementation. | 2026-10-13 | [decisions](../../../.agents/notes/2026-10-13-S2-decisions.md) |
+
 ## Asset Disposition
 
 | asset | disposition | note | date | evidence |
