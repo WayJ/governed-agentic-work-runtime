@@ -573,5 +573,178 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(result[0]["message"], "field must be a string")
 
 
+
+class FactsCollectionsTests(unittest.TestCase):
+    """Facts ({id} exactly) and collections (id/version/completeness/allow_empty)."""
+
+    def test_facts_must_be_list(self):
+        card = valid_card()
+        card["facts"] = "none"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/facts")
+        self.assertEqual(result[0]["message"], "field must be a list")
+
+    def test_fact_is_exactly_an_id(self):
+        card = valid_card()
+        card["facts"] = [{"id": "invoice.valid", "note": "x"}]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_FIELD"])
+        self.assertEqual(result[0]["path"], "/facts/0/note")
+        card = valid_card()
+        card["facts"] = [{}]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["MISSING_FIELD"])
+        self.assertEqual(result[0]["path"], "/facts/0")
+        card = valid_card()
+        card["facts"] = [42]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/facts/0")
+
+    def test_fact_id_text_checks(self):
+        for bad, code in ((5, "TYPE_MISMATCH"), ("", "EMPTY_VALUE"), (" \t ", "EMPTY_VALUE")):
+            with self.subTest(bad=bad):
+                card = valid_card()
+                card["facts"] = [{"id": bad}]
+                result = lint_sop(card)
+                self.assertEqual(codes_of(result), [code])
+                self.assertEqual(result[0]["path"], "/facts/0/id")
+
+    def test_empty_facts_allowed(self):
+        card = valid_card()
+        card["facts"] = []
+        card["rules"][0]["depends_on"] = []
+        self.assertEqual(lint_sop(card), [])
+
+    def test_collections_must_be_list(self):
+        card = valid_card()
+        card["collections"] = {}
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/collections")
+
+    def test_collection_exact_fields(self):
+        card = valid_card()
+        del card["collections"][0]["completeness"]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["MISSING_FIELD"])
+        self.assertEqual(result[0]["path"], "/collections/0")
+        card = valid_card()
+        card["collections"][0]["owner"] = "finance"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_FIELD"])
+        self.assertEqual(result[0]["path"], "/collections/0/owner")
+
+    def test_collection_text_fields(self):
+        for field in ("id", "version", "completeness"):
+            for bad, code in ((None, "TYPE_MISMATCH"), ("", "EMPTY_VALUE")):
+                with self.subTest(field=field, bad=bad):
+                    card = valid_card()
+                    card["collections"][0][field] = bad
+                    result = lint_sop(card)
+                    self.assertEqual(codes_of(result), [code])
+                    self.assertEqual(result[0]["path"], "/collections/0/" + field)
+
+    def test_collection_allow_empty_strict_boolean(self):
+        for bad in ("false", 1, 0, None, []):
+            with self.subTest(bad=bad):
+                card = valid_card()
+                card["collections"][0]["allow_empty"] = bad
+                result = lint_sop(card)
+                self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+                self.assertEqual(result[0]["path"], "/collections/0/allow_empty")
+                self.assertEqual(result[0]["message"], "field must be a boolean")
+
+    def test_collection_id_document_is_reserved(self):
+        card = valid_card()
+        card["collections"] = [{"id": "document", "version": "v1",
+                                "completeness": "sealed", "allow_empty": False}]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["INVALID_VALUE"])
+        self.assertEqual(result[0]["path"], "/collections/0/id")
+        self.assertEqual(result[0]["message"],
+                         "collection id 'document' is reserved as the "
+                         "business-document scope token")
+
+    def test_empty_collections_allowed(self):
+        card = valid_card()
+        card["collections"] = []
+        card["rules"][0]["scope"] = "document"
+        self.assertEqual(lint_sop(card), [])
+
+
+class GlobalIdNamespaceTests(unittest.TestCase):
+    """Fact, collection and rule IDs share one namespace (D22 B1)."""
+
+    def test_duplicate_fact_ids(self):
+        card = valid_card()
+        card["facts"] = [{"id": "invoice.valid"}, {"id": "amount.known"},
+                         {"id": "invoice.valid"}]
+        card["rules"][0]["depends_on"] = []
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
+        self.assertEqual(result[0]["path"], "/facts/2/id")
+        self.assertEqual(result[0]["message"], "duplicate ID 'invoice.valid'")
+
+    def test_duplicate_collection_ids(self):
+        card = valid_card()
+        card["collections"].append(dict(card["collections"][0]))
+        card["rules"][0]["scope"] = "document"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
+        self.assertEqual(result[0]["path"], "/collections/1/id")
+
+    def test_duplicate_rule_ids(self):
+        card = valid_card()
+        card["rules"].append(dict(card["rules"][0]))
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
+        self.assertEqual(result[0]["path"], "/rules/2/id")
+
+    def test_collection_colliding_with_fact(self):
+        card = valid_card()
+        card["collections"].append({"id": "invoice.valid", "version": "v1",
+                                    "completeness": "sealed", "allow_empty": False})
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
+        self.assertEqual(result[0]["path"], "/collections/1/id")
+
+    def test_rule_colliding_with_fact(self):
+        card = valid_card()
+        card["rules"][1]["id"] = "invoice.valid"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
+        self.assertEqual(result[0]["path"], "/rules/1/id")
+
+    def test_rule_colliding_with_collection(self):
+        card = valid_card()
+        card["rules"][1]["id"] = "expense.invoices"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
+        self.assertEqual(result[0]["path"], "/rules/1/id")
+
+    def test_triple_collision_reports_each_later_occurrence(self):
+        card = valid_card()
+        card["collections"].append({"id": "invoice.valid", "version": "v1",
+                                    "completeness": "sealed", "allow_empty": False})
+        card["rules"][1]["id"] = "invoice.valid"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID", "DUPLICATE_ID"])
+        self.assertEqual([d["path"] for d in result],
+                         ["/collections/1/id", "/rules/1/id"])
+
+    def test_rule_id_still_collected_when_rule_schema_unchecked(self):
+        # The namespace spans rules even before/without their full check.
+        card = valid_card()
+        card["facts"].append({"id": "E01"})
+        result = lint_sop(card)
+        # Facts are collected before rules, so the rule is the later
+        # occurrence and carries the diagnostic.
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
+        self.assertEqual(result[0]["path"], "/rules/0/id")
+        self.assertEqual(result[0]["message"], "duplicate ID 'E01'")
+
+
 if __name__ == "__main__":
     unittest.main()

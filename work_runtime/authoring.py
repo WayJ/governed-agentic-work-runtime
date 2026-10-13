@@ -37,6 +37,8 @@ POLICY_FIELDS = ("id", "version", "goal", "source", "scope", "capabilities")
 SOURCE_FIELDS = ("document", "version", "section")
 DEFAULTS_VALUES = {"unknown": "block", "conflict": "escalate",
                    "exemptions": "forbidden", "migration": "explicit"}
+COLLECTION_FIELDS = ("id", "version", "completeness", "allow_empty")
+ID_LISTS = ("facts", "collections", "rules")
 
 
 def _diag(code: str, path: str, message: str) -> Dict[str, str]:
@@ -220,6 +222,79 @@ def _lint_defaults(defaults: Any, found: List[Dict[str, str]]) -> None:
             found.append(_diag(INVALID_VALUE, path, "value must be '%s'" % expected))
 
 
+
+def _lint_id_list(items: Any, base: str, found: List[Dict[str, str]]) -> None:
+    """Shared list-of-objects shape check for facts/collections/rules lists."""
+    if type(items) is not list:
+        found.append(_diag(TYPE_MISMATCH, base, "field must be a list"))
+        return
+    for index, item in enumerate(items):
+        if type(item) is not dict:
+            found.append(_diag(TYPE_MISMATCH, "%s/%d" % (base, index),
+                               "value must be an object"))
+
+
+def _lint_facts(facts: Any, found: List[Dict[str, str]]) -> None:
+    _lint_id_list(facts, "/facts", found)
+    if type(facts) is not list:
+        return
+    for index, fact in enumerate(facts):
+        if type(fact) is not dict:
+            continue
+        base = "/facts/%d" % index
+        _check_exact_fields(fact, base, ("id",), found)
+        if "id" in fact:
+            _require_text(fact, base, "id", found)
+
+
+def _lint_collections(collections: Any, found: List[Dict[str, str]]) -> None:
+    _lint_id_list(collections, "/collections", found)
+    if type(collections) is not list:
+        return
+    for index, collection in enumerate(collections):
+        if type(collection) is not dict:
+            continue
+        base = "/collections/%d" % index
+        _check_exact_fields(collection, base, COLLECTION_FIELDS, found)
+        for field in ("id", "version", "completeness"):
+            if field in collection:
+                _require_text(collection, base, field, found)
+        if "allow_empty" in collection and type(collection["allow_empty"]) is not bool:
+            found.append(_diag(TYPE_MISMATCH, base + "/allow_empty",
+                               "field must be a boolean"))
+        if type(collection.get("id")) is str and collection["id"] == "document":
+            found.append(_diag(INVALID_VALUE, base + "/id",
+                               "collection id 'document' is reserved as the "
+                               "business-document scope token"))
+
+
+def _collect_global_ids(root: Dict[str, Any],
+                        found: List[Dict[str, str]]) -> None:
+    """DUPLICATE_ID for any ID reused across the fact/collection/rule namespace.
+
+    Document order is facts, then collections, then rules; a reused ID is
+    reported at each later occurrence. Only well-formed nonempty string IDs
+    participate.
+    """
+    seen = {}
+    for section in ID_LISTS:
+        items = root.get(section)
+        if type(items) is not list:
+            continue
+        for index, item in enumerate(items):
+            if type(item) is not dict:
+                continue
+            identifier = item.get("id")
+            if type(identifier) is not str or identifier.strip() == "":
+                continue
+            path = "/%s/%d/id" % (section, index)
+            if identifier in seen:
+                found.append(_diag(DUPLICATE_ID, path,
+                                   "duplicate ID '%s'" % _snippet(identifier)))
+            else:
+                seen[identifier] = path
+
+
 def _lint_schema(root: Any) -> List[Dict[str, str]]:
     """Strict schema layer; runs only after a clean JSON-native preflight."""
     found: List[Dict[str, str]] = []
@@ -239,6 +314,11 @@ def _lint_schema(root: Any) -> List[Dict[str, str]]:
         _lint_policy(root["policy"], found)
     if "defaults" in root:
         _lint_defaults(root["defaults"], found)
+    if "facts" in root:
+        _lint_facts(root["facts"], found)
+    if "collections" in root:
+        _lint_collections(root["collections"], found)
+    _collect_global_ids(root, found)
     return found
 
 
