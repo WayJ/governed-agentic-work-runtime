@@ -282,6 +282,7 @@ class Runtime:
         self.policy.validate_document(payload["document"])
         work = {"id": work_id, "state_version": 0, "status": "establishing",
                 "outcome": None, "contract": None, "plan_revision": 0,
+                "owner": actor,
                 "plan": {}, "document": payload["document"], "document_revision": 1,
                 "document_digest": digest(payload["document"]), "waits": [],
                 "requirements": []}
@@ -294,8 +295,12 @@ class Runtime:
         version = work["state_version"]
         if kind == "propose_action":
             return self._propose(db, actor, work, payload)
+        if kind == "request_cancel":
+            return self._request_cancel(db, actor, work, payload, version)
         if "work.manage" not in self.grants[actor]:
             return self._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self._reject("CANCELLATION_ACTIVE", version)
         if kind == "bind_contract":
             if work["contract"]:
                 return self._reject("CONTRACT_ALREADY_BOUND", version)
@@ -358,16 +363,56 @@ class Runtime:
             return self._reject("COMMAND_UNSUPPORTED", version)
         return self._accepted(work)
 
-    def _cancel_prepared(self, db, work_id):
+    def _cancel_prepared(self, db, work_id, reason="STALE_INTENT"):
+        cancelled = []
         for row in db.execute("SELECT body FROM operations WHERE work_id=?", (work_id,)).fetchall():
             op = json.loads(row[0])
             if op["status"] == "prepared":
                 op["dispatch_state"] = "cancelled"
-                op["reason"] = "STALE_INTENT"
+                op["reason"] = reason
                 self._save_op(db, op)
+                cancelled.append(op["id"])
+        return cancelled
+
+    def _is_admin(self, actor: str) -> bool:
+        return "work.intervene" in self.grants.get(actor, set())
+
+    def _intervener(self, actor: str, work: dict) -> bool:
+        """Interventions: work.intervene administrator or the current owner."""
+        if self._is_admin(actor):
+            return True
+        owner = work.get("owner")
+        return (owner is not None and actor == owner
+                and "work.manage" in self.grants.get(actor, set()))
+
+    def _request_cancel(self, db, actor, work, payload, version):
+        if (set(payload) != {"reason"} or not isinstance(payload["reason"], str)
+                or not payload["reason"]):
+            raise CommandError("request_cancel requires exactly one nonempty reason string")
+        if not self._intervener(actor, work):
+            return self._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self._reject("CANCELLATION_ALREADY_REQUESTED", version)
+        work["cancellation"] = {"requested_by": actor, "reason": payload["reason"]}
+        cancelled_waits = []
+        for wait in work["waits"]:
+            if wait["status"] in ("waiting", "triggered"):
+                wait["status"] = "cancelled"
+                cancelled_waits.append(wait["id"])
+        cancelled_operations = self._cancel_prepared(db, work["id"], reason="WORK_CANCELLED")
+        self._save(db, work, "CancellationRequested", {
+            "actor": actor, "reason": payload["reason"],
+            "cancelled_operations": cancelled_operations,
+            "cancelled_waits": cancelled_waits})
+        return self._accepted(work)
 
     def _propose(self, db, actor, work, payload):
         version = work["state_version"]
+        capability = payload.get("capability")
+        if capability not in self.grants[actor]:
+            return self._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self._reject("CANCELLATION_ACTIVE", version)
         if not work["contract"]:
             return self._reject("CONTRACT_NOT_ACTIVE", version)
         if payload.get("contract_revision") != work["contract"]["revision"]:
@@ -376,9 +421,6 @@ class Runtime:
             return self._reject("PLAN_REVISION_MISMATCH", version)
         if payload.get("document_digest") != work["document_digest"]:
             return self._reject("EVIDENCE_SCOPE_MISMATCH", version)
-        capability = payload.get("capability")
-        if capability not in self.grants[actor]:
-            return self._reject("AUTHORITY_DENIED", version)
         policy = self._policy_for(work)
         blockers = policy.action_blockers(capability, work["requirements"])
         if blockers:
@@ -486,6 +528,13 @@ class Runtime:
                 return op
             work = self._work(db, op["work_id"])
             policy = self._policy_for(work)
+            if work.get("cancellation") and op["dispatch_state"] != "cancelled":
+                # Belt and braces: request_cancel already cancelled every
+                # prepared intent; nothing new may ever leave under cancel.
+                op["dispatch_state"], op["reason"] = "cancelled", "WORK_CANCELLED"
+                self._save_op(db, op)
+                self._save(db, work, "DispatchCancelled", {"operation_id": op["id"]})
+                return op
             if (work["status"] == "closed" or op["document_digest"] != work["document_digest"]
                     or op["plan_revision"] != work["plan_revision"]):
                 op["dispatch_state"] = "cancelled"

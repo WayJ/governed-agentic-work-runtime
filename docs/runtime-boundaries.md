@@ -111,7 +111,31 @@ An adapter exception during `execute` or `lookup` never fabricates a business
 rejection; it records `outcome_unknown` with the exception's type name as the
 reason.
 
-## Recovery contract
+## Cancellation boundary
+
+`request_cancel` (payload exactly `reason`, a nonempty string) records a
+cancellation **intent** in the Work's own JSON (`cancellation.requested_by`
+/ `reason`), deliberately separate from presentation status so
+evaluation, expiry, malformed-receipt quarantine and reconciliation can
+never clear it. Accepted by the current owner holding `work.manage` or a
+local `work.intervene` administrator. The intent is set once: a second
+request under a new command id is rejected `CANCELLATION_ALREADY_REQUESTED`
+and can never overwrite the original; replays under the original command
+id return the stored receipt. Establishing (unbound) works can be
+cancelled too.
+
+While the intent is active the work stops: `propose_action` (including
+re-admission), `bind_contract`, `revise_plan`, `revise_document`,
+`register_wait`, `request_completion` and explicit policy migration are
+rejected `CANCELLATION_ACTIVE`; waiting/triggered waits become `cancelled`
+and never-dispatched prepared intents are cancelled with reason
+`WORK_CANCELLED` — a prepared operation is never relabeled as an external
+`confirmed_failed`. Evidence intake, the internal verifier, expiry and
+reconciliation keep running: an attempt that was already durable when
+cancellation was requested remains uncertain until queried through the
+original key — cancellation is an internal stop, not an external fence.
+There is no automatic close: an explicit `finalize_cancel` always records
+the terminal decision.
 
 `recover(adapter)` is the restart entry point and performs, in order:
 
@@ -153,8 +177,9 @@ Guarantees:
   dispatch" is met only through reconciliation, and only when the adapter can
   answer.
 - **In-flight calls cannot be cancelled.** A document revision that lands after
-  the external call started cannot revoke it; the old operation confirms
-  against the old digest, which satisfies only that revision's requirements.
+  the external call started cannot revoke it, and neither can a cancellation
+  intent: the old operation confirms against the old digest, which satisfies
+  only that revision's requirements.
   While that operation is still unresolved, `propose_action` for new content
   is rejected `OUTCOME_UNRESOLVED`: the uncertain operation must be reconciled
   first, and only then can new content be prepared as a new operation (new
