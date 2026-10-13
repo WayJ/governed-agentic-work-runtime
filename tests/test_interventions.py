@@ -803,5 +803,314 @@ class ReplayAuthorityTests(unittest.TestCase):
                                     {"owner": owner, "reason": reason}, version)
 
 
+class Demo3RelabeledSource(ExpensePolicy):
+    version = "demo-3"
+    evidence_sources = dict(ExpensePolicy.evidence_sources, approval="cfo")
+
+
+class Demo4ExplodingEvaluate(ExpensePolicyV2):
+    version = "demo-4"
+
+    def evaluate(self, work, evidence):
+        raise RuntimeError("target evaluation exploded")
+
+
+class Demo5ExplodingValidate(ExpensePolicyV2):
+    version = "demo-5"
+
+    def validate_evidence(self, work, candidate):
+        raise RuntimeError("target verifier exploded")
+
+
+class Demo6RejectingDocument(ExpensePolicyV2):
+    version = "demo-6"
+
+    def validate_document(self, document):
+        raise ValueError("document rejected by target")
+
+
+def evidence_bodies(path):
+    db = sqlite3.connect(path)
+    try:
+        return [json.loads(row[0]) for row in db.execute("SELECT body FROM evidence")]
+    finally:
+        db.close()
+
+
+def set_operation_field(path, operation_id, **fields):
+    db = sqlite3.connect(path)
+    try:
+        op = json.loads(db.execute("SELECT body FROM operations WHERE id=?",
+                                   (operation_id,)).fetchone()[0])
+        op.update(fields)
+        db.execute("UPDATE operations SET body=? WHERE id=?", (canonical(op), operation_id))
+        db.commit()
+    finally:
+        db.close()
+
+
+class MigrationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.oa_path = str(Path(self.temp.name) / "oa.sqlite")
+        self.grants = intervention_grants()
+        self.v2 = ExpensePolicyV2()
+        self.runtime = Runtime(self.path, ExpensePolicy(), self.grants,
+                               policies={"demo-2": self.v2})
+        self.oa = FakeOA(self.oa_path)
+        initialize(self.runtime)
+
+    def migrate(self, version="demo-2", actor="root", reason="strengthen",
+                policy_id="expense-submit", work_id="demo", command_id=None):
+        version_now = self.runtime.get_work(work_id)["state_version"]
+        return self.runtime.command(actor, command_id or uuid.uuid4().hex, work_id,
+                                    "migrate_policy", {"policy_id": policy_id,
+                                                       "policy_version": version,
+                                                       "reason": reason}, version_now)
+
+    def requirement(self, rule, work_id="demo"):
+        return next(r for r in self.runtime.get_work(work_id)["requirements"]
+                    if r["rule_id"] == rule)
+
+    def test_migration_requires_intervene_admin(self):
+        self.assertEqual(self.migrate(actor="agent")["code"], "AUTHORITY_DENIED")
+        self.assertEqual(self.migrate(actor="delegate")["code"], "AUTHORITY_DENIED")
+        self.assertEqual(self.migrate()["decision"], "accepted")
+
+    def test_migration_requires_bound_contract(self):
+        send(self.runtime, "raw", "create_work", {"document": document(document_id="RAW-1")})
+        self.assertEqual(self.migrate(work_id="raw")["code"], "CONTRACT_NOT_ACTIVE")
+
+    def test_migration_refuses_cancellation_intent(self):
+        version = self.runtime.get_work("demo")["state_version"]
+        self.runtime.command("agent", "c", "demo", "request_cancel", {"reason": "stop"}, version)
+        self.assertEqual(self.migrate()["code"], "CANCELLATION_ACTIVE")
+
+    def test_migration_rejects_cross_family_before_lookup(self):
+        self.assertEqual(self.migrate(policy_id="content-publish")["code"],
+                         "MIGRATION_FAMILY_MISMATCH")
+
+    def test_migration_rejects_unregistered_and_unchanged_targets(self):
+        self.assertEqual(self.migrate(version="demo-9")["code"],
+                         "MIGRATION_TARGET_UNREGISTERED")
+        self.assertEqual(self.migrate(version="demo-1")["code"],
+                         "MIGRATION_TARGET_UNCHANGED")
+        self.assertEqual(self.migrate()["decision"], "accepted")
+
+    def test_migration_refuses_uncertain_effects(self):
+        prerequisites(self.runtime)
+        op = action(self.runtime)["operation_id"]
+        self.runtime.dispatch(op, FakeOA(self.oa_path, timeout_after_commit=True))
+        before = self.runtime.get_work("demo")
+        receipt = self.migrate()
+        self.assertEqual(receipt["code"], "OUTCOME_UNRESOLVED")
+        self.assertEqual(receipt["blockers"], [op])
+        after = self.runtime.get_work("demo")
+        self.assertEqual(after["contract"], before["contract"])
+        self.assertEqual(after["state_version"], before["state_version"])
+
+    def test_strengthened_rule_revalidates_approval_and_keeps_key(self):
+        prerequisites(self.runtime)
+        op = action(self.runtime)["operation_id"]
+        self.assertEqual(self.migrate()["decision"], "accepted")
+        work = self.runtime.get_work("demo")
+        self.assertEqual(work["contract"]["policy_version"], "demo-2")
+        self.assertEqual(work["contract"]["revision"], 2)
+        self.assertEqual((self.requirement("E05")["applicability"],
+                          self.requirement("E05")["fulfillment"]), ("applicable", "pending"))
+        approval = next(e for e in evidence_bodies(self.path) if e["kind"] == "approval")
+        self.assertEqual(approval["status"], "invalid")
+        invalidated = self.runtime.get_operation(op)
+        self.assertEqual((invalidated["dispatch_state"], invalidated["reason"]),
+                         ("cancelled", "POLICY_MIGRATED"))
+        stale = action(self.runtime)
+        self.assertEqual(stale["code"], "REQUIREMENT_UNSATISFIED")
+        work = self.runtime.get_work("demo")
+        forced = send(self.runtime, "demo", "propose_action", {
+            "capability": "expense.submit", "document_digest": work["document_digest"],
+            "contract_revision": 1, "plan_revision": work["plan_revision"]})
+        self.assertEqual(forced["code"], "CONTRACT_REVISION_MISMATCH")
+        proof(self.runtime, "demo", "approval", "finance", {
+            "digest": work["document_digest"], "policy_version": "demo-2"})
+        self.runtime.verify_pending("demo")
+        self.assertEqual(self.requirement("E05")["fulfillment"], "satisfied")
+        readmitted = action(self.runtime)
+        self.assertEqual(readmitted["decision"], "accepted")
+        self.assertEqual(readmitted["operation_id"], op)
+        operation = self.runtime.get_operation(op)
+        self.assertEqual(operation["contract_revision"], 2)
+        self.assertEqual(operation["dispatch_state"], "ready")
+        self.assertEqual(self.runtime.dispatch(op, self.oa)["status"], "confirmed_succeeded")
+        self.assertEqual(self.oa.accepted_count(), 1)
+
+    def test_accepted_evidence_survives_migration(self):
+        prerequisites(self.runtime)
+        op = action(self.runtime)["operation_id"]
+        self.runtime.dispatch(op, self.oa)
+        external_id = self.runtime.get_operation(op)["external_id"]
+        self.assertEqual(self.migrate()["decision"], "accepted")
+        self.assertEqual(self.requirement("E08")["fulfillment"], "satisfied")
+        operation = self.runtime.get_operation(op)
+        self.assertEqual((operation["status"], operation["external_id"]),
+                         ("confirmed_succeeded", external_id))
+        accepted = next(e for e in evidence_bodies(self.path) if e["kind"] == "accepted")
+        self.assertEqual(accepted["status"], "verified")
+        self.assertEqual(self.oa.accepted_count(), 1)
+
+    def test_two_works_pinned_to_different_versions(self):
+        initialize(self.runtime, "other", document(document_id="EXP-002"))
+        send(self.runtime, "other", "revise_document", {"document": document(
+            amount=80000, document_id="EXP-002")})
+        prerequisites(self.runtime, "other", approval=False)
+        self.assertEqual(self.migrate()["decision"], "accepted")
+        self.assertEqual(self.requirement("E05")["applicability"], "applicable")
+        self.assertEqual(self.requirement("E05", "other")["applicability"], "not_applicable")
+        restarted = Runtime(self.path, ExpensePolicy(), self.grants,
+                            policies={"demo-2": self.v2})
+        self.assertEqual(restarted.get_work("demo")["contract"]["policy_version"], "demo-2")
+        self.assertEqual(restarted.get_work("other")["contract"]["policy_version"], "demo-1")
+
+    def test_restart_without_pinned_version_fails_closed(self):
+        self.assertEqual(self.migrate()["decision"], "accepted")
+        smaller = Runtime(self.path, ExpensePolicy(), self.grants)
+        with self.assertRaises(CommandError):
+            smaller.get_work("demo")
+
+    def test_old_command_receipts_retained_after_migration(self):
+        prerequisites(self.runtime)
+        accepted = action(self.runtime, command_id="propose-before")
+        self.assertEqual(accepted["decision"], "accepted")
+        self.assertEqual(self.migrate()["decision"], "accepted")
+        self.assertEqual(self.runtime.get_command("agent", "propose-before"), accepted)
+
+    def test_migration_rolls_back_atomically_on_target_failure(self):
+        prerequisites(self.runtime)
+        action(self.runtime)
+        before_work = self.runtime.get_work("demo")
+        before_evidence = sorted((e["kind"], e["status"])
+                                 for e in evidence_bodies(self.path))
+        for version, policy in (("demo-4", Demo4ExplodingEvaluate()),
+                                ("demo-5", Demo5ExplodingValidate())):
+            runtime = Runtime(self.path, ExpensePolicy(), self.grants,
+                              policies={"demo-2": self.v2, version: policy})
+            with self.assertRaises(RuntimeError):
+                version_now = runtime.get_work("demo")["state_version"]
+                runtime.command("root", uuid.uuid4().hex, "demo", "migrate_policy", {
+                    "policy_id": "expense-submit", "policy_version": version,
+                    "reason": "explode"}, version_now)
+            after = runtime.get_work("demo")
+            self.assertEqual(after["contract"], before_work["contract"])
+            self.assertEqual(after["state_version"], before_work["state_version"])
+            self.assertEqual(after["requirements"], before_work["requirements"])
+            self.assertEqual(sorted((e["kind"], e["status"])
+                                    for e in evidence_bodies(self.path)), before_evidence)
+            self.assertEqual([e for e in runtime.events("demo")
+                              if e["type"] == "PolicyMigrated"], [])
+
+    def test_target_rejecting_document_raises_and_persists_nothing(self):
+        before = self.runtime.get_work("demo")
+        runtime = Runtime(self.path, ExpensePolicy(), self.grants,
+                          policies={"demo-6": Demo6RejectingDocument()})
+        version_now = runtime.get_work("demo")["state_version"]
+        with self.assertRaises(CommandError):
+            runtime.command("root", uuid.uuid4().hex, "demo", "migrate_policy", {
+                "policy_id": "expense-submit", "policy_version": "demo-6",
+                "reason": "nope"}, version_now)
+        after = runtime.get_work("demo")
+        self.assertEqual(after["contract"], before["contract"])
+        self.assertEqual(after["state_version"], before["state_version"])
+
+    def test_migration_preserves_plan_and_document_history(self):
+        prerequisites(self.runtime)
+        before = self.runtime.get_work("demo")
+        self.assertEqual(self.migrate()["decision"], "accepted")
+        after = self.runtime.get_work("demo")
+        self.assertEqual(after["plan_revision"], before["plan_revision"])
+        self.assertEqual(after["document_revision"], before["document_revision"])
+        self.assertEqual(after["document_digest"], before["document_digest"])
+        self.assertEqual(after["plan"], before["plan"])
+        for wait in after["waits"]:
+            self.assertEqual(wait["status"], "cancelled")
+
+    def test_migration_payload_must_be_exact(self):
+        for payload in ({"policy_id": "expense-submit", "policy_version": "demo-2"},
+                        {"policy_version": "demo-2", "reason": "x"},
+                        {"policy_id": "", "policy_version": "demo-2", "reason": "x"},
+                        {"policy_id": "expense-submit", "policy_version": "demo-2",
+                         "reason": "x", "extra": 1}):
+            with self.assertRaises(CommandError, msg=repr(payload)):
+                self.runtime.command("root", uuid.uuid4().hex, "demo", "migrate_policy",
+                                     payload, self.runtime.get_work("demo")["state_version"])
+
+    def test_migration_replayed_by_restored_authority_returns_stored_receipt(self):
+        rejected = self.migrate(actor="agent", version="demo-9",
+                                command_id="wished-migration")
+        self.assertEqual(rejected["code"], "AUTHORITY_DENIED")
+        self.grants["agent"].add("work.intervene")
+        replay = self.runtime.command("agent", "wished-migration", "demo", "migrate_policy", {
+            "policy_id": "expense-submit", "policy_version": "demo-9",
+            "reason": "strengthen"}, rejected["observed_state_version"])
+        self.assertEqual(replay, rejected)
+        self.grants["agent"].discard("work.intervene")
+
+    def test_dispatch_respects_actual_contract_revision(self):
+        prerequisites(self.runtime)
+        self.assertEqual(self.migrate()["decision"], "accepted")
+        proof(self.runtime, "demo", "approval", "finance", {
+            "digest": self.runtime.get_work("demo")["document_digest"],
+            "policy_version": "demo-2"})
+        self.runtime.verify_pending("demo")
+        op = action(self.runtime)["operation_id"]
+        set_operation_field(self.path, op, contract_revision=1)
+        result = self.runtime.dispatch(op, self.oa)
+        self.assertEqual(result["dispatch_state"], "cancelled")
+        self.assertEqual(result["reason"], "STALE_INTENT")
+        self.assertEqual(self.oa.accepted_count(), 0)
+
+
+class PendingSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.grants = intervention_grants()
+        self.runtime = Runtime(self.path, ExpensePolicy(), self.grants,
+                               policies={"demo-3": Demo3RelabeledSource()})
+        initialize(self.runtime)
+
+    def requirement(self, rule):
+        return next(r for r in self.runtime.get_work("demo")["requirements"]
+                    if r["rule_id"] == rule)
+
+    def migrate_to_demo_3(self):
+        version = self.runtime.get_work("demo")["state_version"]
+        receipt = self.runtime.command("root", uuid.uuid4().hex, "demo", "migrate_policy", {
+            "policy_id": "expense-submit", "policy_version": "demo-3",
+            "reason": "relabel"}, version)
+        self.assertEqual(receipt["decision"], "accepted")
+
+    def test_pending_old_source_proof_cannot_reappear_after_migration(self):
+        proof(self.runtime, "demo", "approval", "finance")   # left pending
+        self.migrate_to_demo_3()
+        approval = next(e for e in evidence_bodies(self.path) if e["kind"] == "approval")
+        self.assertEqual(approval["status"], "pending_verification")
+        self.runtime.verify_pending("demo")
+        approval = next(e for e in evidence_bodies(self.path) if e["kind"] == "approval")
+        self.assertEqual(approval["status"], "invalid")
+        self.assertEqual(self.requirement("E05")["fulfillment"], "pending")
+
+    def test_invalid_evidence_never_resurrects(self):
+        proof(self.runtime, "demo", "approval", "finance", {"approved": True})
+        self.runtime.verify_pending("demo")
+        self.assertEqual(self.requirement("E05")["fulfillment"], "pending")
+        self.migrate_to_demo_3()
+        self.runtime.verify_pending("demo")
+        approval = next(e for e in evidence_bodies(self.path) if e["kind"] == "approval")
+        self.assertEqual(approval["status"], "invalid")
+        self.assertEqual(self.requirement("E05")["fulfillment"], "pending")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -294,6 +294,8 @@ class Runtime:
             ok = (owner is None or actor == owner) and payload.get("capability") in grants
         elif kind in ("request_cancel", "finalize_cancel", "transfer_owner"):
             ok = self._intervener(actor, work)
+        elif kind == "migrate_policy":
+            ok = self._is_admin(actor)
         elif kind in ("bind_contract", "revise_plan", "revise_document",
                       "register_wait", "request_completion"):
             ok = self._manager(actor, work)
@@ -337,6 +339,8 @@ class Runtime:
             return self._finalize_cancel(db, actor, work, payload, version)
         if kind == "transfer_owner":
             return self._transfer_owner(db, actor, work, payload, version)
+        if kind == "migrate_policy":
+            return self._migrate_policy(db, actor, work, payload, version)
         if not self._manager(actor, work):
             return self._reject("AUTHORITY_DENIED", version)
         if work.get("cancellation"):
@@ -511,6 +515,66 @@ class Runtime:
             "reassigned_waits": reassigned, "invalidated_operations": invalidated})
         return self._accepted(work)
 
+    def _migrate_policy(self, db, actor, work, payload, version):
+        if (set(payload) != {"policy_id", "policy_version", "reason"}
+                or not all(isinstance(v, str) and v for v in payload.values())):
+            raise CommandError("migrate_policy requires exactly policy_id, "
+                               "policy_version and reason strings")
+        if not self._is_admin(actor):
+            return self._reject("AUTHORITY_DENIED", version)
+        if not work["contract"]:
+            return self._reject("CONTRACT_NOT_ACTIVE", version)
+        if work.get("cancellation"):
+            return self._reject("CANCELLATION_ACTIVE", version)
+        if payload["policy_id"] != self.policy.id:
+            return self._reject("MIGRATION_FAMILY_MISMATCH", version)
+        target = self.policies.get(payload["policy_version"])
+        if target is None:
+            return self._reject("MIGRATION_TARGET_UNREGISTERED", version)
+        if ((target.id, target.goal) != (work["contract"]["policy_id"],
+                                         work["contract"]["goal"])):
+            return self._reject("MIGRATION_FAMILY_MISMATCH", version)
+        if payload["policy_version"] == work["contract"]["policy_version"]:
+            return self._reject("MIGRATION_TARGET_UNCHANGED", version)
+        uncertain = [json.loads(r[0])["id"] for r in db.execute(
+            "SELECT body FROM operations WHERE work_id=?", (work["id"],))
+            if json.loads(r[0])["status"] in ("dispatched", "outcome_unknown")]
+        if uncertain:
+            return self._reject("OUTCOME_UNRESOLVED", version, uncertain)
+        try:
+            target.validate_document(work["document"])
+        except ValueError as error:
+            raise CommandError("Target policy rejects the current document: "
+                               + str(error)) from error
+        # From here every write is one transaction: any target failure rolls
+        # back binding, evidence, operations and events together.
+        old_contract = dict(work["contract"])
+        work["contract"] = {"policy_id": target.id, "policy_version": target.version,
+                            "goal": target.goal, "revision": old_contract["revision"] + 1}
+        dispositions = []
+        for proof in self._proofs(db, work["id"]):
+            if proof["status"] == "verified":
+                still_valid = (target.evidence_sources.get(proof["kind"]) == proof["source"]
+                               and target.validate_evidence(work, proof))
+                proof["status"] = "verified" if still_valid else "invalid"
+                db.execute("UPDATE evidence SET body=? WHERE source=? AND event_id=?",
+                           (canonical(proof), proof["source"], proof["event_id"]))
+                dispositions.append({"id": proof["id"], "from": "verified",
+                                     "to": proof["status"]})
+            else:
+                dispositions.append({"id": proof["id"], "from": proof["status"],
+                                     "to": proof["status"]})
+        for wait in work["waits"]:
+            if wait["status"] in ("waiting", "triggered"):
+                wait["status"] = "cancelled"
+        invalidated = self._cancel_prepared(db, work["id"], reason="POLICY_MIGRATED")
+        self._save(db, work, "PolicyMigrated", {
+            "actor": actor, "reason": payload["reason"],
+            "from": old_contract, "to": dict(work["contract"]),
+            "evidence": dispositions, "invalidated_operations": invalidated})
+        return self._accepted(work, policy_version=target.version,
+                              contract_revision=work["contract"]["revision"])
+
     def _propose(self, db, actor, work, payload):
         version = work["state_version"]
         owner = work.get("owner")
@@ -548,7 +612,9 @@ class Runtime:
             if operation["document_digest"] != work["document_digest"] or operation["work_id"] != work["id"]:
                 return self._reject("OPERATION_CONTENT_CONFLICT", version)
             if operation["status"] == "prepared" and operation["dispatch_state"] in ("cancelled", "held"):
-                operation.update(actor=actor, plan_revision=work["plan_revision"], dispatch_state="ready")
+                operation.update(actor=actor, plan_revision=work["plan_revision"],
+                                 dispatch_state="ready",
+                                 contract_revision=work["contract"]["revision"])
                 operation.pop("reason", None)
                 self._save_op(db, operation)
                 self._save(db, work, "OperationReadmitted", {"operation_id": operation["id"]})
@@ -558,7 +624,8 @@ class Runtime:
                      "actor": actor, "capability": capability, "status": "prepared",
                      "dispatch_state": "ready", "attempts": [],
                      "document": work["document"], "document_digest": work["document_digest"],
-                     "plan_revision": work["plan_revision"], "contract_revision": 1}
+                     "plan_revision": work["plan_revision"],
+                     "contract_revision": work["contract"]["revision"]}
         self._save_op(db, operation)
         self._save(db, work, "OperationPrepared", {"operation_id": operation["id"]})
         return self._accepted(work, operation_id=operation["id"], operation_status_at_decision="prepared")
@@ -596,7 +663,13 @@ class Runtime:
             for candidate in self._proofs(db, work_id):
                 if candidate["status"] != "pending_verification":
                     continue
-                candidate["status"] = "verified" if policy.validate_evidence(work, candidate) else "invalid"
+                # A pending proof verifies only under its kind's CURRENT
+                # configured source: an old-source proof left pending by a
+                # migration must never reappear as verified.
+                source_ok = policy.evidence_sources.get(candidate["kind"]) == candidate["source"]
+                candidate["status"] = ("verified" if source_ok
+                                       and policy.validate_evidence(work, candidate)
+                                       else "invalid")
                 db.execute("UPDATE evidence SET body=? WHERE source=? AND event_id=?",
                            (canonical(candidate), candidate["source"], candidate["event_id"]))
                 count += 1
@@ -644,7 +717,8 @@ class Runtime:
                 self._save(db, work, "DispatchCancelled", {"operation_id": op["id"]})
                 return op
             if (work["status"] == "closed" or op["document_digest"] != work["document_digest"]
-                    or op["plan_revision"] != work["plan_revision"]):
+                    or op["plan_revision"] != work["plan_revision"]
+                    or op["contract_revision"] != work["contract"]["revision"]):
                 op["dispatch_state"] = "cancelled"
                 op["reason"] = "STALE_INTENT"
                 self._save_op(db, op)

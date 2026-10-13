@@ -71,8 +71,9 @@ registry fixed at construction.
 
 1. Inside one transaction it re-checks the intent is still actionable: the
    operation is `prepared` and not `cancelled`; the work is not closed; the
-   document digest and plan revision still match (otherwise the intent is
-   `cancelled`/`STALE_INTENT`, never a fake external failure); authority and
+   document digest, plan revision and contract revision still match
+   (otherwise the intent is `cancelled`/`STALE_INTENT`, never a fake
+   external failure); authority (including current Work ownership) and
    requirement blockers are re-evaluated (otherwise `held` with a reason —
    accepted commands are never retroactively rejected).
 2. Immediately before the attempt is created it fails closed on policy
@@ -203,6 +204,43 @@ historical receipt shapes. Ownership is adopted explicitly: only a
 `work.intervene` administrator may transfer an ownerless Work, and from
 that point the Work is owner-gated like any other.
 
+## Policy migration boundary
+
+`migrate_policy` (payload exactly `policy_id`, `policy_version`, `reason`;
+**exclusively** a `work.intervene` administrator) rebinds a bound, open,
+uncancelled Work to another registered version of the same family and
+goal. It is rejected — before any mutation — for an unbound work
+(`CONTRACT_NOT_ACTIVE`), an active cancellation intent
+(`CANCELLATION_ACTIVE`), another family (`MIGRATION_FAMILY_MISMATCH`,
+checked before registry lookup), an unregistered version
+(`MIGRATION_TARGET_UNREGISTERED`), the currently bound version
+(`MIGRATION_TARGET_UNCHANGED`), and any `dispatched`/`outcome_unknown`
+effect (`OUTCOME_UNRESOLVED`): uncertain effects are never migrated past.
+The target must accept the current document — a `ValueError` from the
+target's document validation surfaces as `CommandError` with nothing
+persisted.
+
+The rebind itself is one transaction. The target contract replaces the
+binding with `revision = old + 1`; every previously `verified` proof is
+revalidated under the target — its kind's configured source must match
+the proof's source **and** the target's verifier must accept it, else the
+proof becomes `invalid` (there is no revoked status; previously invalid
+proofs stay invalid, nothing resurrects); `pending_verification` proofs
+stay pending, and `verify_pending` applies the same source check before
+target validation so an old-source pending proof can never reappear as
+verified after a migration. Prepared intents are cancelled with reason
+`POLICY_MIGRATED`, waits are cancelled, requirements are re-evaluated by
+the target, and an event records actor, reason, old/new binding, evidence
+dispositions and invalidated operations. Any exception (including a
+target `evaluate`/`validate_evidence` failure) rolls back binding,
+evidence, operations and events together. Old command receipts and
+external results are retained untouched; restart never implicitly
+migrates — the pinned version resolves from the registry or fails closed.
+Business-key stability across same-family versions is the policy author's
+obligation (the demo policies keep one key function), which is what lets
+a cancelled intent re-admit under the same operation identity after
+migration.
+
 ## Recovery contract
 
 `recover(adapter)` is the restart entry point and performs, in order:
@@ -262,10 +300,11 @@ Guarantees:
   dispatch if authority and blockers now pass; `recover` never auto-dispatches
   `held` intents — they are re-admitted explicitly through `propose_action`.
 - **One policy family per database; versions are pinned per Work.** A work
-  whose pinned version is not in the loaded registry raises on access, and
-  switching versions is never implicit — an explicit migration command is
-  required. Business-key stability across same-family versions is a
-  policy-author obligation; the runtime does not rewrite keys.
+  whose pinned version is not in the loaded registry raises on access;
+  switching versions happens only through the explicit admin
+  `migrate_policy` command above. Business-key stability across
+  same-family versions is a policy-author obligation; the runtime does not
+  rewrite keys.
 
 ## Verification
 
