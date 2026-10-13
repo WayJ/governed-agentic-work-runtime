@@ -34,6 +34,7 @@ Cancellation, uncertain-effect reconciliation, responsibility transfer and expli
 | D12 | Work-scoped owner and administrator intervention authority | Transfer responsibility without granting capabilities; replay checks current authority. | 2026-10-13 | [design](../specs/2026-10-13-s3-intervention-design.md) |
 | D13 | Loaded same-family policy versions with explicit migration | Amend E2 D7 only for policy versions within one family/goal; no cross-domain shared DB. | 2026-10-13 | [design](../specs/2026-10-13-s3-intervention-design.md) |
 | D14 | One core developer, dependent demo and independent integration | Runtime mutations overlap; staged work avoids conflicting lifecycle implementations. | 2026-10-13 | [S2 lessons](../../../.agents/notes/2026-10-13-S2-close.md) |
+| D15 | Ratify builder B1/B2 and pin registry, source revalidation and demo v2 | Intent-preserving unsupported probe amendment; authority-before-replay; no pending-source bypass; cancellation adds no waits. | 2026-10-13 | [ratified design](../specs/2026-10-13-s3-intervention-design.md) |
 
 ## Asset Disposition
 
