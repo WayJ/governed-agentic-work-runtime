@@ -1,0 +1,42 @@
+# Roadmap
+
+Status: proposed milestones, not delivery commitments. The aim is a useful open-source execution foundation with a clear promise: agent-proposed business actions remain accountable across changing plans and failed sessions.
+
+## 0.1 — An inspectable reference implementation
+
+- Clone and run a meaningful demonstration without credentials or services.
+- Persist command decisions, evidence, waits and logical operations.
+- Show real process death after external acceptance and recover the original receipt.
+- Publish actual verification coverage, including deferred guarantees.
+- Provide English and Chinese entry points, contribution guidance and CI.
+
+The initial implementation provides this local slice. Publication and CI results still require the repository to be pushed and the workflow to run.
+
+## 0.2 — Trustworthy integration boundaries
+
+- Define verified source identities independently of caller-supplied actor names.
+- Describe adapter capabilities: supported actions, idempotency scope and retention, lookup consistency, uniqueness and result verification.
+- Provide adapter conformance tests with duplicate, ambiguous and mismatched results.
+- Demonstrate a second business domain and one harness integration through the same command protocol.
+- A new contributor can implement an adapter using documentation without modifying lifecycle internals.
+
+## 0.3 — Change and intervention
+
+- Implement cancellation, authority-aware responsibility transfer and compensation.
+- Preserve and reconcile all in-flight effects before declaring cancellation complete.
+- Implement evidence revocation and explicit policy migration.
+- Explain every blocker with its rule, object scope and permitted recovery path.
+- Publish failure scenarios showing both automatic recovery and required human intervention.
+
+## 0.4 — Authoring and execution at scale
+
+- Use real author feedback to validate the rule-card model and publication process.
+- Measure concurrent-work needs before choosing distributed storage and scheduling.
+- Add worker leases and fencing only with external-system enforcement and dedicated race tests.
+- Provide an inspectable timeline and operational metrics grounded in business events.
+
+## How we judge progress
+
+Stars describe reach. The engineering milestones use reproducible behavior: time to first demo, successful independent integrations, recovery correctness, comprehensible rejection reasons, and contributor ability to fix a failure.
+
+Before expanding integrations, keep the core promise small enough to explain and verify. A missing guarantee should appear in the coverage report rather than becoming an undocumented assumption.

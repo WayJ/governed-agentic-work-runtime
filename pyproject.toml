@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "governed-work-runtime"
+version = "0.1.0a1"
+description = "Durable, evidence-backed execution for agent-proposed business actions"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+dependencies = []
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.scripts]
+work-runtime = "work_runtime.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["work_runtime*"]
