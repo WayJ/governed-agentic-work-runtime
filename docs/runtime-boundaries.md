@@ -52,8 +52,14 @@ version strings where each key equals `value.version`, every value must
 expose nonempty `id`/`version`/`goal` strings, a dict `evidence_sources`
 and the five callable `Policy` methods, and every entry must share the
 default policy's family (`id`) and `goal` — a cross-domain registry is not
-a supported shared-database runtime. The mapping is copied; the default
-version always resolves to the default policy object.
+a supported shared-database runtime. For **any** explicit registry,
+including the empty dict, those structural checks apply to the default
+policy object itself as well (it is a registry entry; the `policies=None`
+legacy constructor path stays as-is). An explicit registry may omit the
+default version — the `policy` constructor argument supplies it — but if
+the default key is supplied it must map to that identical default object.
+The mapping is copied; the default version always resolves to the default
+policy object.
 
 Every Work resolves its policy through its pinned contract binding
 (`contract.policy_version`) in **all** validation, evaluation,

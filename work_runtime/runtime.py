@@ -47,6 +47,18 @@ _POLICY_METHODS = ("validate_document", "evaluate", "action_blockers",
                    "operation_key", "validate_evidence")
 
 
+def _validated_policy_structure(candidate) -> None:
+    for attribute in ("id", "version", "goal"):
+        value = getattr(candidate, attribute, None)
+        if not isinstance(value, str) or not value:
+            raise CommandError("Registry policies require a nonempty " + attribute)
+    if not isinstance(getattr(candidate, "evidence_sources", None), dict):
+        raise CommandError("Registry policies require an evidence_sources dict")
+    for method in _POLICY_METHODS:
+        if not callable(getattr(candidate, method, None)):
+            raise CommandError("Registry policies require a callable " + method)
+
+
 def _validated_registry(policy: Policy, policies: Optional[Dict[str, Policy]]) -> Dict[str, Policy]:
     """Validate an explicitly loaded, same-family policy registry.
 
@@ -58,19 +70,14 @@ def _validated_registry(policy: Policy, policies: Optional[Dict[str, Policy]]) -
         return {policy.version: policy}
     if not isinstance(policies, dict):
         raise CommandError("policies must be a dict of version to Policy")
+    # Any explicit registry, including the empty dict, structurally validates
+    # the default too: it becomes a registry entry (D16).
+    _validated_policy_structure(policy)
     registry: Dict[str, Policy] = {}
     for version, candidate in policies.items():
         if not isinstance(version, str) or not version:
             raise CommandError("Registry keys must be nonempty version strings")
-        for attribute in ("id", "version", "goal"):
-            value = getattr(candidate, attribute, None)
-            if not isinstance(value, str) or not value:
-                raise CommandError("Registry policies require a nonempty " + attribute)
-        if not isinstance(getattr(candidate, "evidence_sources", None), dict):
-            raise CommandError("Registry policies require an evidence_sources dict")
-        for method in _POLICY_METHODS:
-            if not callable(getattr(candidate, method, None)):
-                raise CommandError("Registry policies require a callable " + method)
+        _validated_policy_structure(candidate)
         if candidate.version != version:
             raise CommandError("Registry key must equal the policy version")
         if (candidate.id, candidate.goal) != (policy.id, policy.goal):

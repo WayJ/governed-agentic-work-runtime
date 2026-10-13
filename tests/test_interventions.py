@@ -124,6 +124,30 @@ class RegistryContractTests(unittest.TestCase):
         prerequisites(runtime)
         self.assertEqual(action(runtime)["decision"], "accepted")
 
+    def test_malformed_default_rejected_for_any_explicit_registry(self):
+        # D16: ANY explicit policies dict, including the empty dict, must
+        # structurally validate the default policy before any write.
+        broken_method = ExpensePolicy()
+        broken_method.operation_key = "not-callable"
+        broken_sources = ExpensePolicy()
+        broken_sources.evidence_sources = None
+        uncreated = str(Path(self.temp.name) / "d16" / "never" / "runtime.sqlite")
+        for policy, policies in ((broken_method, {}),
+                                 (broken_method, {"demo-2": OtherExpenseVersion()}),
+                                 (broken_sources, {})):
+            with self.assertRaises(CommandError, msg=repr(policies)):
+                Runtime(uncreated, policy, demo_grants(), policies=policies)
+        self.assertFalse(Path(uncreated).parent.exists())
+
+    def test_valid_additive_registry_and_none_legacy_are_preserved(self):
+        runtime = self.runtime({"demo-2": OtherExpenseVersion()})
+        self.assertEqual(set(runtime.policies), {"demo-1", "demo-2"})
+        legacy = str(Path(self.temp.name) / "legacy" / "runtime.sqlite")
+        malformed = ExpensePolicy()
+        malformed.operation_key = "not-callable"
+        Runtime(legacy, malformed, demo_grants())  # policies=None keeps legacy behavior
+        self.assertTrue(Path(legacy).parent.exists())
+
     def test_registry_mapping_is_copied(self):
         policies = {"demo-2": OtherExpenseVersion()}
         runtime = self.runtime(policies)

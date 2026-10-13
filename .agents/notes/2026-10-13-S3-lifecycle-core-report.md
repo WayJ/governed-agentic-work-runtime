@@ -98,3 +98,33 @@ migration ✓.
   check-order inconsistency, unreachable-by-design dispatch guard, one long
   line). Wave-2 integration performs the independent review next.
 - No merge, no push (integration session owns both).
+
+## D16 review correction addendum (post-b6adae8)
+
+Integration review found (root reproduced by coordinator and re-reproduced
+here): a structurally malformed default policy — e.g.
+`ExpensePolicy().operation_key = "not-callable"` — was accepted by
+`Runtime(..., policies={})` (and with additional versions) and created the
+database. Root cause: `_validated_registry` structurally validated only
+explicit entries; the default was merged with an identity check alone.
+This was a gap my self-review missed: I tested the default-version
+*identity* mismatch but never probed a malformed default with an explicit
+registry — admitted as the self-review blind spot D16 calls out.
+
+Fix (per D16, minimal and localized): structural checks extracted to
+`_validated_policy_structure` and applied to the default for ANY explicit
+`policies` dict including `{}`, before mkdir/DB writes. Additive versions
+may omit the default key; a supplied default key must identity-match;
+`policies=None` legacy behavior preserved.
+
+- RED: `python3 -m unittest tests.test_interventions.RegistryContractTests`
+  → `test_malformed_default_rejected_for_any_explicit_registry` FAILED
+  ("CommandError not raised: {}"); pin test
+  `test_valid_additive_registry_and_none_legacy_are_preserved` passed pre-fix as designed.
+- GREEN: same command → 9/9 OK; full `python3 -m unittest discover -s tests`
+  → 246 tests OK (244 + 2 new).
+- Gates: `python3 scripts/check_docs.py` 0 broken; `python3 -m compileall -q
+  work_runtime tests scripts` clean; `python3 -m work_runtime demo` (1 external
+  application) and `python3 -m work_runtime publish-demo` (1 artifact) green.
+- tests/test_interventions.py, work_runtime/runtime.py and
+  docs/runtime-boundaries.md committed together (same commit).
