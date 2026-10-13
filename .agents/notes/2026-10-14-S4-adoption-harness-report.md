@@ -160,3 +160,40 @@ python3 -m work_runtime adoption-demo             # exit 0, committed file artif
 python3 -m work_runtime lint-sop work_runtime/data/sop/publishing.json --json
 python3 scripts/verify_install.py                 # 13 stages, PASS
 ```
+
+## Addendum — 2026-10-14: installed-verification coverage correction (docs-only)
+
+Master finding (late msg83d436, reached the reviewer only at report completion;
+the source finding stands regardless of the integration-ready verdict):
+CONTRIBUTING.md overclaimed that `verify_install` runs "all four demos through
+both entry points". Stage matrix re-verified against `scripts/verify_install.py`
+source at `bfbd29b` (`rg 'run(\[venv_python, "-m", "work_runtime"|run(\[console,'`,
+lines 314–403):
+
+| demo | module stage | console stage |
+|---|---|---|
+| `demo` | yes (line 314) | yes (line 358) |
+| `publish-demo` | yes (line 327) | **no console stage** |
+| `intervention-demo` | yes (line 342) | yes (line 363) |
+| `adoption-demo` | yes (line 394) | yes (line 403) |
+
+plus module `inspect --policy-versions` on the migrated store (line 351) and
+console `lint-sop` on the extracted packaged card (line 385).
+
+Factual limits, recorded: the `work-runtime publish-demo` console entry point
+is exercised by no `verify_install` stage and no CI step (CI runs
+`work-runtime demo` only); its module entry point is verified with an
+independent `publications` count. Corrected prose to exactly the existing
+proof in CONTRIBUTING.md and README.zh-CN.md (gate comment + summary
+sentence); README.md, docs/verification.md and docs/contributor-guide.md were
+rg-checked and already state the precise per-demo coverage (their
+"module and console" claims name `intervention-demo`/`adoption-demo`, which do
+have both stages) — left unchanged. No script, entrypoint or test additions;
+no old evidence deleted; docs-only reversible delta, so no 512-test rerun
+(docs gate re-run below, suite state unchanged at 512 OK from bfbd29b).
+
+The public guide-only rehearsal (sprint Task 6) runs in an isolated branch off
+`bfbd29b` with the same API surface; this docs-only followup changes no code
+and does not disturb it. Corrected tip for final integration: this single
+docs-only commit on top of `bfbd29b` (SHA reported in the worker_done
+message; `git log --oneline -1`).

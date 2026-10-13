@@ -16,7 +16,7 @@ python3 -m unittest discover -s tests -v
 python3 scripts/check_docs.py
 ```
 
-The package has zero runtime dependencies. Optional development installation: `python3 -m pip install -e .`. To verify the packaged result the way CI does, run `python3 scripts/verify_install.py` (installs into a fresh virtual environment and runs all four demos through both entry points outside the checkout, counting every external effect against its own database and independently parsing the committed file artifact; needs pip index access for the build backend).
+The package has zero runtime dependencies. Optional development installation: `python3 -m pip install -e .`. To verify the packaged result the way CI does, run `python3 scripts/verify_install.py` (installs into a fresh virtual environment and runs all four demos through the module entry point outside the checkout — `demo`, `intervention-demo` and `adoption-demo` additionally through the `work-runtime` console entry point; there is no console `publish-demo` stage — counting every external effect against its own database and independently parsing the committed file artifact; needs pip index access for the build backend).
 
 ## Project structure
 
