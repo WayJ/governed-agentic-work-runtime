@@ -137,6 +137,25 @@ original key — cancellation is an internal stop, not an external fence.
 There is no automatic close: an explicit `finalize_cancel` always records
 the terminal decision.
 
+`finalize_cancel` (payload exactly `acknowledged_operations`, a list of
+distinct nonempty operation ids; same authority as `request_cancel`)
+refuses to close while any operation is unresolved (`OUTCOME_UNRESOLVED`,
+including `dispatched`/`outcome_unknown` ones — a missing or malformed
+lookup answer can never be finalized past). Once every effect is resolved,
+the acknowledgement must equal **exactly** the set of
+`confirmed_succeeded` operation ids — an empty list is correct only when
+there were no succeeded effects; anything else is
+`CANCEL_ACKNOWLEDGEMENT_MISMATCH` with the succeeded ids as blockers. An
+accepted finalize closes the work as `cancelled` (never `succeeded`) and
+records an immutable closure snapshot: the original cancellation intent,
+the acknowledged succeeded operations with their external ids, and every
+operation's disposition. Acknowledgement is an explicit admission that
+the external effects exist — it is not, and never claims to be,
+compensation or reversal. Closed-work semantics are unchanged: fresh
+management commands on the closed work are `WORK_NOT_ACTIONABLE`, replays
+under the original command id still return the stored receipt while
+authority holds.
+
 `recover(adapter)` is the restart entry point and performs, in order:
 
 1. `verify_pending` for every work (atomic candidate evaluation),

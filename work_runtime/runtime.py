@@ -297,6 +297,8 @@ class Runtime:
             return self._propose(db, actor, work, payload)
         if kind == "request_cancel":
             return self._request_cancel(db, actor, work, payload, version)
+        if kind == "finalize_cancel":
+            return self._finalize_cancel(db, actor, work, payload, version)
         if "work.manage" not in self.grants[actor]:
             return self._reject("AUTHORITY_DENIED", version)
         if work.get("cancellation"):
@@ -404,6 +406,40 @@ class Runtime:
             "actor": actor, "reason": payload["reason"],
             "cancelled_operations": cancelled_operations,
             "cancelled_waits": cancelled_waits})
+        return self._accepted(work)
+
+    def _finalize_cancel(self, db, actor, work, payload, version):
+        ack = payload.get("acknowledged_operations") if set(payload) == {"acknowledged_operations"} else None
+        if (not isinstance(ack, list) or not all(isinstance(i, str) and i for i in ack)
+                or len(set(ack)) != len(ack)):
+            raise CommandError("finalize_cancel requires acknowledged_operations: "
+                               "a list of distinct nonempty operation ids")
+        if not self._intervener(actor, work):
+            return self._reject("AUTHORITY_DENIED", version)
+        if not work.get("cancellation"):
+            return self._reject("CANCELLATION_NOT_REQUESTED", version)
+        operations = [json.loads(r[0]) for r in db.execute(
+            "SELECT body FROM operations WHERE work_id=?", (work["id"],))]
+        unresolved = [op["id"] for op in operations
+                      if op["status"] not in ("confirmed_succeeded", "confirmed_failed")
+                      and op["dispatch_state"] != "cancelled"]
+        if unresolved:
+            return self._reject("OUTCOME_UNRESOLVED", version, unresolved)
+        succeeded = [op for op in operations if op["status"] == "confirmed_succeeded"]
+        succeeded_ids = sorted(op["id"] for op in succeeded)
+        if set(ack) != set(succeeded_ids):
+            return self._reject("CANCEL_ACKNOWLEDGEMENT_MISMATCH", version, succeeded_ids)
+        acknowledged = [op for op in succeeded if op["id"] in set(ack)]
+        work["status"], work["outcome"] = "closed", "cancelled"
+        work["completion"] = {
+            "cancellation": work["cancellation"],
+            "acknowledged_operations": [{"operation_id": op["id"],
+                                         "external_id": op.get("external_id")}
+                                        for op in acknowledged],
+            "operation_dispositions": [{"operation_id": op["id"], "status": op["status"],
+                                        "dispatch_state": op["dispatch_state"]}
+                                       for op in operations]}
+        self._save(db, work, "WorkCancelled", work["completion"])
         return self._accepted(work)
 
     def _propose(self, db, actor, work, payload):

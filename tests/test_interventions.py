@@ -2,6 +2,8 @@
 
 import json
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -355,6 +357,168 @@ class CancellationRequestTests(unittest.TestCase):
         self.cancel()
         self.assertEqual(proof(self.runtime, "demo", "approval", "finance")["decision"],
                          "accepted")
+
+
+class FinalizeCancelTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.oa_path = str(Path(self.temp.name) / "oa.sqlite")
+        self.grants = intervention_grants()
+        self.runtime = Runtime(self.path, ExpensePolicy(), self.grants)
+        self.oa = FakeOA(self.oa_path)
+        initialize(self.runtime)
+
+    def submit(self):
+        prerequisites(self.runtime)
+        receipt = action(self.runtime)
+        self.assertEqual(receipt["decision"], "accepted")
+        return receipt["operation_id"]
+
+    def finalize(self, ack, actor="agent", command_id=None, work_id="demo"):
+        version = self.runtime.get_work(work_id)["state_version"]
+        return self.runtime.command(actor, command_id or uuid.uuid4().hex, work_id,
+                                    "finalize_cancel", {"acknowledged_operations": ack},
+                                    version)
+
+    def test_finalize_requires_prior_request(self):
+        self.assertEqual(self.finalize([])["code"], "CANCELLATION_NOT_REQUESTED")
+
+    def test_zero_effect_finalize_closes_cancelled(self):
+        op = self.submit()
+        self.assertEqual(self.runtime.command("agent", "cancel-1", "demo", "request_cancel",
+                                              {"reason": "stop"},
+                                              self.runtime.get_work("demo")["state_version"]
+                                              )["decision"], "accepted")
+        receipt = self.finalize([])
+        self.assertEqual(receipt["decision"], "accepted")
+        work = self.runtime.get_work("demo")
+        self.assertEqual((work["status"], work["outcome"]), ("closed", "cancelled"))
+        completion = work["completion"]
+        self.assertEqual(completion["acknowledged_operations"], [])
+        self.assertEqual(completion["operation_dispositions"],
+                         [{"operation_id": op, "status": "prepared",
+                           "dispatch_state": "cancelled"}])
+        self.assertEqual(self.oa.accepted_count(), 0)
+        self.assertNotEqual(work["outcome"], "succeeded")
+
+    def test_finalize_after_timeout_requires_exact_acknowledgement(self):
+        op = self.submit()
+        # The attempt is durable (and the external effect committed) before
+        # cancellation is requested: it stays uncertain until queried.
+        self.assertEqual(self.runtime.dispatch(op, FakeOA(
+            self.oa_path, timeout_after_commit=True))["status"], "outcome_unknown")
+        self.assertEqual(self.oa.accepted_count(), 1)
+        self.assertEqual(self.runtime.command("agent", "cancel-1", "demo", "request_cancel",
+                                              {"reason": "stop"},
+                                              self.runtime.get_work("demo")["state_version"]
+                                              )["decision"], "accepted")
+        self.assertEqual(self.finalize([])["code"], "OUTCOME_UNRESOLVED")
+        self.runtime.reconcile(op, self.oa)
+        self.assertEqual(self.runtime.get_operation(op)["status"], "confirmed_succeeded")
+        mismatch = self.finalize([])
+        self.assertEqual(mismatch["code"], "CANCEL_ACKNOWLEDGEMENT_MISMATCH")
+        self.assertEqual(mismatch["blockers"], [op])
+        receipt = self.finalize([op])
+        self.assertEqual(receipt["decision"], "accepted")
+        work = self.runtime.get_work("demo")
+        self.assertEqual((work["status"], work["outcome"]), ("closed", "cancelled"))
+        self.assertEqual(work["completion"]["acknowledged_operations"],
+                         [{"operation_id": op,
+                           "external_id": self.runtime.get_operation(op)["external_id"]}])
+        self.assertEqual(self.oa.accepted_count(), 1)
+
+    def test_finalize_after_real_process_death(self):
+        op = self.submit()
+        child = subprocess.run([sys.executable, "-m", "work_runtime", "worker",
+                                "--runtime", self.path, "--oa", self.oa_path,
+                                "--operation", op, "--crash-after-effect"], check=False)
+        self.assertEqual(child.returncode, 73)
+        self.assertEqual(self.oa.accepted_count(), 1)
+        self.assertEqual(self.runtime.command("agent", "cancel-1", "demo", "request_cancel",
+                                              {"reason": "stop"},
+                                              self.runtime.get_work("demo")["state_version"]
+                                              )["decision"], "accepted")
+        self.assertEqual(self.finalize([])["code"], "OUTCOME_UNRESOLVED")
+        self.runtime.reconcile(op, self.oa)
+        self.assertEqual(self.finalize([op])["decision"], "accepted")
+        self.assertEqual(self.runtime.get_work("demo")["outcome"], "cancelled")
+        self.assertEqual(self.oa.accepted_count(), 1)
+
+    def test_missing_lookup_cannot_finalize(self):
+        op = self.submit()
+
+        class NoAnswer:
+            def execute(self, *args):
+                raise TimeoutError()
+            def lookup(self, key):
+                return None
+
+        self.runtime.dispatch(op, NoAnswer())
+        self.assertEqual(self.runtime.command("agent", "cancel-1", "demo", "request_cancel",
+                                              {"reason": "stop"},
+                                              self.runtime.get_work("demo")["state_version"]
+                                              )["decision"], "accepted")
+        self.runtime.reconcile(op, NoAnswer())
+        self.assertEqual(self.finalize([])["code"], "OUTCOME_UNRESOLVED")
+        self.assertEqual(self.runtime.get_work("demo")["status"], "needs_attention")
+
+    def test_malformed_result_cannot_finalize(self):
+        op = self.submit()
+
+        class Malformed:
+            def execute(self, *args):
+                return {"status": "accepted", "external_id": ""}
+
+        self.runtime.dispatch(op, Malformed())
+        self.assertEqual(self.runtime.get_operation(op)["reason"], "ADAPTER_RESULT_INVALID")
+        self.assertEqual(self.runtime.command("agent", "cancel-1", "demo", "request_cancel",
+                                              {"reason": "stop"},
+                                              self.runtime.get_work("demo")["state_version"]
+                                              )["decision"], "accepted")
+        self.assertEqual(self.finalize([])["code"], "OUTCOME_UNRESOLVED")
+
+    def test_finalize_payload_must_be_distinct_nonempty_ids(self):
+        self.assertEqual(self.runtime.command("agent", "cancel-1", "demo", "request_cancel",
+                                              {"reason": "stop"},
+                                              self.runtime.get_work("demo")["state_version"]
+                                              )["decision"], "accepted")
+        for ack in ("not-a-list", [""], ["a", "a"], [5], {"op": 1}, ["a", 5]):
+            with self.assertRaises(CommandError, msg=repr(ack)):
+                self.runtime.command("agent", uuid.uuid4().hex, "demo", "finalize_cancel",
+                                     {"acknowledged_operations": ack},
+                                     self.runtime.get_work("demo")["state_version"])
+        for payload in ({}, {"acknowledged_operations": [], "extra": 1}):
+            with self.assertRaises(CommandError, msg=repr(payload)):
+                self.runtime.command("agent", uuid.uuid4().hex, "demo", "finalize_cancel",
+                                     payload, self.runtime.get_work("demo")["state_version"])
+
+    def test_finalize_after_close_is_not_actionable_but_replay_returns_receipt(self):
+        self.submit()
+        self.assertEqual(self.runtime.command("agent", "cancel-1", "demo", "request_cancel",
+                                              {"reason": "stop"},
+                                              self.runtime.get_work("demo")["state_version"]
+                                              )["decision"], "accepted")
+        version = self.runtime.get_work("demo")["state_version"]
+        first = self.runtime.command("agent", "finalize-1", "demo", "finalize_cancel",
+                                     {"acknowledged_operations": []}, version)
+        self.assertEqual(first["decision"], "accepted")
+        fresh = self.runtime.command("agent", "finalize-2", "demo", "finalize_cancel",
+                                     {"acknowledged_operations": []},
+                                     self.runtime.get_work("demo")["state_version"])
+        self.assertEqual(fresh["code"], "WORK_NOT_ACTIONABLE")
+        replay = self.runtime.command("agent", "finalize-1", "demo", "finalize_cancel",
+                                      {"acknowledged_operations": []}, version)
+        self.assertEqual(replay, first)
+
+    def test_admin_can_finalize(self):
+        self.submit()
+        self.assertEqual(self.runtime.command("agent", "cancel-1", "demo", "request_cancel",
+                                              {"reason": "stop"},
+                                              self.runtime.get_work("demo")["state_version"]
+                                              )["decision"], "accepted")
+        self.assertEqual(self.finalize([], actor="root")["decision"], "accepted")
 
 
 if __name__ == "__main__":
