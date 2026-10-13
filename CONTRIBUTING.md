@@ -9,11 +9,12 @@ Python 3.9 or newer is sufficient. No service or API key is required.
 ```bash
 python3 -m work_runtime demo
 python3 -m work_runtime publish-demo
+python3 -m work_runtime intervention-demo
 python3 -m unittest discover -s tests -v
 python3 scripts/check_docs.py
 ```
 
-The package has zero runtime dependencies. Optional development installation: `python3 -m pip install -e .`. To verify the packaged result the way CI does, run `python3 scripts/verify_install.py` (installs into a fresh virtual environment and runs both entry points outside the checkout; needs pip index access for the build backend).
+The package has zero runtime dependencies. Optional development installation: `python3 -m pip install -e .`. To verify the packaged result the way CI does, run `python3 scripts/verify_install.py` (installs into a fresh virtual environment and runs all three demos through both entry points outside the checkout, counting every external effect against its own database; needs pip index access for the build backend).
 
 ## Project structure
 
@@ -27,9 +28,11 @@ The package has zero runtime dependencies. Optional development installation: `p
 | `work_runtime/publishing.py` | Content publication policy and the separate persistent fake publisher |
 | `work_runtime/demo.py` | Deterministic proposer and real worker crash demonstration |
 | `work_runtime/publishing_demo.py` | Signed-evidence publication demonstration |
+| `work_runtime/intervention_demo.py` | Ownership-transfer, cancellation and policy-migration demonstration |
 | `tests/test_runtime.py` | Invariants, failure injection and subprocess recovery |
 | `tests/adapter_conformance.py` | Reusable adapter conformance mixin over disposable fixtures |
 | `tests/test_publishing.py` | Publication policy, adapter, runtime flow, demo and CLI tests |
+| `tests/test_intervention_demo.py` | Intervention demo harness, `inspect --policy-versions` and CLI tests |
 | `scripts/check_docs.py` | Local Markdown link checker — the documentation contracts gate; ignores fenced examples, inline code, reference definitions inside fences and external URLs |
 | `scripts/verify_install.py` | Fresh-venv install and outside-checkout demo verification |
 | `tests/test_docs.py` | Link checker behavior and repository documentation contracts |
@@ -50,7 +53,7 @@ Keep pull requests focused. Describe the observable behavior and validation, and
 
 - Source-specific evidence verifiers beyond the demo shape checks.
 - A real external adapter integration that runs the reusable conformance tests.
-- Cancellation and compensation with unknown in-flight effects.
+- Compensation (effect reversal) execution and evidence revocation on top of recorded cancellations.
 - A third small business domain to keep challenging the policy abstraction.
 - Improvements to the demos, documentation and failure explanations.
 

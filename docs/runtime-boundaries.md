@@ -23,9 +23,53 @@ regressions that pin each guarantee live in `tests/test_boundaries.py`.
 
 | layer | identity | effect |
 |---|---|---|
-| command receipt | fingerprint of `(work_id, kind, payload, expected_version)` under `(actor, command_id)` | replays return the original receipt verbatim; a reused id with different content is rejected `COMMAND_ID_REUSED`; rejected decisions are replayed as rejected |
+| command receipt | fingerprint of `(work_id, kind, payload, expected_version)` under `(actor, command_id)` | replays return the original receipt verbatim **while current authority holds** (see below); a reused id with different content is rejected `COMMAND_ID_REUSED`; rejected decisions are replayed as rejected |
+
+**Replay rechecks current authority.** Before returning a stored receipt
+the runtime re-evaluates the command's authority against the *current*
+grants, ownership and policy configuration: `create_work` needs
+`work.manage`; `record_evidence` needs the current source identity for
+the payload kind plus `evidence.write`; `propose_action` needs the
+current owner plus the requested capability; management mutations need
+the current owner plus `work.manage` (legacy ownerless works stay
+grant-only); intervention commands accept the current owner with
+`work.manage` or a `work.intervene` administrator. A replay whose
+authority was lost returns a **fresh, unpersisted** `AUTHORITY_DENIED`
+receipt carrying the currently observed state version — the stored
+receipt is never modified, and a later replay under restored authority
+returns it again. Closed-work actionability follows replay as before: a
+stored receipt is returned for a closed work while authority holds.
 | operation | business key derived by the policy (expense demo: policy id + capability + document id + document revision) | a new command proposing the same logical effect re-associates the existing operation instead of creating a second one; same key with different content is rejected `OPERATION_CONTENT_CONFLICT` |
 | external effect | idempotency key = the operation's business key, enforced by the adapter | the external system deduplicates repeated calls with the same key and content |
+
+## Policy registry and per-work binding
+
+`Runtime(path, policy, grants, *, policies=None)` accepts an optional
+keyword-only registry of explicitly loaded policy versions. The registry is
+validated **before** any filesystem or database write and raises
+`CommandError` on malformed input: it must be a dict keyed by nonempty
+version strings where each key equals `value.version`, every value must
+expose nonempty `id`/`version`/`goal` strings, a dict `evidence_sources`
+and the five callable `Policy` methods, and every entry must share the
+default policy's family (`id`) and `goal` — a cross-domain registry is not
+a supported shared-database runtime. For **any** explicit registry,
+including the empty dict, those structural checks apply to the default
+policy object itself as well (it is a registry entry; the `policies=None`
+legacy constructor path stays as-is). An explicit registry may omit the
+default version — the `policy` constructor argument supplies it — but if
+the default key is supplied it must map to that identical default object.
+The mapping is copied; the default version always resolves to the default
+policy object.
+
+Every Work resolves its policy through its pinned contract binding
+(`contract.policy_version`) in **all** validation, evaluation,
+source-lookup, blocker, key, receipt and recovery paths. Unbound works use
+the default policy. A work pinned to a version that is not loaded fails
+closed with `CommandError` on access; migration is never implicit. Works
+pinned to the default version track the live default slot, so
+trusted-local reconfiguration of the default policy keeps its existing
+fail-closed semantics; works pinned to other versions resolve through the
+registry fixed at construction.
 
 ## The dispatch boundary
 
@@ -33,8 +77,9 @@ regressions that pin each guarantee live in `tests/test_boundaries.py`.
 
 1. Inside one transaction it re-checks the intent is still actionable: the
    operation is `prepared` and not `cancelled`; the work is not closed; the
-   document digest and plan revision still match (otherwise the intent is
-   `cancelled`/`STALE_INTENT`, never a fake external failure); authority and
+   document digest, plan revision and contract revision still match
+   (otherwise the intent is `cancelled`/`STALE_INTENT`, never a fake
+   external failure); authority (including current Work ownership) and
    requirement blockers are re-evaluated (otherwise `held` with a reason —
    accepted commands are never retroactively rejected).
 2. Immediately before the attempt is created it fails closed on policy
@@ -88,6 +133,125 @@ An adapter exception during `execute` or `lookup` never fabricates a business
 rejection; it records `outcome_unknown` with the exception's type name as the
 reason.
 
+## Cancellation boundary
+
+Full command reference, authority matrix and rejection codes:
+[interventions.md](interventions.md).
+
+`request_cancel` (payload exactly `reason`, a nonempty string) records a
+cancellation **intent** in the Work's own JSON (`cancellation.requested_by`
+/ `reason`), deliberately separate from presentation status so
+evaluation, expiry, malformed-receipt quarantine and reconciliation can
+never clear it. Accepted by the current owner holding `work.manage` or a
+local `work.intervene` administrator. The intent is set once: a second
+request under a new command id is rejected `CANCELLATION_ALREADY_REQUESTED`
+and can never overwrite the original; replays under the original command
+id return the stored receipt. Establishing (unbound) works can be
+cancelled too.
+
+While the intent is active the work stops: `propose_action` (including
+re-admission), `bind_contract`, `revise_plan`, `revise_document`,
+`register_wait`, `request_completion` and explicit policy migration are
+rejected `CANCELLATION_ACTIVE`; waiting/triggered waits become `cancelled`
+— terminally: later evaluation (late evidence, verification, migration)
+can never re-trigger a cancelled wait — and never-dispatched prepared
+intents are cancelled with reason
+`WORK_CANCELLED` — a prepared operation is never relabeled as an external
+`confirmed_failed`. Evidence intake, the internal verifier, expiry and
+reconciliation keep running: an attempt that was already durable when
+cancellation was requested remains uncertain until queried through the
+original key — cancellation is an internal stop, not an external fence.
+There is no automatic close: an explicit `finalize_cancel` always records
+the terminal decision.
+
+`finalize_cancel` (payload exactly `acknowledged_operations`, a list of
+distinct nonempty operation ids; same authority as `request_cancel`)
+refuses to close while any operation is unresolved (`OUTCOME_UNRESOLVED`,
+including `dispatched`/`outcome_unknown` ones — a missing or malformed
+lookup answer can never be finalized past). Once every effect is resolved,
+the acknowledgement must equal **exactly** the set of
+`confirmed_succeeded` operation ids — an empty list is correct only when
+there were no succeeded effects; anything else is
+`CANCEL_ACKNOWLEDGEMENT_MISMATCH` with the succeeded ids as blockers. An
+accepted finalize closes the work as `cancelled` (never `succeeded`) and
+records an immutable closure snapshot: the original cancellation intent,
+the acknowledged succeeded operations with their external ids, and every
+operation's disposition. Acknowledgement is an explicit admission that
+the external effects exist — it is not, and never claims to be,
+compensation or reversal. Closed-work semantics are unchanged: fresh
+management commands on the closed work are `WORK_NOT_ACTIONABLE`, replays
+under the original command id still return the stored receipt while
+authority holds.
+
+## Ownership boundary
+
+Every new Work records `owner = creator` in its own JSON. Management
+mutations (`bind_contract`, `revise_plan`, `revise_document`,
+`register_wait`, `request_completion`) require the **current owner**
+holding `work.manage`; `propose_action` requires the current owner holding
+the requested capability, so a former owner's global grant does not retain
+this Work's execution rights; `dispatch` additionally holds
+(`AUTHORITY_DENIED`) an intent whose actor is no longer the Work's owner.
+Evidence writers keep their existing source-specific authority — ownership
+never gates evidence intake. Authorization is principal *configuration*,
+still not authentication.
+
+`transfer_owner` (payload exactly `owner` and `reason`, both nonempty
+strings; accepted by the current owner with `work.manage` or a
+`work.intervene` administrator) reassigns accountability atomically: it
+persists actor, previous/next owner and reason in an `OwnerTransferred`
+event, reassigns outstanding `waiting`/`expired` waits owned by the prior
+owner, and invalidates never-dispatched prepared intents with reason
+`OWNERSHIP_TRANSFERRED` so the new owner must re-propose. In-flight
+operations keep their actor, key, attempts and results, and reconciliation
+never requires the old execution authority. The target must exist in
+`grants` with `work.manage` (else `AUTHORITY_DENIED`); a same-owner
+transfer is `TRANSFER_SAME_OWNER`. Transfer is possible while a
+cancellation intent is active, never erases it, and grants no capabilities.
+
+**Legacy databases** whose Works predate ownership stay readable and keep
+grant-only behavior for existing commands — no owner is ever guessed from
+historical receipt shapes. Ownership is adopted explicitly: only a
+`work.intervene` administrator may transfer an ownerless Work, and from
+that point the Work is owner-gated like any other.
+
+## Policy migration boundary
+
+`migrate_policy` (payload exactly `policy_id`, `policy_version`, `reason`;
+**exclusively** a `work.intervene` administrator) rebinds a bound, open,
+uncancelled Work to another registered version of the same family and
+goal. It is rejected — before any mutation — for an unbound work
+(`CONTRACT_NOT_ACTIVE`), an active cancellation intent
+(`CANCELLATION_ACTIVE`), another family (`MIGRATION_FAMILY_MISMATCH`,
+checked before registry lookup), an unregistered version
+(`MIGRATION_TARGET_UNREGISTERED`), the currently bound version
+(`MIGRATION_TARGET_UNCHANGED`), and any `dispatched`/`outcome_unknown`
+effect (`OUTCOME_UNRESOLVED`): uncertain effects are never migrated past.
+The target must accept the current document — a `ValueError` from the
+target's document validation surfaces as `CommandError` with nothing
+persisted.
+
+The rebind itself is one transaction. The target contract replaces the
+binding with `revision = old + 1`; every previously `verified` proof is
+revalidated under the target — its kind's configured source must match
+the proof's source **and** the target's verifier must accept it, else the
+proof becomes `invalid` (there is no revoked status; previously invalid
+proofs stay invalid, nothing resurrects); `pending_verification` proofs
+stay pending, and `verify_pending` applies the same source check before
+target validation so an old-source pending proof can never reappear as
+verified after a migration. Prepared intents are cancelled with reason
+`POLICY_MIGRATED`, waits are cancelled, requirements are re-evaluated by
+the target, and an event records actor, reason, old/new binding, evidence
+dispositions and invalidated operations. Any exception (including a
+target `evaluate`/`validate_evidence` failure) rolls back binding,
+evidence, operations and events together. Old command receipts and
+external results are retained untouched; restart never implicitly
+migrates — the pinned version resolves from the registry or fails closed.
+Business-key stability across same-family versions is the policy author's
+obligation (the demo policies keep one key function), which is what lets
+a cancelled intent re-admit under the same operation identity after
+migration.
+
 ## Recovery contract
 
 `recover(adapter)` is the restart entry point and performs, in order:
@@ -130,8 +294,9 @@ Guarantees:
   dispatch" is met only through reconciliation, and only when the adapter can
   answer.
 - **In-flight calls cannot be cancelled.** A document revision that lands after
-  the external call started cannot revoke it; the old operation confirms
-  against the old digest, which satisfies only that revision's requirements.
+  the external call started cannot revoke it, and neither can a cancellation
+  intent: the old operation confirms against the old digest, which satisfies
+  only that revision's requirements.
   While that operation is still unresolved, `propose_action` for new content
   is rejected `OUTCOME_UNRESOLVED`: the uncertain operation must be reconciled
   first, and only then can new content be prepared as a new operation (new
@@ -145,8 +310,12 @@ Guarantees:
 - **Directly re-`dispatch`ing a `held` intent re-runs the checks** and may
   dispatch if authority and blockers now pass; `recover` never auto-dispatches
   `held` intents — they are re-admitted explicitly through `propose_action`.
-- **Single policy version per database.** Opening a runtime with a different
-  policy version raises on work access; migration is never implicit.
+- **One policy family per database; versions are pinned per Work.** A work
+  whose pinned version is not in the loaded registry raises on access;
+  switching versions happens only through the explicit admin
+  `migrate_policy` command above. Business-key stability across
+  same-family versions is a policy-author obligation; the runtime does not
+  rewrite keys.
 
 ## Verification
 

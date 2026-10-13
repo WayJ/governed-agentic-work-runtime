@@ -324,7 +324,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.get_work("demo")["document"]["amount"], 120000)
 
     def test_unsupported_command_explicitly_rejected(self):
-        receipt = send(self.runtime, "demo", "request_cancel")
+        receipt = send(self.runtime, "demo", "request_refund")
         self.assertEqual(receipt["code"], "COMMAND_UNSUPPORTED")
 
 

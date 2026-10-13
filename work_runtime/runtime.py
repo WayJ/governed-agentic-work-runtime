@@ -43,8 +43,56 @@ def _declared_contract(adapter: Adapter) -> Optional[object]:
     return descriptor
 
 
+_POLICY_METHODS = ("validate_document", "evaluate", "action_blockers",
+                   "operation_key", "validate_evidence")
+
+
+def _validated_policy_structure(candidate) -> None:
+    for attribute in ("id", "version", "goal"):
+        value = getattr(candidate, attribute, None)
+        if not isinstance(value, str) or not value:
+            raise CommandError("Registry policies require a nonempty " + attribute)
+    if not isinstance(getattr(candidate, "evidence_sources", None), dict):
+        raise CommandError("Registry policies require an evidence_sources dict")
+    for method in _POLICY_METHODS:
+        if not callable(getattr(candidate, method, None)):
+            raise CommandError("Registry policies require a callable " + method)
+
+
+def _validated_registry(policy: Policy, policies: Optional[Dict[str, Policy]]) -> Dict[str, Policy]:
+    """Validate an explicitly loaded, same-family policy registry.
+
+    Returns a copied mapping that always contains the default version bound
+    to the default object. Malformed input raises before any filesystem or
+    database write; definitions themselves stay trusted-local.
+    """
+    if policies is None:
+        return {policy.version: policy}
+    if not isinstance(policies, dict):
+        raise CommandError("policies must be a dict of version to Policy")
+    # Any explicit registry, including the empty dict, structurally validates
+    # the default too: it becomes a registry entry (D16).
+    _validated_policy_structure(policy)
+    registry: Dict[str, Policy] = {}
+    for version, candidate in policies.items():
+        if not isinstance(version, str) or not version:
+            raise CommandError("Registry keys must be nonempty version strings")
+        _validated_policy_structure(candidate)
+        if candidate.version != version:
+            raise CommandError("Registry key must equal the policy version")
+        if (candidate.id, candidate.goal) != (policy.id, policy.goal):
+            raise CommandError("Registry policies must share the default policy family and goal")
+        registry[version] = candidate
+    if registry.get(policy.version, policy) is not policy:
+        raise CommandError("The default version must map to the default policy object")
+    registry[policy.version] = policy
+    return registry
+
+
 class Runtime:
-    def __init__(self, path: str, policy: Policy, grants: Dict[str, set]):
+    def __init__(self, path: str, policy: Policy, grants: Dict[str, set],
+                 *, policies: Optional[Dict[str, Policy]] = None):
+        self.policies = _validated_registry(policy, policies)
         self.path, self.policy, self.grants = str(path), policy, grants
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as db:
@@ -107,23 +155,40 @@ class Runtime:
         if not row:
             raise CommandError("Unknown work: " + work_id)
         work = json.loads(row[0])
-        contract = work.get("contract")
-        if contract and (contract["policy_id"], contract["policy_version"]) != (self.policy.id, self.policy.version):
-            raise CommandError("Load the policy version bound to this Work; migration is not implicit")
+        self._policy_for(work)  # Fails closed on a pinned version that is not loaded.
         return work
+
+    def _policy_for(self, work: dict) -> Policy:
+        """Every Work resolves its own pinned policy; migration is never implicit."""
+        contract = work.get("contract")
+        if not contract:
+            return self.policy
+        if contract["policy_version"] == self.policy.version:
+            # The default version tracks the live default slot, so trusted-local
+            # reconfiguration of the default keeps its fail-closed semantics.
+            if (self.policy.id, self.policy.goal) != (contract["policy_id"], contract["goal"]):
+                raise CommandError("Load the policy version bound to this Work; migration is not implicit")
+            return self.policy
+        policy = self.policies.get(contract["policy_version"])
+        if policy is None or (policy.id, policy.goal) != (contract["policy_id"], contract["goal"]):
+            raise CommandError("Load the policy version bound to this Work; migration is not implicit")
+        return policy
 
     def _proofs(self, db, work_id):
         return [json.loads(r[0]) for r in db.execute(
             "SELECT body FROM evidence WHERE work_id=?", (work_id,))]
 
     def _evaluate(self, db, work):
-        work["requirements"] = self.policy.evaluate(work, self._proofs(db, work["id"]))
+        policy = self._policy_for(work)
+        work["requirements"] = policy.evaluate(work, self._proofs(db, work["id"]))
         if not work["contract"]:
             work["status"] = "establishing"
             return
         if work["status"] != "closed":
             requirements = {r["id"]: r for r in work["requirements"]}
             for wait in work["waits"]:
+                if wait["status"] == "cancelled":
+                    continue  # Terminal invalidation: never re-trigger a cancelled wait.
                 requirement = requirements.get(wait["requirement_id"])
                 if requirement and (requirement["fulfillment"] == "satisfied"
                                     or requirement["applicability"] == "not_applicable"):
@@ -189,6 +254,9 @@ class Runtime:
             if old:
                 if old[0] != request_hash:
                     return {"decision": "rejected", "code": "COMMAND_ID_REUSED"}
+                denial = self._replay_denial(db, actor, work_id, kind, payload)
+                if denial is not None:
+                    return denial  # Fresh, unpersisted; the stored receipt stays intact.
                 return json.loads(old[1])
 
             if kind == "create_work":
@@ -209,6 +277,41 @@ class Runtime:
                        (actor, command_id, request_hash, work_id, canonical(receipt)))
             return receipt
 
+    def _observed_version(self, db, work_id):
+        row = db.execute("SELECT state FROM works WHERE id=?", (work_id,)).fetchone()
+        return json.loads(row[0])["state_version"] if row else 0
+
+    def _replay_denial(self, db, actor, work_id, kind, payload):
+        """A stored receipt is replayed only while current authority holds.
+
+        Returns None when the replay may return the stored receipt, or a
+        fresh rejected receipt (never persisted) when authority was lost.
+        """
+        grants = self.grants[actor]
+        if kind == "create_work":
+            if "work.manage" not in grants:
+                return self._reject("AUTHORITY_DENIED", self._observed_version(db, work_id))
+            return None
+        work = self._work(db, work_id)
+        version = work["state_version"]
+        if kind == "record_evidence":
+            policy = self._policy_for(work)
+            ok = (policy.evidence_sources.get(payload.get("kind")) == actor
+                  and "evidence.write" in grants)
+        elif kind == "propose_action":
+            owner = work.get("owner")
+            ok = (owner is None or actor == owner) and payload.get("capability") in grants
+        elif kind in ("request_cancel", "finalize_cancel", "transfer_owner"):
+            ok = self._intervener(actor, work)
+        elif kind == "migrate_policy":
+            ok = self._is_admin(actor)
+        elif kind in ("bind_contract", "revise_plan", "revise_document",
+                      "register_wait", "request_completion"):
+            ok = self._manager(actor, work)
+        else:
+            ok = True  # Unsupported kinds replay exactly as they were decided.
+        return None if ok else self._reject("AUTHORITY_DENIED", version)
+
     @staticmethod
     def _reject(code, version, blockers=None):
         return {"decision": "rejected", "code": code,
@@ -226,6 +329,7 @@ class Runtime:
         self.policy.validate_document(payload["document"])
         work = {"id": work_id, "state_version": 0, "status": "establishing",
                 "outcome": None, "contract": None, "plan_revision": 0,
+                "owner": actor,
                 "plan": {}, "document": payload["document"], "document_revision": 1,
                 "document_digest": digest(payload["document"]), "waits": [],
                 "requirements": []}
@@ -238,13 +342,24 @@ class Runtime:
         version = work["state_version"]
         if kind == "propose_action":
             return self._propose(db, actor, work, payload)
-        if "work.manage" not in self.grants[actor]:
+        if kind == "request_cancel":
+            return self._request_cancel(db, actor, work, payload, version)
+        if kind == "finalize_cancel":
+            return self._finalize_cancel(db, actor, work, payload, version)
+        if kind == "transfer_owner":
+            return self._transfer_owner(db, actor, work, payload, version)
+        if kind == "migrate_policy":
+            return self._migrate_policy(db, actor, work, payload, version)
+        if not self._manager(actor, work):
             return self._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self._reject("CANCELLATION_ACTIVE", version)
         if kind == "bind_contract":
             if work["contract"]:
                 return self._reject("CONTRACT_ALREADY_BOUND", version)
-            if payload != {"policy_id": self.policy.id, "policy_version": self.policy.version,
-                           "goal": self.policy.goal}:
+            policy = self._policy_for(work)
+            if payload != {"policy_id": policy.id, "policy_version": policy.version,
+                           "goal": policy.goal}:
                 return self._reject("CONTRACT_UNSUPPORTED", version)
             work["contract"] = {**payload, "revision": 1}
             work["status"] = "active"
@@ -261,7 +376,7 @@ class Runtime:
             self._save(db, work, "PlanRevised", {"revision": work["plan_revision"]})
         elif kind == "revise_document":
             # Example-specific object command; not a general Contract mutation.
-            self.policy.validate_document(payload["document"])
+            self._policy_for(work).validate_document(payload["document"])
             if payload["document"]["id"] != work["document"]["id"]:
                 return self._reject("DOCUMENT_ID_MISMATCH", version)
             work["document"] = payload["document"]
@@ -301,16 +416,184 @@ class Runtime:
             return self._reject("COMMAND_UNSUPPORTED", version)
         return self._accepted(work)
 
-    def _cancel_prepared(self, db, work_id):
+    def _cancel_prepared(self, db, work_id, reason="STALE_INTENT"):
+        cancelled = []
         for row in db.execute("SELECT body FROM operations WHERE work_id=?", (work_id,)).fetchall():
             op = json.loads(row[0])
             if op["status"] == "prepared":
                 op["dispatch_state"] = "cancelled"
-                op["reason"] = "STALE_INTENT"
+                op["reason"] = reason
                 self._save_op(db, op)
+                cancelled.append(op["id"])
+        return cancelled
+
+    def _is_admin(self, actor: str) -> bool:
+        return "work.intervene" in self.grants.get(actor, set())
+
+    def _intervener(self, actor: str, work: dict) -> bool:
+        """Interventions: work.intervene administrator or the current owner."""
+        if self._is_admin(actor):
+            return True
+        owner = work.get("owner")
+        return (owner is not None and actor == owner
+                and "work.manage" in self.grants.get(actor, set()))
+
+    def _manager(self, actor: str, work: dict) -> bool:
+        """Management mutations: current owner, or grant-only on legacy works."""
+        owner = work.get("owner")
+        if owner is None:
+            return "work.manage" in self.grants.get(actor, set())
+        return actor == owner and "work.manage" in self.grants.get(actor, set())
+
+    def _request_cancel(self, db, actor, work, payload, version):
+        if (set(payload) != {"reason"} or not isinstance(payload["reason"], str)
+                or not payload["reason"]):
+            raise CommandError("request_cancel requires exactly one nonempty reason string")
+        if not self._intervener(actor, work):
+            return self._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self._reject("CANCELLATION_ALREADY_REQUESTED", version)
+        work["cancellation"] = {"requested_by": actor, "reason": payload["reason"]}
+        cancelled_waits = []
+        for wait in work["waits"]:
+            if wait["status"] in ("waiting", "triggered"):
+                wait["status"] = "cancelled"
+                cancelled_waits.append(wait["id"])
+        cancelled_operations = self._cancel_prepared(db, work["id"], reason="WORK_CANCELLED")
+        self._save(db, work, "CancellationRequested", {
+            "actor": actor, "reason": payload["reason"],
+            "cancelled_operations": cancelled_operations,
+            "cancelled_waits": cancelled_waits})
+        return self._accepted(work)
+
+    def _finalize_cancel(self, db, actor, work, payload, version):
+        ack = payload.get("acknowledged_operations") if set(payload) == {"acknowledged_operations"} else None
+        if (not isinstance(ack, list) or not all(isinstance(i, str) and i for i in ack)
+                or len(set(ack)) != len(ack)):
+            raise CommandError("finalize_cancel requires acknowledged_operations: "
+                               "a list of distinct nonempty operation ids")
+        if not self._intervener(actor, work):
+            return self._reject("AUTHORITY_DENIED", version)
+        if not work.get("cancellation"):
+            return self._reject("CANCELLATION_NOT_REQUESTED", version)
+        operations = [json.loads(r[0]) for r in db.execute(
+            "SELECT body FROM operations WHERE work_id=?", (work["id"],))]
+        unresolved = [op["id"] for op in operations
+                      if op["status"] not in ("confirmed_succeeded", "confirmed_failed")
+                      and op["dispatch_state"] != "cancelled"]
+        if unresolved:
+            return self._reject("OUTCOME_UNRESOLVED", version, unresolved)
+        succeeded = [op for op in operations if op["status"] == "confirmed_succeeded"]
+        succeeded_ids = sorted(op["id"] for op in succeeded)
+        if set(ack) != set(succeeded_ids):
+            return self._reject("CANCEL_ACKNOWLEDGEMENT_MISMATCH", version, succeeded_ids)
+        acknowledged = [op for op in succeeded if op["id"] in set(ack)]
+        work["status"], work["outcome"] = "closed", "cancelled"
+        work["completion"] = {
+            "cancellation": work["cancellation"],
+            "acknowledged_operations": [{"operation_id": op["id"],
+                                         "external_id": op.get("external_id")}
+                                        for op in acknowledged],
+            "operation_dispositions": [{"operation_id": op["id"], "status": op["status"],
+                                        "dispatch_state": op["dispatch_state"]}
+                                       for op in operations]}
+        self._save(db, work, "WorkCancelled", work["completion"])
+        return self._accepted(work)
+
+    def _transfer_owner(self, db, actor, work, payload, version):
+        if (set(payload) != {"owner", "reason"}
+                or not all(isinstance(v, str) and v for v in payload.values())):
+            raise CommandError("transfer_owner requires exactly owner and reason strings")
+        if not self._intervener(actor, work):
+            return self._reject("AUTHORITY_DENIED", version)
+        target = payload["owner"]
+        if target not in self.grants or "work.manage" not in self.grants[target]:
+            return self._reject("AUTHORITY_DENIED", version)
+        if work.get("owner") == target:
+            return self._reject("TRANSFER_SAME_OWNER", version)
+        previous = work.get("owner")
+        work["owner"] = target
+        reassigned = []
+        for wait in work["waits"]:
+            if wait["status"] in ("waiting", "expired") and wait["owner"] == previous:
+                wait["owner"] = target
+                reassigned.append(wait["id"])
+        invalidated = self._cancel_prepared(db, work["id"], reason="OWNERSHIP_TRANSFERRED")
+        self._save(db, work, "OwnerTransferred", {
+            "actor": actor, "from": previous, "to": target, "reason": payload["reason"],
+            "reassigned_waits": reassigned, "invalidated_operations": invalidated})
+        return self._accepted(work)
+
+    def _migrate_policy(self, db, actor, work, payload, version):
+        if (set(payload) != {"policy_id", "policy_version", "reason"}
+                or not all(isinstance(v, str) and v for v in payload.values())):
+            raise CommandError("migrate_policy requires exactly policy_id, "
+                               "policy_version and reason strings")
+        if not self._is_admin(actor):
+            return self._reject("AUTHORITY_DENIED", version)
+        if not work["contract"]:
+            return self._reject("CONTRACT_NOT_ACTIVE", version)
+        if work.get("cancellation"):
+            return self._reject("CANCELLATION_ACTIVE", version)
+        if payload["policy_id"] != self.policy.id:
+            return self._reject("MIGRATION_FAMILY_MISMATCH", version)
+        target = self.policies.get(payload["policy_version"])
+        if target is None:
+            return self._reject("MIGRATION_TARGET_UNREGISTERED", version)
+        if ((target.id, target.goal) != (work["contract"]["policy_id"],
+                                         work["contract"]["goal"])):
+            return self._reject("MIGRATION_FAMILY_MISMATCH", version)
+        if payload["policy_version"] == work["contract"]["policy_version"]:
+            return self._reject("MIGRATION_TARGET_UNCHANGED", version)
+        uncertain = [json.loads(r[0])["id"] for r in db.execute(
+            "SELECT body FROM operations WHERE work_id=?", (work["id"],))
+            if json.loads(r[0])["status"] in ("dispatched", "outcome_unknown")]
+        if uncertain:
+            return self._reject("OUTCOME_UNRESOLVED", version, uncertain)
+        try:
+            target.validate_document(work["document"])
+        except ValueError as error:
+            raise CommandError("Target policy rejects the current document: "
+                               + str(error)) from error
+        # From here every write is one transaction: any target failure rolls
+        # back binding, evidence, operations and events together.
+        old_contract = dict(work["contract"])
+        work["contract"] = {"policy_id": target.id, "policy_version": target.version,
+                            "goal": target.goal, "revision": old_contract["revision"] + 1}
+        dispositions = []
+        for proof in self._proofs(db, work["id"]):
+            if proof["status"] == "verified":
+                still_valid = (target.evidence_sources.get(proof["kind"]) == proof["source"]
+                               and target.validate_evidence(work, proof))
+                proof["status"] = "verified" if still_valid else "invalid"
+                db.execute("UPDATE evidence SET body=? WHERE source=? AND event_id=?",
+                           (canonical(proof), proof["source"], proof["event_id"]))
+                dispositions.append({"id": proof["id"], "from": "verified",
+                                     "to": proof["status"]})
+            else:
+                dispositions.append({"id": proof["id"], "from": proof["status"],
+                                     "to": proof["status"]})
+        for wait in work["waits"]:
+            if wait["status"] in ("waiting", "triggered"):
+                wait["status"] = "cancelled"
+        invalidated = self._cancel_prepared(db, work["id"], reason="POLICY_MIGRATED")
+        self._save(db, work, "PolicyMigrated", {
+            "actor": actor, "reason": payload["reason"],
+            "from": old_contract, "to": dict(work["contract"]),
+            "evidence": dispositions, "invalidated_operations": invalidated})
+        return self._accepted(work, policy_version=target.version,
+                              contract_revision=work["contract"]["revision"])
 
     def _propose(self, db, actor, work, payload):
         version = work["state_version"]
+        owner = work.get("owner")
+        if owner is not None and actor != owner:
+            return self._reject("AUTHORITY_DENIED", version)
+        capability = payload.get("capability")
+        if capability not in self.grants[actor]:
+            return self._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self._reject("CANCELLATION_ACTIVE", version)
         if not work["contract"]:
             return self._reject("CONTRACT_NOT_ACTIVE", version)
         if payload.get("contract_revision") != work["contract"]["revision"]:
@@ -319,10 +602,8 @@ class Runtime:
             return self._reject("PLAN_REVISION_MISMATCH", version)
         if payload.get("document_digest") != work["document_digest"]:
             return self._reject("EVIDENCE_SCOPE_MISMATCH", version)
-        capability = payload.get("capability")
-        if capability not in self.grants[actor]:
-            return self._reject("AUTHORITY_DENIED", version)
-        blockers = self.policy.action_blockers(capability, work["requirements"])
+        policy = self._policy_for(work)
+        blockers = policy.action_blockers(capability, work["requirements"])
         if blockers:
             code = "APPLICABILITY_UNRESOLVED" if any(
                 r.get("applicability") in ("unknown", "conflict") for r in blockers
@@ -333,14 +614,16 @@ class Runtime:
             if (pending["status"] in ("dispatched", "outcome_unknown")
                     and pending["document_digest"] != work["document_digest"]):
                 return self._reject("OUTCOME_UNRESOLVED", version, [pending["id"]])
-        key = self.policy.operation_key(capability, work)
+        key = policy.operation_key(capability, work)
         old = db.execute("SELECT body FROM operations WHERE business_key=?", (key,)).fetchone()
         if old:
             operation = json.loads(old[0])
             if operation["document_digest"] != work["document_digest"] or operation["work_id"] != work["id"]:
                 return self._reject("OPERATION_CONTENT_CONFLICT", version)
             if operation["status"] == "prepared" and operation["dispatch_state"] in ("cancelled", "held"):
-                operation.update(actor=actor, plan_revision=work["plan_revision"], dispatch_state="ready")
+                operation.update(actor=actor, plan_revision=work["plan_revision"],
+                                 dispatch_state="ready",
+                                 contract_revision=work["contract"]["revision"])
                 operation.pop("reason", None)
                 self._save_op(db, operation)
                 self._save(db, work, "OperationReadmitted", {"operation_id": operation["id"]})
@@ -350,7 +633,8 @@ class Runtime:
                      "actor": actor, "capability": capability, "status": "prepared",
                      "dispatch_state": "ready", "attempts": [],
                      "document": work["document"], "document_digest": work["document_digest"],
-                     "plan_revision": work["plan_revision"], "contract_revision": 1}
+                     "plan_revision": work["plan_revision"],
+                     "contract_revision": work["contract"]["revision"]}
         self._save_op(db, operation)
         self._save(db, work, "OperationPrepared", {"operation_id": operation["id"]})
         return self._accepted(work, operation_id=operation["id"], operation_status_at_decision="prepared")
@@ -362,7 +646,8 @@ class Runtime:
         kind, event_id = payload["kind"], payload["event_id"]
         if not isinstance(event_id, str) or not event_id:
             raise CommandError("Source event id is required")
-        if self.policy.evidence_sources.get(kind) != actor or "evidence.write" not in self.grants[actor]:
+        if (self._policy_for(work).evidence_sources.get(kind) != actor
+                or "evidence.write" not in self.grants[actor]):
             return self._reject("AUTHORITY_DENIED", work["state_version"])
         fingerprint = digest([work["id"], payload])
         old = db.execute("SELECT fingerprint,body FROM evidence WHERE source=? AND event_id=?",
@@ -382,11 +667,18 @@ class Runtime:
         """Trusted verifier entry point; candidate validation and evaluation are atomic."""
         with self._transaction() as db:
             work = self._work(db, work_id)
+            policy = self._policy_for(work)
             count = 0
             for candidate in self._proofs(db, work_id):
                 if candidate["status"] != "pending_verification":
                     continue
-                candidate["status"] = "verified" if self.policy.validate_evidence(work, candidate) else "invalid"
+                # A pending proof verifies only under its kind's CURRENT
+                # configured source: an old-source proof left pending by a
+                # migration must never reappear as verified.
+                source_ok = policy.evidence_sources.get(candidate["kind"]) == candidate["source"]
+                candidate["status"] = ("verified" if source_ok
+                                       and policy.validate_evidence(work, candidate)
+                                       else "invalid")
                 db.execute("UPDATE evidence SET body=? WHERE source=? AND event_id=?",
                            (canonical(candidate), candidate["source"], candidate["event_id"]))
                 count += 1
@@ -411,8 +703,8 @@ class Runtime:
                 self._save(db, work, "WaitExpired", {"count": count})
             return count
 
-    def _accepted_source(self) -> str:
-        source = self.policy.evidence_sources.get("accepted")
+    def _accepted_source(self, work: dict) -> str:
+        source = self._policy_for(work).evidence_sources.get("accepted")
         if not isinstance(source, str) or not source:
             raise CommandError(
                 "Policy must configure a nonempty accepted evidence source for external effects")
@@ -425,21 +717,32 @@ class Runtime:
             if op["status"] != "prepared" or op["dispatch_state"] == "cancelled":
                 return op
             work = self._work(db, op["work_id"])
+            policy = self._policy_for(work)
+            if work.get("cancellation") and op["dispatch_state"] != "cancelled":
+                # Belt and braces: request_cancel already cancelled every
+                # prepared intent; nothing new may ever leave under cancel.
+                op["dispatch_state"], op["reason"] = "cancelled", "WORK_CANCELLED"
+                self._save_op(db, op)
+                self._save(db, work, "DispatchCancelled", {"operation_id": op["id"]})
+                return op
             if (work["status"] == "closed" or op["document_digest"] != work["document_digest"]
-                    or op["plan_revision"] != work["plan_revision"]):
+                    or op["plan_revision"] != work["plan_revision"]
+                    or op["contract_revision"] != work["contract"]["revision"]):
                 op["dispatch_state"] = "cancelled"
                 op["reason"] = "STALE_INTENT"
                 self._save_op(db, op)
                 self._save(db, work, "DispatchCancelled", {"operation_id": op["id"]})
                 return op
-            blockers = self.policy.action_blockers(op["capability"], work["requirements"])
-            if op["capability"] not in self.grants.get(op["actor"], set()) or blockers:
+            blockers = policy.action_blockers(op["capability"], work["requirements"])
+            authority_ok = (work.get("owner") in (None, op["actor"])
+                            and op["capability"] in self.grants.get(op["actor"], set()))
+            if not authority_ok or blockers:
                 op["dispatch_state"] = "held"
                 op["reason"] = "AUTHORITY_DENIED" if not blockers else "REQUIREMENT_UNSATISFIED"
                 self._save_op(db, op)
                 self._save(db, work, "DispatchHeld", {"operation_id": op["id"], "reason": op["reason"]})
                 return op
-            self._accepted_source()
+            self._accepted_source(work)
             contract = _declared_contract(adapter)
             if contract is not None and op["capability"] not in contract.actions:
                 op["dispatch_state"] = "held"
@@ -474,7 +777,7 @@ class Runtime:
         op = self.get_operation(operation_id)
         if op["status"] not in ("dispatched", "outcome_unknown"):
             return op
-        self._accepted_source()
+        self._accepted_source(self.get_work(op["work_id"]))
         try:
             result = adapter.lookup(op["business_key"])
         except Exception as error:
@@ -507,7 +810,7 @@ class Runtime:
                 op["status"], op["reason"] = "outcome_unknown", "ADAPTER_RESULT_INVALID"
                 work["status"] = "needs_attention"
             else:
-                source = self._accepted_source()
+                source = self._accepted_source(work)
                 op["status"] = "confirmed_succeeded" if result["status"] == "accepted" else "confirmed_failed"
                 op["dispatch_state"] = "finished"
                 op["external_id"] = result["external_id"]

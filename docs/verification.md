@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-13 (S2 signed evidence and content publication) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-13 (S3 interventions, ownership transfer and pinned policy versions) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -9,7 +9,7 @@ This report states what the local reference prototype actually verifies, and wha
 - A **local, single-process reference prototype**: an in-process Python library over SQLite. There is no server, no remote protocol transport, and no multi-tenant authorization; protocol commands are library calls.
 - **Local trust, not authentication.** Actor names (`agent`, `finance`, …) come from a grants map supplied by the embedding application. They distinguish trusted local principals; they do not authenticate remote callers. RFC-003 §2.1 (identity from trusted connections) is deferred. The S2 signed ingress (`work_runtime/ingress.py`) authenticates *evidence sources* with per-source HMAC keys within a configured shared-key boundary — it is not transport security, tenant authorization, or proof of business truth, and the reserved `accepted` receipt kind cannot be supplied through it. Direct Runtime methods remain trusted-local.
 - **The external systems are stand-ins.** `FakeOA` is a separate local SQLite database modeling an external service with idempotent submit, lookup, and invoice uniqueness; `FakePublisher` likewise models a publishing service with idempotent submit, lookup, and one artifact per `(document id, content digest)`. No real external system integration exists yet. Adapter contracts are declared claims for trusted local configuration, not remotely verified guarantees.
-- **One policy per runtime database.** The expense and content-publication domains run the same `Runtime` class in separate databases; policy migration is out of scope.
+- **One policy family per runtime database, with an explicit version registry.** A runtime may additionally load same-family policy versions through the keyword-only `policies` registry; every Work stays pinned to its bound version (no implicit upgrade), a restart fails closed until the pinned version is loaded, and `migrate_policy` is the only explicit, transactional, evidence-revalidating migration path. Cross-family registries are rejected; the expense and content-publication domains still run the same `Runtime` class in separate databases.
 - **Concurrency model**: SQLite serializes command submission across multiple `Runtime` instances sharing one work database (verified by concurrent duplicate-command tests), while operation dispatch assumes a single coordinator. Distributed worker leases are not implemented (P13 below).
 
 ## How to verify
@@ -19,6 +19,7 @@ python3 -m unittest discover -s tests -v          # tests gate (all cases below)
 python3 scripts/check_docs.py                     # contracts gate (local doc links)
 python3 -m work_runtime demo                      # demo gate (real crash recovery)
 python3 -m work_runtime publish-demo              # demo gate (signed-evidence publication)
+python3 -m work_runtime intervention-demo         # demo gate (transfer, cancel, migrate)
 python3 -m compileall -q work_runtime tests scripts  # syntax gate
 python3 scripts/verify_install.py                 # fresh-venv install + demos outside the checkout
 ```
@@ -57,6 +58,17 @@ The S2 wave added three foundations with their own gate-visible evidence:
 
 The publication harness integrates the common command protocol without credentials; it is not a claim of integration with any model framework or server. The installed verifier additionally runs `publish-demo` outside the checkout and counts the publications table independently.
 
+## S3 coverage — interventions, ownership and pinned policy versions
+
+The S3 wave added the intervention lifecycle on the runtime (`tests/test_interventions.py`, foundation wave) and its demonstration surface (`tests/test_intervention_demo.py`, this wave). Semantics and boundaries: [interventions](interventions.md).
+
+- **Cancellation with uncertain effects** (`request_cancel` / `finalize_cancel`): the intent is immutable once stored; waits and never-dispatched prepared intents are cancelled; an attempt already durable when cancellation is requested stays uncertain until queried (no external fence). Finalize refuses unresolved operations (`OUTCOME_UNRESOLVED`), requires the exact set of confirmed-succeeded operation ids (`CANCEL_ACKNOWLEDGEMENT_MISMATCH`) and stores every disposition plus external ids in the closure — acknowledgement, never reversal. Named: `test_cancel_before_dispatch_makes_zero_external_calls`, `test_finalize_after_timeout_requires_exact_acknowledgement`, `test_finalize_after_real_process_death` (real subprocess exit after the external commit), `test_missing_lookup_cannot_finalize`, `test_malformed_result_cannot_finalize`, `test_cancellation_survives_evaluation_expiry_and_recovery`.
+- **Ownership transfer** (`transfer_owner`): the creator becomes the work's owner; transfer persists actor/old/new owner and reason, reassigns outstanding waits, invalidates prepared intents (`OWNERSHIP_TRANSFERRED`), and gates management mutations, proposals and dispatch on current ownership; stored receipts are replayed only while current authority holds, otherwise a fresh unpersisted `AUTHORITY_DENIED` is returned and the stored receipt stays intact. Owners and `work.intervene` administrators are trusted local principals, not authenticated identities; legacy ownerless works stay grant-only until an administrator adopts them. Named: `test_former_owner_loses_management_proposal_and_dispatch`, `test_intervention_replay_after_transfer_denied`, `test_new_owner_reproposes_same_operation_and_dispatches`, `test_in_flight_operation_survives_transfer_and_reconciles`, `test_legacy_ownerless_work_stays_grant_only_until_admin_adoption`.
+- **Explicit same-family policy migration** (`migrate_policy` + constructor registry): the registry is validated before any filesystem/database write, including the default for any explicit dict (D16, `test_malformed_default_rejected_for_any_explicit_registry`); works stay pinned to their bound version and restarts fail closed until it is loaded (`test_missing_pinned_version_fails_closed`, `test_restart_without_pinned_version_fails_closed`); migration is administrator-only, refuses uncertain effects, revalidates every verified proof under the target policy — an old approval bound to demo-1 does not survive (`test_strengthened_rule_revalidates_approval_and_keeps_key`) — increments the actual contract revision and rolls back atomically on target failure (`test_migration_rolls_back_atomically_on_target_failure`); two works may be pinned to different versions of one family (`test_two_works_pinned_to_different_versions`). Business-key stability across same-family versions is a policy-author obligation, documented, not a runtime rewrite.
+- **Demonstration surface** (`tests/test_intervention_demo.py`): the deterministic no-credentials `intervention-demo` runs the three scenarios on separate fresh stores with independently counted external effects — zero while an intent is only prepared or cancelled, exactly one accepted application per store after each external acceptance (`test_each_store_independently_holds_exactly_one_accepted_application`, `test_transfer_state_old_owner_denied_operation_preserved`, `test_cancel_state_closed_cancelled_with_retained_effect`, `test_migration_state_pinned_demo2_same_operation`); the printed `inspect` commands run verbatim, the migrated one carrying `--policy-versions demo-1,demo-2` (`test_printed_inspect_commands_run_correctly`); the strict `inspect --policy-versions` flag rejects empty, duplicate, unknown and cross-family inputs while the flag-free expense and content-publish defaults are pinned unchanged (`InspectPolicyVersionsTests`). The installed verifier runs module and console `intervention-demo` outside the checkout and, for both entry points, counts each scenario store independently — exactly three distinct, correctly ordered stores with exactly one accepted application each — and exercises the installed flag against the migrated store.
+
+The P01–P15 matrix above is unchanged by this wave: intervention behaviors are deliberately not blanket-mapped onto protocol acceptance cases, and the matrix still names only its own evidence. Intervention commands travel the same deduplicating command path as every other command (`test_duplicate_cancel_commands_share_one_receipt`, `test_cancel_intent_is_immutable_and_replay_returns_original`), which is protocol machinery, not a new matrix row.
+
 ## RFC-001 acceptance behaviors (R1–R7)
 
 R1 restart/persistence — `test_prepared_intent_survives_restart`, `test_wait_expiry_survives_restart`, P07/P15 tests. R2 plan edits cannot delete requirements — P10 test. R3 unknown conditions block — P14 tests. R4 timeouts are not failures — `test_timeout_after_commit_then_reconcile`, `test_unknown_without_query_result_requires_attention` (no query result → `needs_attention`, no blind retry). R5 content change invalidates old confirmations — `test_existing_invoice_proof_reused_after_document_change`, `test_invoice_revision_invalidates_old_verification`, `test_unknown_old_content_blocks_new_submission`. R6 duplicate/late callbacks — P08/P09 tests. R7 no success without goal evidence — P12 tests.
@@ -67,10 +79,10 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 
 ## Explicitly out of scope
 
-- Remote or multi-tenant authentication and authorization (local principal names only).
-- Policy/SOP publication, migration tooling and author review workflow.
-- Evidence revocation workflows, cancellation and compensation (`request_cancel` is rejected explicitly: `test_unsupported_command_explicitly_rejected`).
-- Distributed execution: worker leases, fencing, cross-node coordination (P13).
+- Remote or multi-tenant authentication and authorization (local principal names only). Owner, delegate and `work.intervene` administrator grants are trusted-local configuration, not authenticated identities; replay protection rechecks this local authority, it is not a distributed security boundary.
+- Policy/SOP publication, author review workflow, and policy migration beyond the explicit same-family command above. Cross-domain policy registries are rejected; there is no implicit upgrade on restart or recovery.
+- Compensation (effect reversal) execution and evidence revocation: `finalize_cancel` acknowledges external effects with their external ids and records every disposition — it never claims to reverse an effect, and verified evidence cannot yet be revoked.
+- Distributed execution: worker leases, fencing, cross-node coordination (P13). An attempt already durable when cancellation is requested remains uncertain until reconciled; there is no external fence.
 - Any real external system adapter; `FakeOA` is a local demonstration.
 - General natural-language rule formalization.
 
