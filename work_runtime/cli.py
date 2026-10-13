@@ -1,6 +1,7 @@
 import argparse
 import json
 
+from .adoption_demo import run_lint_sop
 from .demo import demo_grants, run_demo, run_worker
 from .intervention_demo import run_intervention_demo
 from .policy import ExpensePolicy, ExpensePolicyV2
@@ -48,6 +49,12 @@ def main(argv=None):
         "intervention-demo",
         help="Run the ownership-transfer, cancellation and policy-migration demonstration")
     intervention.add_argument("--directory", help="Parent directory for a fresh demo folder")
+    lint = sub.add_parser("lint-sop",
+                          help="Lint a static SOP rule-card JSON file "
+                               "(exit 0 clean / 1 diagnostics / 2 file error)")
+    lint.add_argument("path", help="Path to the SOP JSON file")
+    lint.add_argument("--json", dest="as_json", action="store_true",
+                      help="Print the exact static-only JSON result envelope")
     inspect = sub.add_parser("inspect", help="Print a persisted work snapshot and event history")
     inspect.add_argument("--db", required=True)
     inspect.add_argument("--work", default="demo")
@@ -69,6 +76,8 @@ def main(argv=None):
         run_publish_demo(args.directory)
     elif args.command == "intervention-demo":
         run_intervention_demo(args.directory)
+    elif args.command == "lint-sop":
+        raise SystemExit(run_lint_sop(args.path, args.as_json))
     elif args.command == "inspect":
         if args.policy == "content-publish":
             if args.policy_versions is not None:
