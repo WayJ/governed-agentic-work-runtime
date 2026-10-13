@@ -23,9 +23,11 @@ evidence: ../specs/2026-10-13-s2-trusted-boundaries.md
 - [ ] Both built-in adapters pass reusable conformance tests; exact effect counts, idempotency scope, retention, lookup and uniqueness limits are documented.
 - [ ] A no-credentials publication harness drives the command protocol, recovers uncertain acceptance by query, and creates exactly one artifact.
 - [ ] Configured gates and fresh installed expense/publication demos outside the checkout pass; coverage and security claims match the tested scope.
-- [ ] Behavior changes have observed RED/GREEN evidence and independent integration review; the accepted sprint is merged/pushed by the integration session and remote main is verified.
+- [ ] Behavior changes have observed RED/GREEN evidence and independent integration review; the integration runbook requires acceptance before main merge, non-force push and remote SHA verification, and publication completion is claimed only after those actual results exist.
 
 Amendment 2026-10-13: expanded original two-line DoD into observable S2 criteria before materialization. The original intent (two domains, adapter guarantees/conformance, harness and publication) is preserved. Evidence: [design](../specs/2026-10-13-s2-trusted-boundaries.md).
+
+Amendment 2026-10-13 (D10): clarify pre-merge acceptance sequencing, preserving required post-merge push/remote verification. Evidence: [decision note](../../../.agents/notes/2026-10-13-S2-decisions.md).
 
 ## Sprint Breakdown
 
@@ -43,6 +45,7 @@ Amendment 2026-10-13: expanded original two-line DoD into observable S2 criteria
 | D7 | One policy per database remains in prototype | Shared engine is verified through two domains; multi-policy database recovery requires separate design. | 2026-10-13 | [design](../specs/2026-10-13-s2-trusted-boundaries.md) |
 | D8 | Ratify builder-check error/source/conformance decisions; reserve accepted ingress | Prevent divergent interfaces, silent serialization coercions and unsigned business completion assumptions before implementation. | 2026-10-13 | [decisions](../../../.agents/notes/2026-10-13-S2-decisions.md) |
 | D9 | Pin inspect policy selection and external publication schema | Preserve expense defaults while making second-domain history inspection and independent installed effect counts reproducible. | 2026-10-13 | [design clarification](../specs/2026-10-13-s2-trusted-boundaries.md) |
+| D10 | Separate pre-merge acceptance from publication completion evidence | Avoid circular acceptance requiring a push that must occur after acceptance; final delivery still requires actual main/remote equality. | 2026-10-13 | [amendment note](../../../.agents/notes/2026-10-13-S2-decisions.md) |
 
 ## Asset Disposition
 

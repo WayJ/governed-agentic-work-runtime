@@ -15,3 +15,7 @@ Shared-key authenticity alone would allow key holders to fabricate completion ev
 ## Handover
 
 Developer checkouts forked at7dd96a3; authoritative amended design lives in carrier and all dispatch briefs reference it. Integration must preserve master D8 changes, merge design-review report8fc97fc into carrier, and collect scoped developer RED/GREEN before branching publication.
+
+## D10 acceptance sequencing amendment — 2026-10-13
+
+The initial S2 final DoD line bundled actual merge/push into pre-merge acceptance, creating the same circular ordering already resolved in S1. Amend E2 then re-copy the amended clause verbatim into S2: acceptance proves the integration runbook and review; final release still requires actual merge, non-force push and remote equality. No product criterion or publication requirement removed. Independent final integration reads the current carrier artifacts; publication worker's feature interfaces are unchanged.
