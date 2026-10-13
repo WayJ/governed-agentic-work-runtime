@@ -4,6 +4,8 @@ The coordinator owns roadmap, dispatch, supervision and acceptance decisions. De
 
 ## Execution
 
+- Launch all development and integration sessions with Orca agent `claude` (Claude Code), as explicitly required by the user. The master coordinator may remain Codex.
+
 - Use superpowers workflows and TDD for all behavior changes: write a meaningful failing test, observe failure, implement minimally, rerun, and record RED/GREEN evidence.
 - Read the assigned sprint and its RFC references before coding. Write a scoped implementation plan, then use executing-plans. User has explicitly requested autonomous supervised execution; do not open a local approval/question UI. Ask the coordinator through Orca orchestration for blocking decisions.
 - Keep Python >=3.9 and zero runtime dependencies. Use standard-library unittest.

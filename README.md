@@ -90,13 +90,19 @@ assert completion["decision"] == "accepted"
 
 `initialize` is for creating a new work once. After restarting, read the existing work and call `runtime.recover(oa)` to verify pending evidence and reconcile operations. Queries returning no authoritative external result cause intervention rather than blind resubmission.
 
-## Run the tests
+## Verify a checkout
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v             # tests gate
+python3 scripts/check_docs.py                        # contracts gate: local doc links resolve
+python3 -m work_runtime demo                         # demo gate: real crash recovery
+python3 -m compileall -q work_runtime tests scripts  # syntax gate
+python3 scripts/verify_install.py                    # fresh venv, install, demos outside the checkout
 ```
 
-Tests exercise actual subprocess death after external acceptance and during evidence adoption, concurrent duplicate commands, stale approvals, cross-work uniqueness, wait expiry and missing query results. See [the verification report](docs/verification.md) for implemented and deferred protocol cases.
+The first four commands are the repository's gates. `scripts/verify_install.py` goes further: it builds the package into a brand-new virtual environment, asserts the import comes from that venv rather than the checkout, checks that no third-party dependency was installed, and runs both the module and the console demo with the working directory outside the repository — counting exactly one external application in the demo's fake OA database, independently of the printed output. The install stage needs pip index access for the build backend.
+
+Tests exercise actual subprocess death after external acceptance and during evidence adoption, concurrent duplicate commands, stale approvals, cross-work uniqueness, wait expiry and missing query results. See [the verification report](docs/verification.md) for implemented and deferred protocol cases: 14 of the 15 protocol acceptance cases are covered by named tests, and P13 (distributed worker leases) is explicitly deferred.
 
 Optional editable installation:
 

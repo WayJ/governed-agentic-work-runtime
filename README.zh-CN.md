@@ -40,9 +40,15 @@ Runtime 管理 Work 的持久状态、规则评估、命令回执、操作身份
 ## 本地验证
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v             # 测试门禁
+python3 scripts/check_docs.py                        # 文档门禁：本地链接可解析
+python3 -m work_runtime demo                         # 演示门禁：真实崩溃恢复
+python3 -m compileall -q work_runtime tests scripts  # 语法门禁
+python3 scripts/verify_install.py                    # 全新虚拟环境安装，并在仓库外运行双入口演示
 ```
 
-测试包含实际子进程崩溃、并发重复请求、单据变化后旧批准失效、跨 Work 发票唯一约束，以及无法查询外部结果时转人工介入。
+`scripts/verify_install.py` 在临时目录创建全新虚拟环境并真实安装本包：断言导入来自该环境而非当前检出、未安装任何第三方依赖，并在仓库外分别运行模块与控制台入口演示，最终从模拟 OA 数据库独立核对受理申请数量严格为 1。安装阶段需要 pip 索引访问以获取构建后端。
+
+测试包含实际子进程崩溃、并发重复请求、单据变化后旧批准失效、跨 Work 发票唯一约束，以及无法查询外部结果时转人工介入。协议验收项 P01–P15 中 14 项由命名测试覆盖，P13（分布式租约）明确延期；逐项证据见[验证报告](docs/verification.md)。
 
 英文首页提供 Python 使用示例。后续按[路线图](docs/roadmap.md)推进适配器协议、Agent 接入、取消补偿和规范编写体验；欢迎通过可复现反例挑战当前保证。
