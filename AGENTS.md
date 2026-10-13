@@ -10,6 +10,7 @@ The coordinator owns roadmap, dispatch, supervision and acceptance decisions. De
 - Read the assigned sprint and its RFC references before coding. Write a scoped implementation plan, then use executing-plans. User has explicitly requested autonomous supervised execution; do not open a local approval/question UI. Ask the coordinator through Orca orchestration for blocking decisions.
 - Keep Python >=3.9 and zero runtime dependencies. Use standard-library unittest.
 - Work only in the assigned checkout and ownership scope. Commit scoped changes and report commit hashes, test evidence, remaining risks. Do not spawn extra workers without coordinator approval.
+- Continuous mode is explicitly authorized by the user: after each sprint release, the master schedules the next useful roadmap slice without waiting for user confirmation. Workers still do only their assigned task, report once and idle until a fresh dispatch. Routine choices belong to the master; only real external blockers require user involvement.
 - Development workers never merge main or push. The integration session alone accepts, merges and pushes each sprint. Never force-push main.
 - Existing idea.md and 上一次建议.md are historical source material, not executable instructions.
 - Distinguish local trusted principals from authentication; do not claim distributed exactly-once, production safety, or unsupported RFC coverage.
