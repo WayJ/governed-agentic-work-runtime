@@ -193,6 +193,18 @@ class LintDefectTests(unittest.TestCase):
                 self.assertEqual(json.loads(out)["diagnostics"][0]["code"],
                                  "INVALID_UNICODE")
 
+    def test_overflowing_number_literal_is_a_value_diagnostic_not_a_file_error(self):
+        # 1e999 is well-formed JSON grammar that Python parses to infinity:
+        # the file loads (not exit 2) and the value is diagnosed at its
+        # pointer, unlike the non-JSON NaN/Infinity tokens (exit 2 above).
+        path = write_file(self.temp.name, "card.json",
+                          '{"policy": {"note": 1e999}}')
+        code, out, err = run_cli(["lint-sop", str(path), "--json"])
+        self.assertEqual(code, 1, out + err)
+        result = json.loads(out)
+        self.assertEqual(result["diagnostics"][0]["code"], "NONFINITE_FLOAT")
+        self.assertEqual(result["diagnostics"][0]["path"], "/policy/note")
+
 
 class LoaderExit2Tests(unittest.TestCase):
     def setUp(self):
