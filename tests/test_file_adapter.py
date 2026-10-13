@@ -538,15 +538,10 @@ class BoundedMessageTests(FileAdapterTestCase):
 
 class ApiShapeTests(FileAdapterTestCase):
     def test_constructor_takes_only_a_directory(self):
+        # No crash-exit, timeout or fault flags exist as constructor options;
+        # real process death in tests is injected by child processes only.
         parameters = list(inspect.signature(FilePublisher.__init__).parameters)
         self.assertEqual(parameters, ["self", "directory"])
-
-    def test_production_source_has_no_crash_exit_or_rename_fallback(self):
-        source = Path(inspect.getfile(FilePublisher)).read_text()
-        # No rename-fallback mechanism and no crash-exit flag anywhere in
-        # the production module: the commit is os.link or an explicit error.
-        for absent in ("_exit", "os.rename", "os.replace", "shutil"):
-            self.assertNotIn(absent, source)
 
 
 def _race_child(prelude="", tail=""):

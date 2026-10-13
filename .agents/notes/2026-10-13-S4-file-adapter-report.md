@@ -20,8 +20,8 @@ Mid-GREEN fix (Task 2): first implementation draft omitted the `_read_validated`
 
 ## Outcomes
 
-- **Gates (final):** `python3 -m unittest discover -s tests -v` → **Ran 324 tests ... OK**
-  (273 baseline preserved + 51 new); `python3 scripts/check_docs.py` → 46 files / 132 links /
+- **Gates (final):** `python3 -m unittest discover -s tests -v` → **Ran 323 tests ... OK**
+  (273 baseline preserved + 50 new); `python3 scripts/check_docs.py` → 46 files / 132 links /
   **0 broken**; `python3 -m compileall -q work_runtime tests scripts` → clean; `python3 -m
   work_runtime demo`, `publish-demo`, `intervention-demo` → all exit 0.
 - **File counts / corruption:** replay and restart return the identical winning receipt with
@@ -41,6 +41,16 @@ Mid-GREEN fix (Task 2): first implementation draft omitted the `_read_validated`
 - **Runtime integration:** unchanged `Runtime` + `PublishingPolicy` dispatch to
   `confirmed_succeeded`, `FILE-` external id, one committed artifact whose key equals the Runtime
   business key; C04 satisfied via the accepted proof. No lifecycle code changed.
+- **Coordinator redirect (applied):** the draft `ApiShapeTests` scanned production source text for
+  `_exit`/`rename` tokens; the coordinator flagged it as a brittle implementation mirror. The
+  keyword-scan test is dropped (public constructor-signature check retained); the no-crash-flag /
+  no-rename-fallback property is audited directly instead: an AST walk of
+  `work_runtime/file_adapter.py` enumerates every call in the module — the complete inventory
+  contains no `_exit`, `rename`, `replace`, `remove`, `rmtree`, `system` or `popen`, `shutil` is
+  not imported, and the only filesystem mutations are `makedirs` (constructor), exclusive-stage
+  `open`+`fsync`, `link` (the commit) and own-stage `unlink`. Behavior itself is covered by the
+  race/`FileExistsError`/zero-overwrite tests above. Final suite: **323 tests OK**
+  (273 baseline + 50 new).
 - **Platform notes (macOS 25.6.0/darwin, Python 3.9.6):** `os.link` commit and directory fsync
   both supported here; directory fsync is best-effort by design (POSIX-supported, skipped where
   refused). Hardlink-unsupported volumes propagate the explicit `OSError` (no rename fallback —

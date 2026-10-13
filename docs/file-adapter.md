@@ -173,7 +173,7 @@ temporary directories and real subprocesses throughout, no filesystem mocks:
 | snapshot detachment from caller mutations | `SnapshotDetachmentTests` |
 | staging hygiene (foreign `.stage` ignored, effect counts) | `StagingHygieneTests` |
 | bounded messages (no payload echo) | `BoundedMessageTests` |
-| API shape (constructor takes only `directory`; no `_exit`, no rename fallback) | `ApiShapeTests` |
+| API shape (constructor takes only `directory`) | `ApiShapeTests` |
 | real subprocess same-key and 3-vs-3 mixed-content races: exactly one artifact, stable winning receipt, losers `ValueError` | `SubprocessRaceTests` |
 | real process death before link (`os.link` wrapped with `os._exit(77)` → ignorable staging only) and after commit (outer `os._exit(78)` → one artifact, stable receipt) | `SubprocessRaceTests` |
 | dispatches through the unchanged `Runtime` + `PublishingPolicy` to `confirmed_succeeded` with one committed artifact | `RuntimeDispatchTests` |
