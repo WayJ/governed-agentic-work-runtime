@@ -20,3 +20,7 @@ Successful branch tests and PASS stdout are insufficient release proof. Root liv
 ## Handover
 
 Final integration reads current carrier design/epic/sprint and this note, executes all6 scenarios plus verbatimDoD, same-commit doc-sync audit, installed module+console intervention actualcounts, and three printed inspection commands. Record append-only acceptance before main merge; ordered merge, non-force push, remoteSHA equality, actualCI. Do not claim consolepublish installed verification: existing script covers moduleexpense/modulepublish/moduleintervention + consoleexpense/consoleintervention. Preserve user-owned development/controller worktrees; remove only clean merged sprintcarrier.
+
+## Corrected demo input confirmed
+
+Demo original-owner correction **99e5266** is clean, parentd29aa04; report records269 localtests and fresh installed PASS with both module/console actual3-store checks. Root independently ran6 VerifyInstallInterventionCountsTests OK. Final merge inputs are **corefd16b61** and **demo99e5266** into currentcarrier; expected273 after combining demo269 with3 wait-correction tests and1 diagnostics test, but fresh assembled run is authoritative. Both correction tasks settled successfully and their external-owned sessions are retained.
