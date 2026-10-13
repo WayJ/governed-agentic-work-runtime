@@ -236,6 +236,26 @@ class ExpensePolicyV2Tests(unittest.TestCase):
         self.assertEqual(self.requirement(runtime)["applicability"], "not_applicable")
         self.assertEqual(action(runtime)["decision"], "accepted")
 
+    def test_v2_blocker_explains_all_known_amount_approval(self):
+        runtime = self.v2_runtime()
+        initialize_under(runtime)
+        send(runtime, "demo", "revise_document", {"document": document(amount=80000)})
+        prerequisites(runtime, approval=False)
+        receipt = action(runtime)
+        self.assertEqual(receipt["code"], "REQUIREMENT_UNSATISFIED")
+        blocker = next(b for b in receipt["blockers"] if b["rule_id"] == "E05")
+        explanation = blocker["explanation"].lower()
+        self.assertIn("known amount", explanation)
+        self.assertIn("version", explanation)
+        self.assertNotIn("over-limit", explanation)
+        # v1 diagnostics stay exactly as they were.
+        v1 = Runtime(str(Path(self.temp.name) / "v1.sqlite"), ExpensePolicy(), demo_grants())
+        initialize_under(v1)
+        prerequisites(v1, approval=False)
+        v1_blocker = next(b for b in action(v1)["blockers"] if b["rule_id"] == "E05")
+        self.assertEqual(v1_blocker["explanation"],
+                         "Over-limit submissions require approval of the current content")
+
     def test_v2_approval_satisfies_end_to_end(self):
         runtime = self.v2_runtime()
         initialize_under(runtime)
