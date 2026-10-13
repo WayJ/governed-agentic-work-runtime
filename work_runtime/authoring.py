@@ -396,6 +396,186 @@ def _lint_advice(advice: Any, found: List[Dict[str, str]]) -> None:
             found.append(_diag(EMPTY_VALUE, path, "string is empty or whitespace-only"))
 
 
+
+def _declared_collection_ids(root: Dict[str, Any]):
+    """Declared collection IDs, or None when the list itself is malformed."""
+    items = root.get("collections")
+    if type(items) is not list:
+        return None
+    declared = set()
+    for item in items:
+        if type(item) is dict:
+            identifier = item.get("id")
+            if type(identifier) is str and identifier.strip() != "":
+                declared.add(identifier)
+    return declared
+
+
+def _declared_capability_ids(root: Dict[str, Any]):
+    policy = root.get("policy")
+    if type(policy) is not dict:
+        return None
+    capabilities = policy.get("capabilities")
+    if type(capabilities) is not list:
+        return None
+    return {capability for capability in capabilities
+            if type(capability) is str and capability.strip() != ""}
+
+
+def _declared_reference_ids(root: Dict[str, Any]):
+    """All fact/collection/rule IDs, or None when any list is malformed."""
+    declared = set()
+    for section in ID_LISTS:
+        items = root.get(section)
+        if type(items) is not list:
+            return None
+        for item in items:
+            if type(item) is dict:
+                identifier = item.get("id")
+                if type(identifier) is str and identifier.strip() != "":
+                    declared.add(identifier)
+    return declared
+
+
+def _check_scope(scope: Any, path: str, collection_ids,
+                 found: List[Dict[str, str]]) -> None:
+    if collection_ids is None or type(scope) is not str or scope.strip() == "":
+        return
+    if scope != "document" and scope not in collection_ids:
+        found.append(_diag(UNKNOWN_REFERENCE, path,
+                           "scope '%s' is not the literal 'document' or a "
+                           "declared collection" % _snippet(scope)))
+
+
+def _check_references(root: Dict[str, Any],
+                      found: List[Dict[str, str]]) -> None:
+    """Reference layer: runs against declared IDs collected from navigable lists."""
+    collection_ids = _declared_collection_ids(root)
+    capability_ids = _declared_capability_ids(root)
+    reference_ids = _declared_reference_ids(root)
+    policy = root.get("policy")
+    if type(policy) is dict:
+        _check_scope(policy.get("scope"), "/policy/scope", collection_ids, found)
+    rules = root.get("rules")
+    if type(rules) is not list:
+        return
+    for index, rule in enumerate(rules):
+        if type(rule) is not dict:
+            continue
+        base = "/rules/%d" % index
+        _check_scope(rule.get("scope"), base + "/scope", collection_ids, found)
+        deadline = rule.get("deadline")
+        if (capability_ids is not None and type(deadline) is str
+                and deadline.strip() != ""):
+            if deadline != "goal" and deadline not in capability_ids:
+                found.append(_diag(UNKNOWN_REFERENCE, base + "/deadline",
+                                   "deadline '%s' is not the literal 'goal' or "
+                                   "a declared capability" % _snippet(deadline)))
+        depends_on = rule.get("depends_on")
+        if reference_ids is None or type(depends_on) is not list:
+            continue
+        seen = set()
+        for position, entry in enumerate(depends_on):
+            if type(entry) is not str or entry.strip() == "":
+                continue
+            path = base + "/depends_on/%d" % position
+            if entry not in reference_ids:
+                found.append(_diag(UNKNOWN_REFERENCE, path,
+                                   "reference '%s' is not a declared fact, "
+                                   "collection or rule" % _snippet(entry)))
+            if entry in seen:
+                found.append(_diag(DUPLICATE_ID, path,
+                                   "duplicate reference '%s'" % _snippet(entry)))
+            seen.add(entry)
+
+
+def _cyclic_components(graph: Dict[int, List[int]]) -> List[List[int]]:
+    """Iterative Tarjan SCC; the rule graph is not bounded by the JSON depth.
+
+    Flat dependency graphs can be arbitrarily large, so this never recurses
+    and never enumerates simple cycles — one component per diagnostic.
+    """
+    counter = 0
+    indices = {}
+    lowlink = {}
+    on_stack = set()
+    stack = []
+    components = []
+    for start in sorted(graph):
+        if start in indices:
+            continue
+        work = [(start, 0)]
+        while work:
+            node, position = work[-1]
+            if position == 0:
+                indices[node] = lowlink[node] = counter
+                counter += 1
+                stack.append(node)
+                on_stack.add(node)
+            descended = False
+            children = graph[node]
+            while position < len(children):
+                child = children[position]
+                position += 1
+                if child not in indices:
+                    work[-1] = (node, position)
+                    work.append((child, 0))
+                    descended = True
+                    break
+                if child in on_stack and indices[child] < lowlink[node]:
+                    lowlink[node] = indices[child]
+            if descended:
+                continue
+            work.pop()
+            if work:
+                parent = work[-1][0]
+                if lowlink[node] < lowlink[parent]:
+                    lowlink[parent] = lowlink[node]
+            if lowlink[node] == indices[node]:
+                component = []
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                components.append(component)
+    return [component for component in components
+            if len(component) > 1 or component[0] in graph[component[0]]]
+
+
+def _check_rule_cycles(root: Dict[str, Any],
+                       found: List[Dict[str, str]]) -> None:
+    rules = root.get("rules")
+    if type(rules) is not list:
+        return
+    nodes = []
+    first_index = {}
+    for index, rule in enumerate(rules):
+        if type(rule) is not dict:
+            continue
+        identifier = rule.get("id")
+        depends_on = rule.get("depends_on")
+        if (type(identifier) is str and identifier.strip() != ""
+                and type(depends_on) is list):
+            nodes.append((index, identifier))
+            first_index.setdefault(identifier, index)
+    graph = {}
+    ids = dict(nodes)
+    for index, identifier in nodes:
+        edges = set()
+        for entry in rules[index]["depends_on"]:
+            if type(entry) is str and entry in first_index:
+                edges.add(first_index[entry])
+        graph[index] = sorted(edges)
+    for component in _cyclic_components(graph):
+        lowest = min(component)
+        message = "rule dependency cycle component: '%s'" % _snippet(ids[lowest])
+        if len(component) > 1:
+            message += " (+%d more members)" % (len(component) - 1)
+        found.append(_diag(CYCLE, "/rules/%d" % lowest, message))
+
+
 def _lint_schema(root: Any) -> List[Dict[str, str]]:
     """Strict schema layer; runs only after a clean JSON-native preflight."""
     found: List[Dict[str, str]] = []
@@ -424,6 +604,8 @@ def _lint_schema(root: Any) -> List[Dict[str, str]]:
     if "advice" in root:
         _lint_advice(root["advice"], found)
     _collect_global_ids(root, found)
+    _check_references(root, found)
+    _check_rule_cycles(root, found)
     return found
 
 

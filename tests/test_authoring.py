@@ -497,6 +497,8 @@ class PolicySectionTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 card = valid_card()
                 card["policy"]["capabilities"] = [bad]
+                for rule in card["rules"]:
+                    rule["deadline"] = "goal"
                 result = lint_sop(card)
                 self.assertEqual(codes_of(result), [code])
                 self.assertEqual(result[0]["path"], "/policy/capabilities/0")
@@ -512,6 +514,8 @@ class PolicySectionTests(unittest.TestCase):
     def test_goal_capability_is_reserved(self):
         card = valid_card()
         card["policy"]["capabilities"] = ["goal"]
+        for rule in card["rules"]:
+            rule["deadline"] = "goal"
         result = lint_sop(card)
         self.assertEqual(codes_of(result), ["INVALID_VALUE"])
         self.assertEqual(result[0]["path"], "/policy/capabilities/0")
@@ -521,6 +525,8 @@ class PolicySectionTests(unittest.TestCase):
     def test_empty_capabilities_list_allowed(self):
         card = valid_card()
         card["policy"]["capabilities"] = []
+        for rule in card["rules"]:
+            rule["deadline"] = "goal"
         self.assertEqual(lint_sop(card), [])
 
 
@@ -586,17 +592,21 @@ class FactsCollectionsTests(unittest.TestCase):
         self.assertEqual(result[0]["message"], "field must be a list")
 
     def test_fact_is_exactly_an_id(self):
+        # ID-shape probes drop the reference that points at the fact.
         card = valid_card()
+        card["rules"][0]["depends_on"] = []
         card["facts"] = [{"id": "invoice.valid", "note": "x"}]
         result = lint_sop(card)
         self.assertEqual(codes_of(result), ["UNKNOWN_FIELD"])
         self.assertEqual(result[0]["path"], "/facts/0/note")
         card = valid_card()
+        card["rules"][0]["depends_on"] = []
         card["facts"] = [{}]
         result = lint_sop(card)
         self.assertEqual(codes_of(result), ["MISSING_FIELD"])
         self.assertEqual(result[0]["path"], "/facts/0")
         card = valid_card()
+        card["rules"][0]["depends_on"] = []
         card["facts"] = [42]
         result = lint_sop(card)
         self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
@@ -607,6 +617,7 @@ class FactsCollectionsTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 card = valid_card()
                 card["facts"] = [{"id": bad}]
+                card["rules"][0]["depends_on"] = []
                 result = lint_sop(card)
                 self.assertEqual(codes_of(result), [code])
                 self.assertEqual(result[0]["path"], "/facts/0/id")
@@ -642,6 +653,7 @@ class FactsCollectionsTests(unittest.TestCase):
                 with self.subTest(field=field, bad=bad):
                     card = valid_card()
                     card["collections"][0][field] = bad
+                    card["rules"][0]["scope"] = "document"
                     result = lint_sop(card)
                     self.assertEqual(codes_of(result), [code])
                     self.assertEqual(result[0]["path"], "/collections/0/" + field)
@@ -660,6 +672,7 @@ class FactsCollectionsTests(unittest.TestCase):
         card = valid_card()
         card["collections"] = [{"id": "document", "version": "v1",
                                 "completeness": "sealed", "allow_empty": False}]
+        card["rules"][0]["scope"] = "document"
         result = lint_sop(card)
         self.assertEqual(codes_of(result), ["INVALID_VALUE"])
         self.assertEqual(result[0]["path"], "/collections/0/id")
@@ -713,6 +726,7 @@ class GlobalIdNamespaceTests(unittest.TestCase):
     def test_rule_colliding_with_fact(self):
         card = valid_card()
         card["rules"][1]["id"] = "invoice.valid"
+        card["rules"][1]["depends_on"] = []
         result = lint_sop(card)
         self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
         self.assertEqual(result[0]["path"], "/rules/1/id")
@@ -729,6 +743,7 @@ class GlobalIdNamespaceTests(unittest.TestCase):
         card["collections"].append({"id": "invoice.valid", "version": "v1",
                                     "completeness": "sealed", "allow_empty": False})
         card["rules"][1]["id"] = "invoice.valid"
+        card["rules"][1]["depends_on"] = []
         result = lint_sop(card)
         self.assertEqual(codes_of(result), ["DUPLICATE_ID", "DUPLICATE_ID"])
         self.assertEqual([d["path"] for d in result],
@@ -962,6 +977,7 @@ class MandatoryRuleTests(unittest.TestCase):
         card = valid_card()
         card["rules"] = [card["rules"][1]]
         card["rules"][0]["modality"] = "should"
+        card["rules"][0]["depends_on"] = []
         result = lint_sop(card)
         self.assertEqual(codes_of(result), ["NO_MANDATORY_RULE", "INVALID_VALUE"])
         self.assertEqual([d["path"] for d in result], ["/rules", "/rules/0/modality"])
@@ -971,6 +987,260 @@ class MandatoryRuleTests(unittest.TestCase):
         card["rules"] = "none"
         result = lint_sop(card)
         self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+
+
+
+def make_rule(rule_id, depends_on, modality="must", deadline="goal",
+              scope="document"):
+    return {
+        "id": rule_id,
+        "source": {"document": "expense-handbook", "version": "2026-03",
+                   "section": "4.1"},
+        "modality": modality,
+        "type": "state",
+        "scope": scope,
+        "trigger": "before %s" % deadline,
+        "depends_on": list(depends_on),
+        "requirement": "Requirement text for %s" % rule_id,
+        "deadline": deadline,
+        "evidence": {"kind": "confirmation", "source": "requester",
+                     "subject": "document", "version": "content-digest"},
+        "unknown": "block",
+        "conflict": "escalate",
+        "exemption": "forbidden",
+        "migration": "explicit",
+    }
+
+
+class ReferenceTests(unittest.TestCase):
+    """Scope/depends_on/deadline references against declared IDs (D22 B3)."""
+
+    def test_policy_scope_may_be_declared_collection(self):
+        card = valid_card()
+        card["policy"]["scope"] = "expense.invoices"
+        self.assertEqual(lint_sop(card), [])
+
+    def test_policy_scope_unknown_collection(self):
+        card = valid_card()
+        card["policy"]["scope"] = "unknown.collection"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_REFERENCE"])
+        self.assertEqual(result[0]["path"], "/policy/scope")
+        self.assertEqual(result[0]["message"],
+                         "scope 'unknown.collection' is not the literal "
+                         "'document' or a declared collection")
+
+    def test_rule_scope_unknown_collection(self):
+        card = valid_card()
+        card["rules"][0]["scope"] = "trips"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_REFERENCE"])
+        self.assertEqual(result[0]["path"], "/rules/0/scope")
+
+    def test_rule_scope_literal_document_valid(self):
+        card = valid_card()
+        card["rules"][0]["scope"] = "document"
+        self.assertEqual(lint_sop(card), [])
+
+    def test_depends_on_may_reference_fact_collection_and_rule(self):
+        card = valid_card()
+        card["rules"][0]["depends_on"] = ["invoice.valid", "expense.invoices", "E03"]
+        card["rules"][1]["depends_on"] = []
+        self.assertEqual(lint_sop(card), [])
+
+    def test_depends_on_unknown_reference(self):
+        card = valid_card()
+        card["rules"][0]["depends_on"] = ["invoice.valid", "amount.known"]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_REFERENCE"])
+        self.assertEqual(result[0]["path"], "/rules/0/depends_on/1")
+        self.assertEqual(result[0]["message"],
+                         "reference 'amount.known' is not a declared "
+                         "fact, collection or rule")
+
+    def test_depends_on_duplicate_entry(self):
+        card = valid_card()
+        card["rules"][0]["depends_on"] = ["invoice.valid", "expense.invoices",
+                                          "invoice.valid"]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
+        self.assertEqual(result[0]["path"], "/rules/0/depends_on/2")
+        self.assertEqual(result[0]["message"], "duplicate reference 'invoice.valid'")
+
+    def test_deadline_goal_literal_valid(self):
+        card = valid_card()
+        card["rules"][0]["deadline"] = "goal"
+        self.assertEqual(lint_sop(card), [])
+
+    def test_deadline_declared_capability_valid(self):
+        card = valid_card()
+        card["policy"]["capabilities"] = ["expense.submit", "expense.read"]
+        card["rules"][0]["deadline"] = "expense.read"
+        self.assertEqual(lint_sop(card), [])
+
+    def test_deadline_unknown_capability(self):
+        card = valid_card()
+        card["rules"][0]["deadline"] = "expense.approve"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_REFERENCE"])
+        self.assertEqual(result[0]["path"], "/rules/0/deadline")
+        self.assertEqual(result[0]["message"],
+                         "deadline 'expense.approve' is not the literal "
+                         "'goal' or a declared capability")
+
+    def test_malformed_collections_suppresses_scope_checks(self):
+        card = valid_card()
+        card["collections"] = "x"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/collections")
+
+    def test_malformed_capabilities_suppresses_deadline_checks(self):
+        card = valid_card()
+        card["policy"]["capabilities"] = 5
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/policy/capabilities")
+
+    def test_malformed_facts_suppresses_depends_on_reference_checks(self):
+        card = valid_card()
+        card["facts"] = "x"
+        card["rules"][0]["depends_on"] = ["invoice.valid", "expense.invoices"]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/facts")
+
+    def test_malformed_collection_entry_excluded_from_declared_set(self):
+        card = valid_card()
+        card["collections"].append({"version": "v2"})  # missing 3 fields
+        result = lint_sop(card)
+        # Entry 0 still declares expense.invoices: no UNKNOWN_REFERENCE.
+        self.assertEqual(codes_of(result), ["MISSING_FIELD"] * 3)
+        self.assertEqual([d["path"] for d in result], ["/collections/1"] * 3)
+
+    def test_valid_entries_still_declare_amid_malformed_ones(self):
+        card = valid_card()
+        card["collections"].append("not-an-object")
+        card["rules"][0]["scope"] = "expense.invoices"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/collections/1")
+
+    def test_capability_declared_from_valid_entries_only(self):
+        card = valid_card()
+        card["policy"]["capabilities"] = [5, "expense.submit"]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/policy/capabilities/0")
+
+
+class RuleCycleTests(unittest.TestCase):
+    """Iterative SCC dependency-cycle diagnostics (D22 graph clarification)."""
+
+    def card_with_rules(self, rules):
+        card = valid_card()
+        card["facts"] = []
+        card["collections"] = []
+        card["rules"] = rules
+        return card
+
+    def test_self_dependency_is_cycle(self):
+        card = self.card_with_rules([make_rule("R1", ["R1"])])
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["CYCLE"])
+        self.assertEqual(result[0]["path"], "/rules/0")
+        self.assertEqual(result[0]["message"],
+                         "rule dependency cycle component: 'R1'")
+
+    def test_two_rule_cycle_reports_lowest_index_member(self):
+        rules = [make_rule("R1", ["R2"]), make_rule("R2", ["R1"])]
+        result = lint_sop(self.card_with_rules(rules))
+        self.assertEqual(codes_of(result), ["CYCLE"])
+        self.assertEqual(result[0]["path"], "/rules/0")
+        self.assertEqual(result[0]["message"],
+                         "rule dependency cycle component: 'R1' (+1 more members)")
+
+    def test_three_rule_cycle(self):
+        rules = [make_rule("R1", ["R2"]), make_rule("R2", ["R3"]),
+                 make_rule("R3", ["R1"])]
+        result = lint_sop(self.card_with_rules(rules))
+        self.assertEqual(codes_of(result), ["CYCLE"])
+        self.assertEqual(result[0]["message"],
+                         "rule dependency cycle component: 'R1' (+2 more members)")
+
+    def test_two_disjoint_cycles_two_diagnostics(self):
+        rules = [make_rule("A1", ["A2"]), make_rule("A2", ["A1"]),
+                 make_rule("B1", ["B2"]), make_rule("B2", ["B1"])]
+        result = lint_sop(self.card_with_rules(rules))
+        self.assertEqual(codes_of(result), ["CYCLE", "CYCLE"])
+        self.assertEqual([d["path"] for d in result], ["/rules/0", "/rules/2"])
+
+    def test_chain_is_not_a_cycle(self):
+        rules = [make_rule("R1", ["R2"]), make_rule("R2", ["R3"]),
+                 make_rule("R3", [])]
+        self.assertEqual(lint_sop(self.card_with_rules(rules)), [])
+
+    def test_rule_to_fact_dependency_never_cycles(self):
+        card = valid_card()
+        card["rules"][0]["depends_on"] = ["invoice.valid"]
+        card["rules"][1]["depends_on"] = ["invoice.valid"]
+        self.assertEqual(lint_sop(card), [])
+
+    def test_downstream_of_cycle_is_not_in_component(self):
+        # R3 depends on the cycle R1<->R2 but is not part of it.
+        rules = [make_rule("R1", ["R2"]), make_rule("R2", ["R1"]),
+                 make_rule("R3", ["R1"])]
+        result = lint_sop(self.card_with_rules(rules))
+        self.assertEqual(codes_of(result), ["CYCLE"])
+        self.assertEqual(result[0]["path"], "/rules/0")
+        self.assertEqual(result[0]["message"],
+                         "rule dependency cycle component: 'R1' (+1 more members)")
+
+    def test_malformed_depends_on_excluded_from_graph(self):
+        rules = [make_rule("R1", ["R2"])]
+        rules[0]["depends_on"] = "R2"
+        card = self.card_with_rules(rules)
+        card["facts"] = [{"id": "R2"}]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertNotIn("CYCLE", codes_of(result))
+
+    def test_duplicate_rule_ids_edges_use_first_occurrence(self):
+        rules = [make_rule("R1", []), make_rule("R2", ["R1"]), make_rule("R1", ["R2"])]
+        result = lint_sop(self.card_with_rules(rules))
+        # R1's duplicate gets DUPLICATE_ID; edges point at the first R1,
+        # so no cycle arises from the second R1's dependency.
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
+        self.assertEqual(result[0]["path"], "/rules/2/id")
+
+    def test_long_acyclic_chain_lints_clean_without_recursion_error(self):
+        count = 2000
+        rules = [make_rule("R%04d" % i,
+                           ["R%04d" % (i + 1)] if i < count - 1 else [])
+                 for i in range(count)]
+        self.assertEqual(lint_sop(self.card_with_rules(rules)), [])
+
+    def test_long_cycle_single_component_diagnostic(self):
+        count = 1500
+        rules = [make_rule("R%04d" % i, ["R%04d" % ((i + 1) % count)])
+                 for i in range(count)]
+        result = lint_sop(self.card_with_rules(rules))
+        self.assertEqual(codes_of(result), ["CYCLE"])
+        self.assertEqual(result[0]["path"], "/rules/0")
+        self.assertEqual(result[0]["message"],
+                         "rule dependency cycle component: 'R0000' "
+                         "(+1499 more members)")
+
+    def test_long_chain_into_short_cycle(self):
+        count = 1200
+        rules = [make_rule("C%04d" % i, ["C%04d" % ((i + 1) % count)])
+                 for i in range(count)]
+        rules.append(make_rule("T", ["C0000"]))
+        result = lint_sop(self.card_with_rules(rules))
+        self.assertEqual(codes_of(result), ["CYCLE"])
+        self.assertEqual(result[0]["message"],
+                         "rule dependency cycle component: 'C0000' "
+                         "(+1199 more members)")
 
 
 if __name__ == "__main__":
