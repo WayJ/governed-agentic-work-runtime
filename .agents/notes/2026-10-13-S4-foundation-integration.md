@@ -13,13 +13,25 @@ acceptance — those belong to the later waves.
 | merge 1 | `7b1ec54` | `WayJ/s4-sop-authoring` (tip `86d4a9e`, --no-ff) — authoring foundation |
 | merge 2 | `a09d3ab` | `WayJ/s4-file-adapter` (tip `400a3f2`, --no-ff) — file adapter foundation, corrected |
 | cherry-pick | `434a4a5` | builder check `fd8630c` — `.agents/notes/2026-10-13-S4-design-review.md` |
+| cherry-pick | `629cf0a` | controller report tip `d119db3` — `.agents/notes/2026-10-14-S4-file-review.md` (per master follow-up msg_78569d674fe1, so the early-review evidence ships) |
 
 **Tip drift disclosure:** the authoring branch advanced `d1051b6 → 86d4a9e` after my review
 pass and before the merge. The delta is docs-only (a dated workflow-audit addendum to the
 owner's own report: skill-timeline disclosure + plan-conformance audit, +59 lines in
 `.agents/notes/2026-10-13-S4-sop-authoring-report.md`, no product/docs-code change) — inspected
 at merge time and accepted. The file-adapter tip matched its reviewed correction `400a3f2`
-exactly.
+exactly. **Sequencing note:** master's follow-up (msg_78569d674fe1, 16:23Z) asked me to HOLD
+the authoring merge until the exact settled tip was sent; that durable message reached me only
+at my post-merge inbox check, after merge `7b1ec54` had already included `86d4a9e` — the audit
+commit itself (authored 16:25Z, branch clean and unmoved since). **Master ruled via Orca ask (2026-10-14):
+`86d4a9e` is the settled audited tip and product-identical to `d1051b6`; merge `7b1ec54`
+stands, no revert/re-merge.** A small docs-only authoring alignment followup (plan/report
+wording/form only) may land on the branch later; per master it merges normally when ready with
+no product change and no full re-review. The same follow-up's directive to ship the controller
+evidence tip `d119db3` is satisfied by `629cf0a`, and the builder note `fd8630c` is present as
+`434a4a5` — both verified byte-identical to their source commits (`git diff --stat` empty).
+Post-merge proof (469 tests, gates, demos, lifecycle-empty diff) was preserved untouched by
+these docs-only additions.
 
 ## Independent review (both foundations, against base 726a39c)
 
