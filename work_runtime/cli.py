@@ -2,6 +2,7 @@ import argparse
 import json
 
 from .demo import demo_grants, run_demo, run_worker
+from .intervention_demo import run_intervention_demo
 from .policy import ExpensePolicy, ExpensePolicyV2
 from .publishing import PublishingPolicy
 from .publishing_demo import publishing_grants, run_demo as run_publish_demo
@@ -43,6 +44,10 @@ def main(argv=None):
     publish = sub.add_parser("publish-demo",
                              help="Run the signed-evidence content publication demonstration")
     publish.add_argument("--directory", help="Parent directory for a fresh demo folder")
+    intervention = sub.add_parser(
+        "intervention-demo",
+        help="Run the ownership-transfer, cancellation and policy-migration demonstration")
+    intervention.add_argument("--directory", help="Parent directory for a fresh demo folder")
     inspect = sub.add_parser("inspect", help="Print a persisted work snapshot and event history")
     inspect.add_argument("--db", required=True)
     inspect.add_argument("--work", default="demo")
@@ -62,6 +67,8 @@ def main(argv=None):
         run_demo(args.directory)
     elif args.command == "publish-demo":
         run_publish_demo(args.directory)
+    elif args.command == "intervention-demo":
+        run_intervention_demo(args.directory)
     elif args.command == "inspect":
         if args.policy == "content-publish":
             if args.policy_versions is not None:

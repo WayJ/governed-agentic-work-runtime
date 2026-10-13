@@ -80,6 +80,7 @@ def _transfer_scenario(folder):
     assert runtime.dispatch(operation_id, oa)["status"] == "confirmed_succeeded"
     assert oa.accepted_count() == 1
     print("5. Dispatch → confirmed_succeeded; accepted applications in this store: 1\n", flush=True)
+    return str(folder / "runtime.sqlite")
 
 
 def _cancel_scenario(folder):
@@ -128,6 +129,7 @@ def _cancel_scenario(folder):
           "CLOSED cancelled", flush=True)
     print("6. Acknowledgement records the effect (no reversal); accepted applications "
           "in this store: 1\n", flush=True)
+    return str(folder / "runtime.sqlite")
 
 
 def _migration_scenario(folder):
@@ -187,6 +189,7 @@ def _migration_scenario(folder):
     assert oa.accepted_count() == 1
     print("6. Dispatch → confirmed_succeeded; accepted applications in this store: 1\n",
           flush=True)
+    return str(folder / "runtime.sqlite")
 
 
 def run_intervention_demo(directory=None):

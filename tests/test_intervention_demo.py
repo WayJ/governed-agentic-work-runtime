@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -260,3 +261,35 @@ class InterventionDemoTests(unittest.TestCase):
         for folder in (folder_a, folder_b):
             for scenario in ("transfer", "cancel", "migrate"):
                 self.assertEqual(accepted_in_store(folder / scenario / "oa.sqlite"), 1)
+
+
+class InterventionDemoCliTests(unittest.TestCase):
+    def setUp(self):
+        from work_runtime import intervention_demo
+        self.intervention_demo = intervention_demo
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+
+    def test_cli_intervention_demo_module_runs(self):
+        result = subprocess.run([sys.executable, "-m", "work_runtime", "intervention-demo"],
+                                cwd=str(REPO_ROOT), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("accepted applications: 3 (one per store)", result.stdout)
+
+    def test_printed_inspect_commands_run_correctly(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.intervention_demo.run_intervention_demo(self.temp.name)
+        commands = [line.strip() for line in out.getvalue().splitlines()
+                    if line.strip().startswith("python3 -m work_runtime inspect")]
+        self.assertEqual(len(commands), 3)
+        results = []
+        for command in commands:
+            words = shlex.split(command)
+            self.assertEqual(words[:4], ["python3", "-m", "work_runtime", "inspect"])
+            results.append(subprocess.run([sys.executable] + words[1:], cwd=str(REPO_ROOT),
+                                          capture_output=True, text=True))
+            self.assertEqual(results[-1].returncode, 0, command + "\n" + results[-1].stderr)
+        # The printed migrated command carries the registry flag and reads the demo-2 pin.
+        self.assertTrue(commands[2].endswith("--policy-versions demo-1,demo-2"))
+        self.assertIn('"policy_version": "demo-2"', results[2].stdout)
