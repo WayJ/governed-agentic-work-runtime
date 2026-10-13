@@ -12,7 +12,7 @@ python3 -m unittest discover -s tests -v
 python3 scripts/check_docs.py
 ```
 
-The package has zero runtime dependencies. Optional development installation: `python3 -m pip install -e .`.
+The package has zero runtime dependencies. Optional development installation: `python3 -m pip install -e .`. To verify the packaged result the way CI does, run `python3 scripts/verify_install.py` (installs into a fresh virtual environment and runs both entry points outside the checkout; needs pip index access for the build backend).
 
 ## Project structure
 
@@ -24,8 +24,10 @@ The package has zero runtime dependencies. Optional development installation: `p
 | `work_runtime/demo.py` | Deterministic proposer and real worker crash demonstration |
 | `tests/test_runtime.py` | Invariants, failure injection and subprocess recovery |
 | `scripts/check_docs.py` | Local Markdown link checker — the documentation contracts gate |
+| `scripts/verify_install.py` | Fresh-venv install and outside-checkout demo verification |
 | `tests/test_docs.py` | Link checker behavior and repository documentation contracts |
 | `docs/RFC-*.md` | Candidate semantics and protocol |
+| `docs/verification.md` | Honest protocol coverage matrix and deferred scope |
 
 ## Propose a change
 
