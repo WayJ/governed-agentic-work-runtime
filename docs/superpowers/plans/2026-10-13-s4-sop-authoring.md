@@ -10,12 +10,33 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-13-s4-adoption-design.md` in this checkout. Authoritative CURRENT carrier: `/Users/jiangwei/orca/workspaces/governed-agentic-work-runtime/sprint-s4-adoption/docs/superpowers/specs/2026-10-13-s4-adoption-design.md` — includes D22 plus the **D22 graph traversal clarification** (iterative SCC, no RecursionError on long chains, one bounded diagnostic per cyclic component at the lowest document-index member, actual long-chain/long-cycle regressions), also delivered as Orca message `msg_949d43281eab` on this dispatch.
 
+> **Alignment note (2026-10-14):** This plan was authored 2026-10-13 without the
+> `writing-plans` skill loaded (which was loaded only on 2026-10-14, for the audit
+> of commit 86d4a9e, and remains loaded for this docs-only alignment). Per that
+> audit and master's acceptance, this revision corrects the stale unknown-field
+> anchor (the implemented, tested and documented behavior anchors at the offending
+> key's pointer, root included), adds the Review Focus and per-task Interfaces
+> sections, makes the test-first/RED/GREEN phases explicit, and cleans two
+> drafting artifacts. Historical task content, observed RED/GREEN evidence and
+> commit identities are preserved verbatim; the approved spec and all completed
+> code are untouched.
+
 ## Global Constraints
 
 - Python >= 3.9, zero runtime dependencies, standard-library unittest only.
 - Ownership scope (nothing else): `work_runtime/authoring.py`, `tests/test_authoring.py`, `work_runtime/data/sop/expense.json`, `work_runtime/data/sop/publishing.json`, `examples/sop/*.json`, `docs/sop-authoring.md`, this plan and `.agents/notes/2026-10-13-S4-sop-authoring-report.md`.
 - NO edits to runtime.py, policy.py, adapters, publishing, ingress, CLI, README(s), pyproject, CI, epic/roadmap/sprint/acceptance docs, RFCs, or the local spec copy (integration merges the carrier).
 - All 273 baseline tests must pass after every task; the three prior demos (`demo`, `publish-demo`, `intervention-demo`), `scripts/check_docs.py` (0 broken) and `compileall` stay green. No merge, no push, no nested agents, no local approval UI; blockers go through Orca `ask`.
+
+## Review Focus
+
+Input classes the spec implies that no happy-path test would exercise; each is pinned by the named tests in the owning task (all delivered):
+
+- Hostile Python values — custom `__repr__`/`__iter__`/`keys` hooks, subclasses of native types — must never crash `lint_sop` nor leak value content into messages. Pinned by `PreflightNativeTests` (Task 1) and `DigestTests.test_error_message_never_leaks_payload_values` (Task 6).
+- Boundary limits — depth 64 allowed/65 rejected at `"/0"*65`, integers ±(2^53−1) inclusive, non-finite floats, surrogate strings AND keys — pinned by `PreflightLimitsTests` (Task 1).
+- Alias-vs-cycle confusion — repeated acyclic aliases valid, active-path identity cycles `CYCLE`, cycles in multiple branches both reported — pinned by `PreflightCycleAliasTests` (Task 1).
+- Reference ambiguity under malformed declaring lists — shape errors still reported while scope/deadline/depends_on reference checks are suppressed or partial — pinned by `ReferenceTests` (Task 5).
+- Flat unbounded rule graphs — thousands of rules are depth-3 JSON; long acyclic chains must lint clean without `RecursionError` and long cycles must collapse to ONE component diagnostic — pinned by `RuleCycleTests` (Task 5) and the `long-chain-cycle.json` fixture (Task 8).
 
 ## Settled contracts (from D22 + graph clarification; implement exactly)
 
@@ -46,7 +67,7 @@ Runs over the whole tree first. If it produces ANY diagnostics, they are the ent
 
 ### Schema (only after a clean preflight) — exact shapes
 
-- Root: dict with exactly `schema_version, policy, defaults, facts, collections, rules, advice` (missing → `MISSING_FIELD` at `""`; unknown → `UNKNOWN_FIELD` at `""`). Non-dict root → `TYPE_MISMATCH` at `""`.
+- Root: dict with exactly `schema_version, policy, defaults, facts, collections, rules, advice` (missing → `MISSING_FIELD` at `""`; unknown → `UNKNOWN_FIELD` at the offending key's own pointer, root included, e.g. `/extra` — anchor as implemented, tested and accepted by master 2026-10-14; formerly pinned here as `""`). Non-dict root → `TYPE_MISMATCH` at `""`.
 - `schema_version`: `type is int` (bool is a mismatch) and value `1` (other ints → `INVALID_VALUE`).
 - `policy`: dict with exactly `id, version, goal, source, scope, capabilities`. `id/version/goal` nonempty non-whitespace strings. `source`: dict exactly `document, version, section`, all nonempty strings — declared provenance only, never verified, and `policy.source.document` is NEVER a scope. `scope`: nonempty string, literal `document` or a declared collection ID (else `UNKNOWN_REFERENCE`). `capabilities`: list of unique nonempty strings (element errors at `/policy/capabilities/i`: type/empty/duplicate/`goal` reserved → `INVALID_VALUE`); an empty list is allowed.
 - `defaults`: dict exactly `unknown, conflict, exemptions, migration` = exactly `block, escalate, forbidden, explicit`.
@@ -72,94 +93,150 @@ Static only: predicates/requirements are text, never executed, never proof; `sou
 
 ## Tasks
 
+All tasks below were executed 2026-10-13 with observed RED/GREEN evidence recorded in `.agents/notes/2026-10-13-S4-sop-authoring-report.md`; commit identities are historical fact and preserved.
+
 ### Task 0 — this plan
 
 - [x] Write and commit this plan. No code.
 
+**Interfaces:**
+- Consumes: ratified spec/D22 + graph clarification (Orca msg_949d43281eab).
+- Produces: this plan (commit 0c45af0; aligned 2026-10-14 by the docs-only dispatch).
+
 ### Task 1: preflight gate
 
-**Files:** `tests/test_authoring.py` (new; classes `PreflightNativeTests`, `PreflightLimitsTests`, `PreflightCycleAliasTests`, `PointerOrderTests`), `work_runtime/authoring.py` (new).
+**Files:**
+- Create: `tests/test_authoring.py` (classes `PreflightNativeTests`, `PreflightLimitsTests`, `PreflightCycleAliasTests`, `PointerOrderTests`), `work_runtime/authoring.py`.
 
-- [ ] Step 1 RED: tests import `work_runtime.authoring` → `ModuleNotFoundError`; also write the preflight suites (native types/subclasses/bool-vs-int, non-str and surrogate keys, nonfinite, int bound ±(2^53-1), depth 64 ok / 65 rejected, input cycles → `CYCLE` without `RecursionError`, acyclic aliases valid, pointer escaping `~0`/`~1`, sort order, identical-triple dedup, call-twice stability, hostile `__repr__`/`__iter__` never invoked, `lint_sop` never raises). Observe RED.
-- [ ] Step 2 Implement: iterative `_preflight` + `_sorted_dedup`; `lint_sop` returns preflight-only result. Minimal — no schema yet.
-- [ ] Step 3 GREEN: `python3 -m unittest tests.test_authoring -v`; then full discover (273 + new).
-- [ ] Step 4 Commit: `feat(authoring): iterative JSON-native preflight gate`.
+**Interfaces:**
+- Consumes: nothing from other tasks (standalone foundation).
+- Produces: `lint_sop(value) -> List[Dict[str, str]]` returning preflight-only diagnostics until Task 2; iterative `_preflight` and `_finalize` (sort + identical-triple dedup); module constants for the exactly-14 codes; `_escape` (RFC 6901) and `_snippet` (64-char bound).
+
+- [ ] **Step 1: Write the failing tests** — import `work_runtime.authoring` (module absent) and write the four preflight suites: native types/subclasses/bool-vs-int, non-str and surrogate keys, nonfinite, int bound ±(2^53-1), depth 64 ok / 65 rejected, input cycles → `CYCLE` without `RecursionError`, acyclic aliases valid, pointer escaping `~0`/`~1`, sort order, identical-triple dedup, call-twice stability, hostile `__repr__`/`__iter__` never invoked, `lint_sop` never raises.
+- [ ] **Step 2: Run to observe RED** — `python3 -m unittest tests.test_authoring -v` → `ModuleNotFoundError: No module named 'work_runtime.authoring'`.
+- [ ] **Step 3: Implement (minimal)** — iterative `_preflight` + `_finalize`; `lint_sop` returns the preflight-only result. No schema yet.
+- [ ] **Step 4: Run to observe GREEN** — `python3 -m unittest tests.test_authoring -v` → all pass; then full discover (273 + new).
+- [ ] **Step 5: Commit** — `feat(authoring): iterative JSON-native preflight gate` (→ 008d429).
 
 ### Task 2: root/policy/defaults schema
 
-**Files:** same tests (new classes `RootSchemaTests`, `PolicySectionTests`, `DefaultsTests`), `work_runtime/authoring.py`.
+**Files:**
+- Create: no new files; add test classes `RootSchemaTests`, `PolicySectionTests`, `DefaultsTests` to `tests/test_authoring.py`; modify `work_runtime/authoring.py`.
 
-- [ ] Step 1 RED: root non-dict → `TYPE_MISMATCH` at `""`; each of the 7 root keys missing → `MISSING_FIELD`; extra → `UNKNOWN_FIELD`; schema_version 1/2/`"1"`/`true`; policy id/version/goal/source/scope/capabilities shape, whitespace-only strings → `EMPTY_VALUE`; capabilities dup/`goal`-reserved/type/empty; defaults wrong enum per key. Observe RED (schema unimplemented → `[]`).
-- [ ] Step 2 Implement: `_lint_schema` root + policy + defaults (scope reference check stubbed until Task 5 — no, collect collections in Task 3; for Task 2 scope reference validation is exercised only as nonempty-string presence).
+**Interfaces:**
+- Consumes: `lint_sop`'s clean-preflight gate from Task 1 (schema layer runs only when preflight is empty).
+- Produces: `_lint_schema` with `_check_exact_fields` (MISSING_FIELD at container, UNKNOWN_FIELD at the key's pointer), `_require_text` (TYPE_MISMATCH / whitespace EMPTY_VALUE), `_check_source`, `_check_capabilities` (`goal` reserved → INVALID_VALUE); policy scope validated for shape/emptiness only — reference resolution is deferred to Task 5.
 
-  Correction (pinned): scope/deadline/depends_on REFERENCE checks land in Task 5 with the declared-ID collection; Task 2 asserts only shape/emptiness for `policy.scope`.
-
-- [ ] Step 3 GREEN + full suite.
-- [ ] Step 4 Commit: `feat(authoring): strict root, policy and defaults schema`.
+- [ ] **Step 1: Write the failing tests** — root non-dict → `TYPE_MISMATCH` at `""`; each of the 7 root keys missing → `MISSING_FIELD`; extra → `UNKNOWN_FIELD` at the key pointer; schema_version 1/2/`"1"`/`true`; policy id/version/goal/source/scope/capabilities shape, whitespace-only strings → `EMPTY_VALUE`; capabilities dup/`goal`-reserved/type/empty; defaults wrong enum per key.
+- [ ] **Step 2: Run to observe RED** — suite fails with `[]`-vs-expected diagnostics (schema unimplemented).
+- [ ] **Step 3: Implement (minimal)** — root + policy + defaults checks per the settled contracts.
+- [ ] **Step 4: Run to observe GREEN** — module suite, then full discover.
+- [ ] **Step 5: Commit** — `feat(authoring): strict root, policy and defaults schema` (→ 2141787).
 
 ### Task 3: facts/collections, global namespace, reserved tokens
 
-**Files:** tests (`FactsCollectionsTests`, `GlobalIdNamespaceTests`), `work_runtime/authoring.py`.
+**Files:**
+- Modify: `work_runtime/authoring.py`; add test classes `FactsCollectionsTests`, `GlobalIdNamespaceTests`.
 
-- [ ] Step 1 RED: facts `{"id"}` exactness (extra/missing/type/whitespace); collections shape incl. `allow_empty` strict bool and reserved `document` → `INVALID_VALUE`; empty facts/collections valid; fact/collection/rule-ID collisions in every pairing → `DUPLICATE_ID` at the later occurrence.
-- [ ] Step 2 Implement: declared-ID collection (document order facts → collections → rules) with duplicate reporting; facts/collections field checks.
-- [ ] Step 3 GREEN + full suite.
-- [ ] Step 4 Commit: `feat(authoring): facts, collections, global ID namespace and reserved scope token`.
+**Interfaces:**
+- Consumes: `_check_exact_fields`/`_require_text` from Task 2.
+- Produces: `_lint_id_list`, `_lint_facts`, `_lint_collections` (strict-bool `allow_empty`; reserved collection id `document` → INVALID_VALUE) and `_collect_global_ids` — the declared-ID walk in document order facts → collections → rules that Task 5's reference layer consumes.
+
+- [ ] **Step 1: Write the failing tests** — facts `{"id"}` exactness (extra/missing/type/whitespace); collections shape incl. `allow_empty` strict bool and reserved `document` → `INVALID_VALUE`; empty facts/collections valid; fact/collection/rule-ID collisions in every pairing → `DUPLICATE_ID` at the later occurrence.
+- [ ] **Step 2: Run to observe RED** — suite fails (facts/collections unchecked).
+- [ ] **Step 3: Implement (minimal)** — declared-ID collection with duplicate reporting; facts/collections field checks.
+- [ ] **Step 4: Run to observe GREEN** — module suite, then full discover.
+- [ ] **Step 5: Commit** — `feat(authoring): facts, collections, global ID namespace and reserved scope token` (→ 1b8457e).
 
 ### Task 4: rules schema, advice, mandatory cardinality
 
-**Files:** tests (`RulesSchemaTests`, `AdviceTests`, `MandatoryRuleTests`), `work_runtime/authoring.py`.
+**Files:**
+- Modify: `work_runtime/authoring.py`; add test classes `RulesSchemaTests`, `AdviceTests`, `MandatoryRuleTests`.
 
-- [ ] Step 1 RED: all 14 rule fields (missing each → `MISSING_FIELD` at `/rules/i`; unknown → `UNKNOWN_FIELD`); enums modality/type; fixed unknown/conflict/exemption/migration values; evidence exact shape; trigger/requirement whitespace → `EMPTY_VALUE`; advice element type/empty; empty rules and modality-free rules → `NO_MANDATORY_RULE`; all-forbidden package valid (`[]` diagnostics); advice never satisfies cardinality.
-- [ ] Step 2 Implement: rule/evidence/advice checks + mandatory count.
-- [ ] Step 3 GREEN + full suite.
-- [ ] Step 4 Commit: `feat(authoring): strict rule cards, advice and mandatory-rule cardinality`.
+**Interfaces:**
+- Consumes: Task 2 field helpers and Task 3's list/ID conventions.
+- Produces: `_lint_rules` (14 exact fields, modality/type enums via `_require_enum`, pinned handling values via `_require_pinned`), `_lint_depends_on_shape`, `_lint_evidence`, `_lint_advice`, and the mandatory-rule count that later tasks rely on for card validity.
+
+- [ ] **Step 1: Write the failing tests** — all 14 rule fields (missing each → `MISSING_FIELD` at `/rules/i`; unknown → `UNKNOWN_FIELD`); enums modality/type; fixed unknown/conflict/exemption/migration values; evidence exact shape; trigger/requirement whitespace → `EMPTY_VALUE`; advice element type/empty; empty rules and modality-free rules → `NO_MANDATORY_RULE`; all-forbidden package valid (`[]` diagnostics); advice never satisfies cardinality.
+- [ ] **Step 2: Run to observe RED** — suite fails (rules layer missing).
+- [ ] **Step 3: Implement (minimal)** — rule/evidence/advice checks + mandatory count.
+- [ ] **Step 4: Run to observe GREEN** — module suite, then full discover.
+- [ ] **Step 5: Commit** — `feat(authoring): strict rule cards, advice and mandatory-rule cardinality` (→ 38ed5fe; amended locally pre-push so the committed state is green).
 
 ### Task 5: references and iterative SCC cycles
 
-**Files:** tests (`ReferenceTests`, `RuleCycleTests`), `work_runtime/authoring.py`.
+**Files:**
+- Modify: `work_runtime/authoring.py`; add test classes `ReferenceTests`, `RuleCycleTests`.
 
-- [ ] Step 1 RED: policy/rule scope literal `document` ok, declared collection ok, undeclared → `UNKNOWN_REFERENCE`; `depends_on` fact/collection/rule refs ok, undeclared → `UNKNOWN_REFERENCE` at the entry index, duplicates → `DUPLICATE_ID`; deadline `goal`/declared/undeclared; cascade guards (malformed declaring lists suppress reference checks, not shape checks); cycles: self-loop, 2-cycle, 3-cycle, two disjoint cycles → one `CYCLE` per component at the lowest-index member with bounded message; 2000-rule acyclic chain → `[]` with no `RecursionError`; 1500-rule single cycle → exactly one component diagnostic; cross-list dependencies (rule → fact) never cycle.
-- [ ] Step 2 Implement: declared-set reference validation + iterative Tarjan SCC cycle components.
-- [ ] Step 3 GREEN + full suite.
-- [ ] Step 4 Commit: `feat(authoring): declared references and iterative SCC dependency-cycle diagnostics`.
+**Interfaces:**
+- Consumes: declared-ID walk from Task 3 and rule shapes from Task 4.
+- Produces: `_declared_collection_ids` / `_declared_capability_ids` / `_declared_reference_ids` (None when a declaring list is malformed), `_check_references` (scope/depends_on/deadline with cascade guards and duplicate-entry DUPLICATE_ID), `_check_rule_cycles` + `_cyclic_components` (iterative Tarjan SCC; one bounded `CYCLE` per cyclic component at the lowest document-index member).
+
+- [ ] **Step 1: Write the failing tests** — policy/rule scope literal `document` ok, declared collection ok, undeclared → `UNKNOWN_REFERENCE`; `depends_on` fact/collection/rule refs ok, undeclared → `UNKNOWN_REFERENCE` at the entry index, duplicates → `DUPLICATE_ID`; deadline `goal`/declared/undeclared; cascade guards (malformed declaring lists suppress reference checks, not shape checks); cycles: self-loop, 2-cycle, 3-cycle, two disjoint cycles → one `CYCLE` per component at the lowest-index member with bounded message; 2000-rule acyclic chain → `[]` with no `RecursionError`; 1500-rule single cycle → exactly one component diagnostic; cross-list dependencies (rule → fact) never cycle.
+- [ ] **Step 2: Run to observe RED** — reference and cycle assertions fail (layer missing).
+- [ ] **Step 3: Implement (minimal)** — declared-set reference validation + iterative Tarjan SCC cycle components.
+- [ ] **Step 4: Run to observe GREEN** — module suite, then full discover.
+- [ ] **Step 5: Commit** — `feat(authoring): declared references and iterative SCC dependency-cycle diagnostics` (→ 9ed2fcc).
 
 ### Task 6: sop_digest
 
-**Files:** tests (`DigestTests`), `work_runtime/authoring.py`.
+**Files:**
+- Modify: `work_runtime/authoring.py`; add test class `DigestTests`.
 
-- [ ] Step 1 RED: clean synthetic card digests to 64-hex and equals `policy.digest`; key-order neutrality (rebuilt reversed-order card, same digest); any single value mutation → different digest; non-clean (schema error, non-native tuple, cycle, nonfinite, surrogate, deep, non-dict) → `ValueError` with bounded message that does not contain payload values; `lint_sop` still never raises for the same inputs.
-- [ ] Step 2 Implement: `sop_digest` (reuse `policy.digest` after clean).
-- [ ] Step 3 GREEN + full suite.
-- [ ] Step 4 Commit: `feat(authoring): sop_digest reusing canonical digest after clean lint`.
+**Interfaces:**
+- Consumes: the complete clean gate from Tasks 1–5 and `policy.digest`.
+- Produces: `sop_digest(value) -> str` — canonical SHA-256 for lint-clean input, bounded `ValueError` ("SOP is not lint-clean: N diagnostic(s); first: CODE at PATH", root rendered `<root>`) otherwise.
+
+- [ ] **Step 1: Write the failing tests** — clean synthetic card digests to 64-hex and equals `policy.digest`; key-order neutrality (rebuilt reversed-order card, same digest); any single value mutation → different digest; non-clean (schema error, non-native tuple, cycle, nonfinite, surrogate, deep, non-dict) → `ValueError` with bounded message that does not contain payload values; `lint_sop` still never raises for the same inputs.
+- [ ] **Step 2: Run to observe RED** — `ImportError: cannot import name 'sop_digest'`.
+- [ ] **Step 3: Implement (minimal)** — `sop_digest` reusing `policy.digest` after clean lint.
+- [ ] **Step 4: Run to observe GREEN** — module suite, then full discover.
+- [ ] **Step 5: Commit** — `feat(authoring): sop_digest reusing canonical digest after clean lint` (→ 7684dd5).
 
 ### Task 7: packaged valid examples (single truth)
 
-**Files:** tests (`PackagedExampleTests`), `work_runtime/data/sop/expense.json`, `work_runtime/data/sop/publishing.json`.
+**Files:**
+- Create: `work_runtime/data/sop/expense.json`, `work_runtime/data/sop/publishing.json`; add test class `PackagedExampleTests`.
 
-- [ ] Step 1 RED: tests read `work_runtime/data/sop/expense.json` and `publishing.json` from the source tree (no importlib.resources yet — packaging is the harness owner's task) and assert `lint_sop(...) == []`, `sop_digest` works, `schema_version == 1`, expense card carries E01–E08 with ≥1 must and ≥1 forbidden rule and both deadline kinds, publishing card mirrors `PublishingPolicy` (C01–C04, capability `content.publish`). Files absent → `FileNotFoundError` RED.
-- [ ] Step 2 Implement: write the two cards mirroring the demo policies' semantics as reviewable text (dates/paths confer no authority).
-- [ ] Step 3 GREEN + full suite.
-- [ ] Step 4 Commit: `feat(authoring): packaged expense and publishing rule-card examples`.
+**Interfaces:**
+- Consumes: full `lint_sop` + `sop_digest`.
+- Produces: the two packaged cards that later harness work reads via `importlib.resources` (not wired in this sprint — tests read the source files directly).
+
+- [ ] **Step 1: Write the failing tests** — tests read both files and assert `lint_sop(...) == []`, `sop_digest` works, `schema_version == 1`, expense card carries E01–E08 with ≥1 must and ≥1 forbidden rule and both deadline kinds, publishing card mirrors `PublishingPolicy` (C01–C04, capability `content.publish`). Files absent → `FileNotFoundError`.
+- [ ] **Step 2: Run to observe RED** — `FileNotFoundError` on the missing files.
+- [ ] **Step 3: Implement** — write the two cards mirroring the demo policies' semantics as reviewable text (dates/paths confer no authority).
+- [ ] **Step 4: Run to observe GREEN** — module suite, then full discover.
+- [ ] **Step 5: Commit** — `feat(authoring): packaged expense and publishing rule-card examples` (→ d9e622e).
 
 ### Task 8: invalid fixtures
 
-**Files:** tests (`FixtureFileTests`), `examples/sop/*.json`.
+**Files:**
+- Create: `examples/sop/*.json` (19 files); add test class `FixtureFileTests` with a `FIXTURE_EXPECTATIONS` filename → expected-code-set table.
 
-- [ ] Step 1 RED: tests enumerate the fixture set by filename and assert the exact expected code set (and selected paths) per file, sorted output, nonempty diagnostics; `long-chain-cycle.json` asserts exactly one `CYCLE`. Absent files → RED.
-- [ ] Step 2 Implement: write bounded, varied fixtures: missing-root-field, unknown-root-field, wrong-schema-version, boolean-schema-version, nonfinite-limit (NaN literal), empty-values, wrong-enums, type-mismatches, malformed-source, duplicate-ids, duplicate-capability, duplicate-depends-on, reserved-tokens, unknown-scope, unknown-deadline, unknown-depends-on, rule-cycle, long-chain-cycle, empty-rules. JSON only; not mirrors of the valid cards.
-- [ ] Step 3 GREEN + full suite.
-- [ ] Step 4 Commit: `feat(authoring): varied invalid SOP fixtures under examples/sop`.
+**Interfaces:**
+- Consumes: full lint (and digest for the raise-path assertions).
+- Produces: the bounded invalid-fixture set, one defect theme per file, including the `long-chain-cycle.json` graph-boundary fixture (80-rule single cycle → exactly one `CYCLE`).
+
+- [ ] **Step 1: Write the failing tests** — enumerate the fixture set by filename, assert the exact expected code set (and selected paths) per file, sorted output, nonempty diagnostics.
+- [ ] **Step 2: Run to observe RED** — set mismatch + `FileNotFoundError` (files absent).
+- [ ] **Step 3: Implement** — write the fixtures: missing-root-field, unknown-root-field, wrong-schema-version, boolean-schema-version, nonfinite-limit (NaN literal), empty-values, wrong-enums, type-mismatches, malformed-source, duplicate-ids, duplicate-capability, duplicate-depends-on, reserved-tokens, unknown-scope, unknown-deadline, unknown-depends-on, rule-cycle, long-chain-cycle, empty-rules. JSON only; not mirrors of the valid cards.
+- [ ] **Step 4: Run to observe GREEN** — module suite, then full discover.
+- [ ] **Step 5: Commit** — `feat(authoring): varied invalid SOP fixtures under examples/sop` (→ bf53e98).
 
 ### Task 9: guide, gates, report
 
-**Files:** `docs/sop-authoring.md` (new), `.agents/notes/2026-10-13-S4-sop-authoring-report.md` (new).
+**Files:**
+- Create: `docs/sop-authoring.md`; `.agents/notes/2026-10-13-S4-sop-authoring-report.md`.
 
-- [ ] Step 1 Write `docs/sop-authoring.md`: exact API, diagnostics format and all 14 codes, preflight limits (native/depth 64/integer ±(2^53-1)/UTF-8/finite/cycles-and-aliases, iterative), full schema tables, global namespace and reserved tokens (`document`, `goal`), references and SCC cycle diagnostics, digest semantics and non-guarantees, links to the packaged examples and fixtures, static-only truth boundaries, CLI as a later sprint.
-- [ ] Step 2 Gates: `python3 scripts/check_docs.py` (0 broken), `python3 -m unittest discover -s tests` (273 + new), `python3 -m work_runtime demo`, `... publish-demo`, `... intervention-demo`, `python3 -m compileall -q work_runtime tests scripts`.
-- [ ] Step 3 Write the report (named tests, RED/GREEN commands and results, counts, commits, decisions, limits) and commit both: `docs(authoring): SOP authoring guide and worker report`.
-- [ ] Step 4 Orca `check` for late redirects, then `worker_done` (exactly once) and idle.
+**Interfaces:**
+- Consumes: the finished module, examples, fixtures and all prior evidence.
+- Produces: the public static-only guide and the worker report (RED/GREEN commands and results, counts, commits, decisions, limits) that integration reviews.
+
+- [ ] **Step 1: Write `docs/sop-authoring.md`** — exact API, diagnostics format and all 14 codes, preflight limits, full schema tables, global namespace and reserved tokens, references and SCC cycle diagnostics, digest semantics and non-guarantees, links to the packaged examples and fixtures, static-only truth boundaries, CLI as a later sprint.
+- [ ] **Step 2: Run the gates** — `python3 scripts/check_docs.py` (0 broken), `python3 -m unittest discover -s tests` (273 + new), `python3 -m work_runtime demo`, `... publish-demo`, `... intervention-demo`, `python3 -m compileall -q work_runtime tests scripts`.
+- [ ] **Step 3: Write the report and commit both** — `docs(authoring): SOP authoring guide and worker report` (→ d1051b6).
+- [ ] **Step 4: Orca close-out** — final `check`, then `worker_done` and idle.
 
 ## Verification
 
-Every task: observed RED output quoted in the report, then GREEN, then full 273+new discover. Final: all gates above green; scoped `git log` clean; no out-of-ownership file touched (`git status` clean apart from report/plan commits).
+Every task: observed RED output quoted in the report, then GREEN, then full 273+new discover. Final: all gates green; scoped `git log` clean; no out-of-ownership file touched (`git status` clean apart from report/plan commits).

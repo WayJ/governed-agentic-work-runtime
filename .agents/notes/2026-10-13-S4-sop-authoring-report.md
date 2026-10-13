@@ -152,3 +152,23 @@ to change the anchor — no edit was made in this docs-only dispatch.
 Gates re-verified with this note: `python3 scripts/check_docs.py` → 0
 broken; git scope clean apart from this report edit; no product, code,
 test, plan or other files touched.
+
+## Plan-alignment addendum (2026-10-14, docs-only dispatch task_64b5b4803dc4)
+
+Master accepted the implemented/tested unknown-field anchor at the offending
+key's pointer; the plan `docs/superpowers/plans/2026-10-13-s4-sop-authoring.md`
+was aligned to the actual artifact in this dispatch (writing-plans remained
+loaded from the 2026-10-14 audit only, never before the original plan — the
+alignment note inside the plan states this). Changes: Root unknown-field
+anchor corrected from `""` to the key pointer (e.g. `/extra`), a concise
+Review Focus section added, per-task Interfaces (Consumes/Produces) blocks
+added, folded RED steps made explicit five-phase checkboxes, the Task 2
+inline drafting artifact cleaned, and the stale `_sorted_dedup` helper name
+corrected to the actual `_finalize`; historical task content, RED/GREEN
+evidence and commit identities (0c45af0…d1051b6) preserved. No source,
+tests or examples touched: check_docs 0 broken, git diff scoped to the plan
++ this addendum, and a smoke run confirmed the API/fixtures behavior
+unchanged (clean expense card, 64-hex digest, `rule-cycle.json` → `CYCLE`,
+unknown root field → `UNKNOWN_FIELD` at `/extra`). No 419-suite rerun per
+dispatch (reversible docs-only change); integration should merge this
+report-and-plan tip together with the product.
