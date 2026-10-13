@@ -19,8 +19,16 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
 6. Run `python -m work_runtime publish-demo` outside the checkout and assert
    both the printed result and — independently of the printed text — that the
    demo's publisher database contains exactly one publication.
-7. Run the `work-runtime demo` console entry point outside the checkout and
+7. Run `python -m work_runtime intervention-demo` outside the checkout, assert
+   the printed result, require exactly three printed scenario databases, and
+   count each scenario's fake OA database independently: exactly one accepted
+   application per store. Also run the installed `inspect --policy-versions
+   demo-1,demo-2` against the migrated store and assert it reads the demo-2 pin.
+8. Run the `work-runtime demo` console entry point outside the checkout and
    assert the same printed result.
+9. Run the `work-runtime intervention-demo` console entry point outside the
+   checkout and assert the same printed result and the same independent
+   per-store counts as stage 7.
 
 Usage: python3 scripts/verify_install.py [--python INTERP] [--repo PATH] [--keep]
 """
@@ -40,6 +48,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEMO_FINAL_LINE = "external applications created: 1"
 PUBLISH_FINAL_LINE = "published artifacts: 1"
+INTERVENTION_FINAL_LINE = "accepted applications: 3 (one per store)"
 INSPECT_DB = re.compile(r'--db "([^"]+)"')
 # pkg-resources appears as a virtual entry on some Debian-derived pips.
 ALLOWED_PACKAGES = {"pip", "setuptools", "wheel", "pkg-resources", "governed-work-runtime"}
@@ -83,6 +92,35 @@ def count_publications(publisher_db):
 def require(condition, message):
     if not condition:
         raise SystemExit("FAILED: " + message)
+
+
+def require_intervention_store_counts(stdout, source):
+    """Give a module or console intervention-demo run independent store proof.
+
+    Extracts the printed scenario databases and requires exactly three
+    distinct stores named transfer, cancel, migrate in that order, then
+    counts each store's receipts directly: exactly one accepted application
+    per store. Returns the resolved store paths.
+    """
+    stores = INSPECT_DB.findall(stdout)
+    require(len(stores) == 3,
+            "%s printed %d inspect databases (expected exactly 3: "
+            "transfer, cancel, migrate)" % (source, len(stores)))
+    require(len(set(stores)) == 3,
+            "%s printed duplicate store paths: %s" % (source, stores))
+    names = [Path(store).parent.name for store in stores]
+    require(names == ["transfer", "cancel", "migrate"],
+            "%s printed scenario directories %s (expected transfer, cancel, "
+            "migrate in order)" % (source, names))
+    for store in stores:
+        oa_db = Path(store).parent / "oa.sqlite"
+        require(oa_db.exists(),
+                "%s store %s has no external database at %s" % (source, store, oa_db))
+        accepted = count_accepted(oa_db)
+        require(accepted == 1,
+                "%s store %s holds %d accepted applications (expected exactly 1)"
+                % (source, store, accepted))
+    return stores
 
 
 def main(argv=None):
@@ -157,15 +195,39 @@ def main(argv=None):
                 % (publisher_db, publications))
         print("independent check: published artifacts = %d" % publications)
 
+        print("=== module intervention-demo outside the checkout ===")
+        module_intervention = run([venv_python, "-m", "work_runtime", "intervention-demo"],
+                                  outside, show=True)
+        require(INTERVENTION_FINAL_LINE in module_intervention.stdout,
+                "module intervention-demo output lacks %r" % INTERVENTION_FINAL_LINE)
+        stores = require_intervention_store_counts(module_intervention.stdout,
+                                                   "module intervention-demo")
+        print("independent check: one accepted application per intervention store")
+
+        print("=== installed inspect reads the migrated pinned work ===")
+        migrated = run([venv_python, "-m", "work_runtime", "inspect",
+                        "--db", stores[2], "--work", "migrate",
+                        "--policy-versions", "demo-1,demo-2"], outside)
+        require('"policy_version": "demo-2"' in migrated.stdout,
+                "installed inspect with --policy-versions did not read the demo-2 pin")
+
         print("=== console demo outside the checkout ===")
         console_demo = run([console, "demo"], outside, show=True)
         require(DEMO_FINAL_LINE in console_demo.stdout,
                 "console demo output lacks %r" % DEMO_FINAL_LINE)
 
+        print("=== console intervention-demo outside the checkout ===")
+        console_intervention = run([console, "intervention-demo"], outside, show=True)
+        require(INTERVENTION_FINAL_LINE in console_intervention.stdout,
+                "console intervention-demo output lacks %r" % INTERVENTION_FINAL_LINE)
+        require_intervention_store_counts(console_intervention.stdout,
+                                          "console intervention-demo")
+
         print("=== PASS ===")
         print("fresh venv install; import origin inside the venv; no third-party runtime "
               "dependencies; module and console demos outside the checkout with exactly "
-              "one external application and one published artifact (%.1fs)"
+              "one external application, one published artifact and one accepted "
+              "application per intervention store (%.1fs)"
               % (time.time() - started))
         return 0
     finally:

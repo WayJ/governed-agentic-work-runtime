@@ -48,6 +48,44 @@ A second business domain runs on the same Runtime class in its own database. Rev
 
 The final line is asserted against the separate publisher database (`publications` table), and the printed command `inspect --policy content-publish` reads back the saved work and events. The signature proves source authenticity and content integrity only — not business truth; see [signed evidence](docs/signed-evidence.md).
 
+## Watch interventions stop work without losing effects
+
+```bash
+python3 -m work_runtime intervention-demo
+```
+
+Three intervention scenarios run on the same Runtime class, each against its own fresh pair of databases: an ownership transfer that invalidates the prepared intent and denies the former owner (including replaying an already-accepted command), a cancellation that cannot complete while an external effect is uncertain — reconciling the original business key recovers exactly one effect, and closing requires acknowledging exactly that effect — and an explicit same-family policy migration that invalidates the old approval, strengthens the approval rule and re-admits the same operation once version-bound approval arrives.
+
+```text
+Scenario A — ownership transfer (own store: transfer/)
+1. Agent proposes submission → intent prepared while agent owns the work
+2. transfer_owner agent → delegate → prepared intent invalidated (OWNERSHIP_TRANSFERRED)
+3. Former owner re-proposes → AUTHORITY_DENIED; replays the accepted command → fresh AUTHORITY_DENIED, stored receipt untouched; dispatch stays cancelled (0 external calls)
+4. New owner re-proposes → SAME operation id (business key stable) → intent readmitted
+5. Dispatch → confirmed_succeeded; accepted applications in this store: 1
+
+Scenario B — cancellation with an uncertain external effect (own store: cancel/)
+1. Agent proposes submission → intent prepared
+2. Dispatch → OA accepted, response lost after commit → outcome unknown (the effect exists)
+3. request_cancel → intent stored; finalize now → OUTCOME_UNRESOLVED while the effect is unknown
+4. Reconcile the ORIGINAL business key → confirmed_succeeded, external id recovered, nothing resent
+5. finalize [] → CANCEL_ACKNOWLEDGEMENT_MISMATCH; exact acknowledgement [op] → CLOSED cancelled
+6. Acknowledgement records the effect (no reversal); accepted applications in this store: 1
+
+Scenario C — explicit policy migration demo-1 → demo-2 (own store: migrate/)
+1. Under-limit expense bound to demo-1 → E05 not applicable; a demo-1-shaped approval exists
+2. work.intervene admin migrates to demo-2 → revision 2; old approval INVALID; E05 applicable + pending; prepared intent invalidated (POLICY_MIGRATED)
+3. Re-propose → REQUIREMENT_UNSATISFIED; stale contract revision → CONTRACT_REVISION_MISMATCH
+4. Finance approves under demo-2 ({digest, policy_version}) → E05 satisfied → SAME operation readmitted
+5. Restart without the registry → fails closed; restart with the registry → pinned demo-2 usable
+   (restart without the registry: Load the policy version bound to this Work; migration is not implicit)
+6. Dispatch → confirmed_succeeded; accepted applications in this store: 1
+
+3 scenarios; accepted applications: 3 (one per store); effects reversed: 0
+```
+
+Every count is asserted against the scenario's own external database: zero external calls while the intent is merely prepared or cancelled, exactly one accepted application after each external acceptance. Closing a cancelled work records the acknowledged effect with its external id — acknowledgement is durable bookkeeping, not compensation; nothing is reversed. The owners, delegates and administrators in the grants map are trusted local principals, not authenticated identities. A work pinned to `demo-2` is readable only with its version registry loaded — the printed `inspect --policy-versions demo-1,demo-2` command does exactly that; without the flag, inspection fails closed.
+
 ## Why a Work Runtime?
 
 A business task can outlive its conversation. Its plan can change, approval can arrive days later, and a timed-out API request may already have created a real application.
@@ -84,9 +122,11 @@ Three distinctions shape the implementation:
 - HMAC-signed evidence ingress: strict envelopes, per-source keys, freshness and tampering rejected before any write; the reserved `accepted` kind cannot be supplied through ingress.
 - Declared adapter contracts with reusable conformance tests and dispatch-time capability checks.
 - A second business domain (content publication) on the same Runtime: review gating, content-bound evidence and one published artifact per `(document id, content digest)`.
+- Ownership transfer, cancellation and explicit same-family policy migration: prepared intents are invalidated with recorded reasons, uncertain effects must reconcile before cancellation completes, and closing requires acknowledging the exact set of succeeded effects with their external ids — recorded, never reversed.
+- An explicit per-runtime policy registry: works stay pinned to their bound version, restarts fail closed until that version is loaded, and migration revalidates every piece of evidence under the target policy before binding changes.
 - A replaceable `Policy` interface and an `Adapter` interface for execution and lookup.
 
-The core API is a trusted, in-process library. Application code supplies source identities and grants; these names do **not** authenticate remote callers. The signed ingress authenticates evidence sources within a configured shared-key boundary — it is not transport security, tenant authorization, or proof of business truth. One policy owns each runtime database; the two demo domains use separate databases and the same Runtime class. The coordinator is local, and the prototype does not implement distributed worker leases, policy publishing, evidence revocation, cancellation/compensation, or multi-tenant authorization. Unsupported lifecycle commands are rejected explicitly. Full RFC coverage is tracked in [verification](docs/verification.md).
+The core API is a trusted, in-process library. Application code supplies source identities and grants; these names do **not** authenticate remote callers — owners and `work.intervene` administrators are trusted local principals, not authenticated identities. The signed ingress authenticates evidence sources within a configured shared-key boundary — it is not transport security, tenant authorization, or proof of business truth. One policy family owns each runtime database; works may pin different versions of that family through an explicitly loaded registry, and the two demo domains use separate databases on the same Runtime class. The coordinator is local, and the prototype does not implement distributed worker leases, policy publishing, evidence revocation, compensation (effect reversal) execution, or multi-tenant authorization: cancelling a work acknowledges its external effects, it does not undo them. Unsupported lifecycle commands are rejected explicitly. Full RFC coverage is tracked in [verification](docs/verification.md).
 
 ## Use the local API
 
@@ -119,11 +159,12 @@ python3 -m unittest discover -s tests -v             # tests gate
 python3 scripts/check_docs.py                        # contracts gate: local doc links resolve
 python3 -m work_runtime demo                         # demo gate: real crash recovery
 python3 -m work_runtime publish-demo                 # demo gate: signed-evidence publication
+python3 -m work_runtime intervention-demo            # demo gate: transfer, cancel, migrate
 python3 -m compileall -q work_runtime tests scripts  # syntax gate
 python3 scripts/verify_install.py                    # fresh venv, install, demos outside the checkout
 ```
 
-The first five commands are the repository's gates. `scripts/verify_install.py` goes further: it builds the package into a brand-new virtual environment, asserts the import comes from that venv rather than the checkout, checks that no third-party dependency was installed, and runs the demos with the working directory outside the repository — counting exactly one external application in the fake OA database and exactly one publication in the publisher database, independently of the printed output. The install stage needs pip index access for the build backend.
+The first six commands are the repository's gates. `scripts/verify_install.py` goes further: it builds the package into a brand-new virtual environment, asserts the import comes from that venv rather than the checkout, checks that no third-party dependency was installed, and runs the demos with the working directory outside the repository — counting exactly one external application in the fake OA database, exactly one publication in the publisher database, and exactly one accepted application per intervention store, all independently of the printed output. The install stage needs pip index access for the build backend.
 
 Tests exercise actual subprocess death after external acceptance and during evidence adoption, concurrent duplicate commands, stale approvals, cross-work uniqueness, wait expiry and missing query results. See [the verification report](docs/verification.md) for implemented and deferred protocol cases: 14 of the 15 protocol acceptance cases are covered by named tests, and P13 (distributed worker leases) is explicitly deferred.
 
@@ -136,6 +177,6 @@ work-runtime demo
 
 ## Where this is going
 
-The integration-boundary milestone now has a local slice: HMAC-authenticated evidence intake, declared adapter capabilities with conformance tests, and a second-domain harness through the same command protocol. What remains before calling it trustworthy is external review and real adapter experience. The following milestones address cancellation and compensation, policy authoring, and distributed execution based on measured needs.
+The integration-boundary milestone now has a local slice: HMAC-authenticated evidence intake, declared adapter capabilities with conformance tests, and a second-domain harness through the same command protocol. What remains before calling it trustworthy is external review and real adapter experience. The intervention milestone likewise has a local slice — cancellation with exact effect acknowledgement, authority-aware ownership transfer, and explicit same-family policy migration — while compensation execution, evidence revocation and distributed fencing stay open. Later milestones address policy authoring and distributed execution based on measured needs.
 
 The [roadmap](docs/roadmap.md) uses observable acceptance criteria. Contributions that challenge a guarantee with a reproducible failure are especially useful. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [protocol cases](docs/RFC-003-runtime-protocol.md).

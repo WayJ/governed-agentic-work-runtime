@@ -30,6 +30,8 @@ The S2 wave provides this as a local, test-gated slice: HMAC-signed evidence int
 - Explain every blocker with its rule, object scope and permitted recovery path.
 - Publish failure scenarios showing both automatic recovery and required human intervention.
 
+The S3 wave provides part of this as a local, test-gated slice: cancellation that acknowledges external effects exactly (never reversing them), authority-aware ownership transfer with replay protection, and explicit same-family policy migration with per-work pinned versions ([interventions](interventions.md), [verification](verification.md)). Compensation execution, evidence revocation and distributed fencing remain open, and every intervention here is a trusted-local decision — not an authenticated multi-tenant one.
+
 ## 0.4 — Authoring and execution at scale
 
 - Use real author feedback to validate the rule-card model and publication process.
