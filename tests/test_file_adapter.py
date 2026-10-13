@@ -10,6 +10,8 @@ import inspect
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,6 +57,11 @@ class FileAdapterTestCase(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(prefix="file-adapter-test-")
         self.addCleanup(tmp.cleanup)
         self.directory = tmp.name
+
+    def fresh_directory(self):
+        tmp = tempfile.TemporaryDirectory(prefix="file-adapter-test-")
+        self.addCleanup(tmp.cleanup)
+        return tmp.name
 
     def make_adapter(self):
         return FilePublisher(self.directory)
@@ -337,11 +344,6 @@ class FilePublisherConformanceTests(AdapterConformanceMixin, FileAdapterTestCase
 
 
 class CorruptionTests(FileAdapterTestCase):
-    def fresh_directory(self):
-        tmp = tempfile.TemporaryDirectory(prefix="file-adapter-test-")
-        self.addCleanup(tmp.cleanup)
-        return tmp.name
-
     def publish_into(self, directory, key="victim"):
         adapter = FilePublisher(directory)
         document = sample_document()
@@ -541,6 +543,131 @@ class ApiShapeTests(FileAdapterTestCase):
         # the production module: the commit is os.link or an explicit error.
         for absent in ("_exit", "os.rename", "os.replace", "shutil"):
             self.assertNotIn(absent, source)
+
+
+def _race_child(prelude="", tail=""):
+    """Child script: optional prelude, publish, optional tail.
+
+    Children run via ``sys.executable -c`` with the inherited working
+    directory (the same pattern as tests/test_runtime.py): argv 1 is the
+    adapter directory, argv 2 the JSON document, argv 3 the idempotency key.
+    The prelude runs before the publish (e.g. wrapping ``os.link``); the
+    tail runs after ``execute`` returns (e.g. an outer ``os._exit``).
+    A publish failure prints ``ERROR:<ExceptionName>`` and exits 1.
+    """
+    return (
+        "import json,sys\n"
+        "from work_runtime.file_adapter import FilePublisher\n"
+        "from work_runtime.policy import digest\n"
+        + prelude +
+        "document=json.loads(sys.argv[2])\n"
+        "try:\n"
+        "    receipt=FilePublisher(sys.argv[1]).execute(sys.argv[3],document,"
+        "digest(document))\n"
+        "    print(json.dumps(receipt,sort_keys=True))\n"
+        "except Exception as error:\n"
+        "    print('ERROR:'+type(error).__name__)\n"
+        "    sys.exit(1)\n" + tail
+    )
+
+
+def _spawn(children):
+    processes = [subprocess.Popen([sys.executable, "-c", body, directory, document, key],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  universal_newlines=True)
+                 for body, directory, document, key in children]
+    results = []
+    for process in processes:
+        out, err = process.communicate(timeout=120)
+        results.append((process.returncode, out.strip(), err.strip()))
+    return results
+
+
+class SubprocessRaceTests(FileAdapterTestCase):
+    def test_same_key_same_content_race_commits_exactly_one_artifact(self):
+        directory = self.fresh_directory()
+        document = sample_document()
+        document_json = json.dumps(document)
+        key = "race-same"
+        children = [(_race_child(""), directory, document_json, key) for _ in range(5)]
+        results = _spawn(children)
+        for code, out, err in results:
+            self.assertEqual(code, 0, err)
+        receipts = [json.loads(out) for _, out, _ in results]
+        first = receipts[0]
+        for receipt in receipts:
+            self.assertEqual(receipt, first)
+        self.assertEqual(receipt, read_artifact(directory, key)["receipt"])
+        self.assertEqual(len(committed_files(directory)), 1)
+        self.assertEqual(stage_files(directory), [])
+
+    def test_mixed_content_race_commits_one_artifact_with_the_stable_winner(self):
+        directory = self.fresh_directory()
+        key = "race-mixed"
+        first, second = sample_document("ART-101"), sample_document("ART-202")
+        digest_first = digest(first)
+        children = []
+        for document in (first, first, first, second, second, second):
+            children.append((_race_child(""), directory, json.dumps(document), key))
+        results = _spawn(children)
+        successes = [json.loads(out) for code, out, _ in results if code == 0]
+        self.assertTrue(successes, "at least one racer must win the commit")
+        losing_outputs = [out for code, out, _ in results if code != 0]
+        for output in losing_outputs:
+            self.assertEqual(output, "ERROR:ValueError")
+        artifact = read_artifact(directory, key)
+        self.assertIn(artifact["content_digest"], (digest_first, digest(second)))
+        winning_receipt = artifact["receipt"]
+        for receipt in successes:
+            self.assertEqual(receipt, winning_receipt)
+        self.assertEqual(len(committed_files(directory)), 1)
+        self.assertEqual(stage_files(directory), [])
+
+    def test_death_before_link_leaves_only_ignorable_staging(self):
+        directory = self.fresh_directory()
+        document = sample_document()
+        document_json = json.dumps(document)
+        key = "dies-early"
+        die_before_link = (
+            "import os\n"
+            "os.link=lambda *a,**k: os._exit(77)\n"
+        )
+        body = _race_child(prelude=die_before_link)
+        child = subprocess.run([sys.executable, "-c", body, directory,
+                                document_json, key], capture_output=True)
+        self.assertEqual(child.returncode, 77)
+        self.assertEqual(committed_files(directory), [])
+        stages = stage_files(directory)
+        self.assertEqual(len(stages), 1)  # the fsynced stage of the dead child
+        adapter = FilePublisher(directory)
+        self.assertIsNone(adapter.lookup(key))
+        receipt = adapter.execute(key, document, digest(document))
+        self.assertEqual(receipt["status"], "accepted")
+        self.assertEqual(len(committed_files(directory)), 1)
+        self.assertEqual(stage_files(directory), stages)  # stale stage untouched
+        self.assertEqual(adapter.lookup(key), receipt)
+
+    def test_death_after_commit_leaves_one_artifact_and_stable_receipt(self):
+        directory = self.fresh_directory()
+        document = sample_document()
+        document_json = json.dumps(document)
+        key = "dies-late"
+        die_after_commit = (
+            "import os\n"
+            "os._exit(78)\n"  # outer exit right after execute() returns
+        )
+        body = _race_child(tail=die_after_commit)
+        child = subprocess.run([sys.executable, "-c", body, directory,
+                                document_json, key], capture_output=True)
+        self.assertEqual(child.returncode, 78)
+        self.assertEqual(len(committed_files(directory)), 1)
+        self.assertEqual(stage_files(directory), [])  # own stage cleaned in finally
+        artifact = read_artifact(directory, key)
+        adapter = FilePublisher(directory)
+        self.assertEqual(adapter.lookup(key), artifact["receipt"])
+        replayed = adapter.execute(key, document, digest(document))
+        self.assertEqual(replayed, artifact["receipt"])
+        self.assertEqual(len(committed_files(directory)), 1)
 
 
 if __name__ == "__main__":
