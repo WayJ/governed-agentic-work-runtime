@@ -245,6 +245,9 @@ class Runtime:
             if old:
                 if old[0] != request_hash:
                     return {"decision": "rejected", "code": "COMMAND_ID_REUSED"}
+                denial = self._replay_denial(db, actor, work_id, kind, payload)
+                if denial is not None:
+                    return denial  # Fresh, unpersisted; the stored receipt stays intact.
                 return json.loads(old[1])
 
             if kind == "create_work":
@@ -264,6 +267,39 @@ class Runtime:
             db.execute("INSERT INTO commands VALUES (?,?,?,?,?)",
                        (actor, command_id, request_hash, work_id, canonical(receipt)))
             return receipt
+
+    def _observed_version(self, db, work_id):
+        row = db.execute("SELECT state FROM works WHERE id=?", (work_id,)).fetchone()
+        return json.loads(row[0])["state_version"] if row else 0
+
+    def _replay_denial(self, db, actor, work_id, kind, payload):
+        """A stored receipt is replayed only while current authority holds.
+
+        Returns None when the replay may return the stored receipt, or a
+        fresh rejected receipt (never persisted) when authority was lost.
+        """
+        grants = self.grants[actor]
+        if kind == "create_work":
+            if "work.manage" not in grants:
+                return self._reject("AUTHORITY_DENIED", self._observed_version(db, work_id))
+            return None
+        work = self._work(db, work_id)
+        version = work["state_version"]
+        if kind == "record_evidence":
+            policy = self._policy_for(work)
+            ok = (policy.evidence_sources.get(payload.get("kind")) == actor
+                  and "evidence.write" in grants)
+        elif kind == "propose_action":
+            owner = work.get("owner")
+            ok = (owner is None or actor == owner) and payload.get("capability") in grants
+        elif kind in ("request_cancel", "finalize_cancel", "transfer_owner"):
+            ok = self._intervener(actor, work)
+        elif kind in ("bind_contract", "revise_plan", "revise_document",
+                      "register_wait", "request_completion"):
+            ok = self._manager(actor, work)
+        else:
+            ok = True  # Unsupported kinds replay exactly as they were decided.
+        return None if ok else self._reject("AUTHORITY_DENIED", version)
 
     @staticmethod
     def _reject(code, version, blockers=None):

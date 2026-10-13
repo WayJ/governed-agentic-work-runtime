@@ -667,5 +667,141 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(self.runtime.get_work("demo")["owner"], "delegate")
 
 
+class RelabeledApprovalSource(ExpensePolicy):
+    evidence_sources = dict(ExpensePolicy.evidence_sources, approval="cfo")
+
+
+class ReplayAuthorityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.oa_path = str(Path(self.temp.name) / "oa.sqlite")
+        self.grants = intervention_grants()
+        self.runtime = Runtime(self.path, ExpensePolicy(), self.grants)
+        self.oa = FakeOA(self.oa_path)
+        initialize(self.runtime)
+        prerequisites(self.runtime)
+
+    def test_create_work_replay_requires_work_manage(self):
+        raw = document(document_id="REPLAY-1")
+        first = self.runtime.command("agent", "create-1", "replay-work", "create_work",
+                                     {"document": raw}, None)
+        self.assertEqual(first["decision"], "accepted")
+        self.grants["agent"].discard("work.manage")
+        denial = self.runtime.command("agent", "create-1", "replay-work", "create_work",
+                                      {"document": raw}, None)
+        self.assertEqual((denial["decision"], denial["code"]),
+                         ("rejected", "AUTHORITY_DENIED"))
+        self.assertEqual(denial["observed_state_version"],
+                         self.runtime.get_work("replay-work")["state_version"])
+        self.assertEqual(self.runtime.get_command("agent", "create-1"), first)
+
+    def test_record_evidence_replay_requires_current_source_and_write(self):
+        payload = {"event_id": "ev-1", "kind": "approval",
+                   "data": {"digest": self.runtime.get_work("demo")["document_digest"]}}
+        first = self.runtime.command("finance", "ev-1", "demo", "record_evidence",
+                                     payload, None)
+        self.assertEqual(first["decision"], "accepted")
+        self.grants["finance"].discard("evidence.write")
+        denial = self.runtime.command("finance", "ev-1", "demo", "record_evidence",
+                                      payload, None)
+        self.assertEqual(denial["code"], "AUTHORITY_DENIED")
+        self.assertEqual(self.runtime.get_command("finance", "ev-1"), first)
+        self.grants["finance"].add("evidence.write")
+        relabeled = Runtime(self.path, RelabeledApprovalSource(), self.grants)
+        denial = relabeled.command("finance", "ev-1", "demo", "record_evidence",
+                                   payload, None)
+        self.assertEqual(denial["code"], "AUTHORITY_DENIED")
+
+    def test_propose_replay_requires_current_owner(self):
+        version = self.runtime.get_work("demo")["state_version"]
+        payload = {"capability": "expense.submit",
+                   "document_digest": self.runtime.get_work("demo")["document_digest"],
+                   "contract_revision": 1, "plan_revision": 1}
+        first = self.runtime.command("agent", "prop-1", "demo", "propose_action",
+                                     payload, version)
+        self.assertEqual(first["decision"], "accepted")
+        self.assertEqual(self.transfer()["decision"], "accepted")
+        denial = self.runtime.command("agent", "prop-1", "demo", "propose_action",
+                                      payload, version)
+        self.assertEqual((denial["decision"], denial["code"]),
+                         ("rejected", "AUTHORITY_DENIED"))
+        self.assertEqual(denial["observed_state_version"],
+                         self.runtime.get_work("demo")["state_version"])
+        self.assertEqual(self.runtime.get_command("agent", "prop-1"), first)
+
+    def test_propose_replay_requires_capability(self):
+        version = self.runtime.get_work("demo")["state_version"]
+        payload = {"capability": "expense.submit",
+                   "document_digest": self.runtime.get_work("demo")["document_digest"],
+                   "contract_revision": 1, "plan_revision": 1}
+        first = self.runtime.command("agent", "prop-2", "demo", "propose_action",
+                                     payload, version)
+        self.assertEqual(first["decision"], "accepted")
+        self.grants["agent"].discard("expense.submit")
+        denial = self.runtime.command("agent", "prop-2", "demo", "propose_action",
+                                      payload, version)
+        self.assertEqual(denial["code"], "AUTHORITY_DENIED")
+
+    def test_management_replay_requires_work_manage(self):
+        payload = {"steps": ["submit"], "open_requirements": [], "replan_when": []}
+        version = self.runtime.get_work("demo")["state_version"]
+        first = self.runtime.command("agent", "plan-1", "demo", "revise_plan",
+                                     payload, version)
+        self.assertEqual(first["decision"], "accepted")
+        before = self.runtime.get_work("demo")
+        events_before = len(self.runtime.events("demo"))
+        self.grants["agent"].discard("work.manage")
+        denial = self.runtime.command("agent", "plan-1", "demo", "revise_plan",
+                                      payload, version)
+        self.assertEqual(denial["code"], "AUTHORITY_DENIED")
+        self.assertEqual(self.runtime.get_command("agent", "plan-1"), first)
+        after = self.runtime.get_work("demo")
+        self.assertEqual(after["state_version"], before["state_version"])
+        self.assertEqual(len(self.runtime.events("demo")), events_before)
+
+    def test_intervention_replay_after_transfer_denied(self):
+        version = self.runtime.get_work("demo")["state_version"]
+        first = self.runtime.command("agent", "cancel-x", "demo", "request_cancel",
+                                     {"reason": "stop"}, version)
+        self.assertEqual(first["decision"], "accepted")
+        self.assertEqual(self.runtime.command("root", "adopt", "demo", "transfer_owner",
+                                              {"owner": "delegate", "reason": "handover"},
+                                              self.runtime.get_work("demo")["state_version"]
+                                              )["decision"], "accepted")
+        denial = self.runtime.command("agent", "cancel-x", "demo", "request_cancel",
+                                      {"reason": "stop"}, version)
+        self.assertEqual(denial["code"], "AUTHORITY_DENIED")
+        self.assertEqual(self.runtime.get_command("agent", "cancel-x"), first)
+
+    def test_replay_with_authority_returns_stored_receipt_after_close(self):
+        op = action(self.runtime)["operation_id"]
+        self.runtime.dispatch(op, self.oa)
+        version = self.runtime.get_work("demo")["state_version"]
+        final = self.runtime.command("agent", "done-1", "demo", "request_completion",
+                                     None, version)
+        self.assertEqual(final["decision"], "accepted")
+        replay = self.runtime.command("agent", "done-1", "demo", "request_completion",
+                                      None, version)
+        self.assertEqual(replay, final)
+
+    def test_replayed_fingerprint_mismatch_is_command_id_reused(self):
+        payload = {"steps": ["submit"], "open_requirements": [], "replan_when": []}
+        version = self.runtime.get_work("demo")["state_version"]
+        first = self.runtime.command("agent", "plan-9", "demo", "revise_plan",
+                                     payload, version)
+        altered = {"steps": ["other"], "open_requirements": [], "replan_when": []}
+        reused = self.runtime.command("agent", "plan-9", "demo", "revise_plan", altered,
+                                      version)
+        self.assertEqual(reused["code"], "COMMAND_ID_REUSED")
+        self.assertEqual(self.runtime.get_command("agent", "plan-9"), first)
+
+    def transfer(self, owner="delegate", reason="handover"):
+        version = self.runtime.get_work("demo")["state_version"]
+        return self.runtime.command("agent", uuid.uuid4().hex, "demo", "transfer_owner",
+                                    {"owner": owner, "reason": reason}, version)
+
+
 if __name__ == "__main__":
     unittest.main()

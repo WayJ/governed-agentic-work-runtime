@@ -23,7 +23,22 @@ regressions that pin each guarantee live in `tests/test_boundaries.py`.
 
 | layer | identity | effect |
 |---|---|---|
-| command receipt | fingerprint of `(work_id, kind, payload, expected_version)` under `(actor, command_id)` | replays return the original receipt verbatim; a reused id with different content is rejected `COMMAND_ID_REUSED`; rejected decisions are replayed as rejected |
+| command receipt | fingerprint of `(work_id, kind, payload, expected_version)` under `(actor, command_id)` | replays return the original receipt verbatim **while current authority holds** (see below); a reused id with different content is rejected `COMMAND_ID_REUSED`; rejected decisions are replayed as rejected |
+
+**Replay rechecks current authority.** Before returning a stored receipt
+the runtime re-evaluates the command's authority against the *current*
+grants, ownership and policy configuration: `create_work` needs
+`work.manage`; `record_evidence` needs the current source identity for
+the payload kind plus `evidence.write`; `propose_action` needs the
+current owner plus the requested capability; management mutations need
+the current owner plus `work.manage` (legacy ownerless works stay
+grant-only); intervention commands accept the current owner with
+`work.manage` or a `work.intervene` administrator. A replay whose
+authority was lost returns a **fresh, unpersisted** `AUTHORITY_DENIED`
+receipt carrying the currently observed state version — the stored
+receipt is never modified, and a later replay under restored authority
+returns it again. Closed-work actionability follows replay as before: a
+stored receipt is returned for a closed work while authority holds.
 | operation | business key derived by the policy (expense demo: policy id + capability + document id + document revision) | a new command proposing the same logical effect re-associates the existing operation instead of creating a second one; same key with different content is rejected `OPERATION_CONTENT_CONFLICT` |
 | external effect | idempotency key = the operation's business key, enforced by the adapter | the external system deduplicates repeated calls with the same key and content |
 
