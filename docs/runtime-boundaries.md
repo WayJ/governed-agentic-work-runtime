@@ -37,11 +37,20 @@ regressions that pin each guarantee live in `tests/test_boundaries.py`.
    `cancelled`/`STALE_INTENT`, never a fake external failure); authority and
    requirement blockers are re-evaluated (otherwise `held` with a reason —
    accepted commands are never retroactively rejected).
-2. It persists `status="dispatched"`, `dispatch_state="in_flight"` and a new
+2. Immediately before the attempt is created it fails closed on policy
+   configuration: the accepted receipt source (below) must be a nonempty
+   string, else `CommandError` — no attempt, no external call. It then runs the
+   declared-capability preflight: an adapter that declares an
+   [`AdapterContract`](adapter-contract.md) excluding the operation's
+   capability is `held` with reason `ADAPTER_ACTION_UNSUPPORTED` — again zero
+   attempts and zero external calls — and stays dispatchable by a compatible
+   adapter. A malformed descriptor raises `CommandError` before an external
+   call; a missing descriptor keeps the legacy trusted duck-typed path.
+3. It persists `status="dispatched"`, `dispatch_state="in_flight"` and a new
    attempt with `outcome_unknown` **before** the external call. A process death
    anywhere after this commit is therefore treated as "the effect may have
    happened" and must be reconciled, never assumed absent.
-3. `adapter.execute(business_key, document, document_digest)` then runs outside
+4. `adapter.execute(business_key, document, document_digest)` then runs outside
    the transaction; a crash between commit and call still leaves an inspectable
    uncertain state (see limitations).
 
@@ -53,6 +62,17 @@ only if it is a dict with:
 - `digest` exactly equal to the operation's `document_digest`,
 - `status` one of `accepted` / `rejected`,
 - `external_id` a nonempty string.
+
+This check is `receipt_is_valid` in `work_runtime/adapter_contract.py`
+(see [adapter-contract.md](adapter-contract.md)); extra receipt fields remain
+allowed. An accepted result is recorded as verified evidence — kind
+`accepted`, event id = the operation id — under the source configured at
+`policy.evidence_sources["accepted"]` (the expense demo keeps `oa`). That
+configuration fails closed with `CommandError` in `dispatch` (before an
+attempt or external call), in `reconcile` (before querying) and in `_resolve`
+(before adopting an accepted receipt): a missing, non-string or empty accepted
+source can never become an accepted proof. Terminal and cancelled-operation
+early returns are unaffected.
 
 Anything else — non-dict payload, another content's digest, unknown status,
 empty or missing `external_id` — is quarantined: the operation becomes
@@ -147,3 +167,9 @@ Guarantees:
 The real-crash demo (`python3 -m work_runtime demo`) exercises the same
 boundary end to end: a worker process dies after external acceptance and
 recovery produces exactly one FakeOA application.
+
+Adapter-contract guarantees (declared-capability hold with zero attempts and
+calls, malformed descriptors, policy-owned accepted source, conformance
+replay/uniqueness behavior) are pinned in `tests/test_adapter_contract.py`,
+which adopts the reusable mixin in `tests/adapter_conformance.py`; the exact
+test-name table lives in [adapter-contract.md](adapter-contract.md).

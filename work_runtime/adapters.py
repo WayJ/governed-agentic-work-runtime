@@ -5,11 +5,20 @@ import sqlite3
 import uuid
 from pathlib import Path
 
+from .adapter_contract import AdapterContract
 from .policy import canonical, digest
 
 
 class FakeOA:
     """A separate database models an external service, surviving worker crashes."""
+
+    # Declared assertions for trusted local configuration, not a remote guarantee.
+    contract = AdapterContract(
+        actions=("expense.submit",),
+        idempotency_scope="adapter-store:key",
+        retention="lifetime-of-store",
+        lookup_consistency="authoritative-by-key",
+        uniqueness=("invoice.id",))
 
     def __init__(self, path: str, timeout_after_commit: bool = False):
         self.path = str(path)
