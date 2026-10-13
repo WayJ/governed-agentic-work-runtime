@@ -50,18 +50,22 @@ def _unwrap(target):
 
 
 def _stripped_lines(text):
-    """Yield (lineno, line) with fenced code blocks and definitions removed."""
-    fence = None
+    """Yield (lineno, line) with fenced code blocks removed.
+
+    A fence only closes on a marker of the same character at least as long
+    as the opening one, so a ``` example inside a ```` block stays fenced.
+    """
+    fence_char = None
+    fence_len = 0
     for lineno, line in enumerate(text.splitlines(), 1):
         marker = FENCE.match(line)
-        if fence is not None:
-            if marker and marker.group(1)[0] == fence:
-                fence = None
+        if fence_char is not None:
+            if marker and marker.group(1)[0] == fence_char and len(marker.group(1)) >= fence_len:
+                fence_char = None
             continue
         if marker:
-            fence = marker.group(1)[0]
-            continue
-        if REFERENCE_DEF.match(line):
+            fence_char = marker.group(1)[0]
+            fence_len = len(marker.group(1))
             continue
         yield lineno, line
 
@@ -69,13 +73,17 @@ def _stripped_lines(text):
 def extract_links(text):
     # type: (str) -> List[Link]
     """Return links with their line numbers; targets stay exactly as written."""
+    # Reference definitions are collected only from non-fenced lines, so a
+    # `[ref]: url` inside a code example cannot define a label.
     references = {}
-    for lineno, line in enumerate(text.splitlines(), 1):
+    for lineno, line in _stripped_lines(text):
         definition = REFERENCE_DEF.match(line)
         if definition:
             references[definition.group(1).strip().lower()] = _unwrap(definition.group(2))
     links = []
     for lineno, line in _stripped_lines(text):
+        if REFERENCE_DEF.match(line):
+            continue
         cleaned = INLINE_CODE.sub(" ", line)
         for use in INLINE_LINK.finditer(cleaned):
             links.append(Link("-", lineno, _unwrap(use.group(2))))

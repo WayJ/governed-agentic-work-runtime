@@ -95,6 +95,21 @@ class CheckDocsTests(unittest.TestCase):
         findings = self.findings()
         self.assertEqual([(f[1], f[2]) for f in findings], [(2, "missing.md")])
 
+    def test_reference_definitions_inside_fences_are_ignored(self):
+        write(self.root, "ok.md", "x\n")
+        write(self.root, "index.md",
+              "Example syntax:\n\n```\n[ref]: missing.md\n```\n\n"
+              "[guide][ref]\n[real][def]\n\n[def]: ok.md\n")
+        # The fenced [ref] definition is an example: [guide][ref] must not
+        # resolve through it, and the real [def] definition must still work.
+        self.assertEqual(self.findings(), [])
+
+    def test_longer_fence_not_closed_by_shorter_marker(self):
+        write(self.root, "index.md",
+              "````\n[bad](gone.md)\n```\nstill fenced\n````\n[after](nope.md)\n")
+        findings = self.findings()
+        self.assertEqual([f[2] for f in findings], ["nope.md"])
+
     def test_images_checked(self):
         write(self.root, "index.md", "![logo](pics/logo.png)\n")
         findings = self.findings()
@@ -134,18 +149,22 @@ class CheckDocsTests(unittest.TestCase):
 
 
 class RepoDocsContractTests(unittest.TestCase):
-    """The repository's own documentation must resolve, except recorded pending links."""
+    """The repository's own documentation must resolve."""
 
     def test_repo_docs_no_unexpected_broken_links(self):
         files, links, findings = check_docs.check(REPO_ROOT)
         self.assertGreater(files, 0)
-        # docs/runtime-boundaries.md is produced by the parallel S1 runtime
-        # worker; the link from docs/verification.md stays broken in this
-        # worktree until integration assembles both branches.
-        allowed = [finding for finding in findings
-                   if finding[0] == REPO_ROOT / "docs" / "verification.md"
-                   and finding[2] == "runtime-boundaries.md"]
-        self.assertEqual(findings, allowed, "unexpected broken documentation links")
+        boundary = REPO_ROOT / "docs" / "runtime-boundaries.md"
+        if boundary.exists():
+            # Integrated state: every local documentation link must resolve.
+            self.assertEqual(findings, [], "broken documentation links after integration")
+        else:
+            # Pre-integration: docs/runtime-boundaries.md is produced by the
+            # parallel S1 runtime worker, so exactly that one pending link is
+            # tolerated here. The allowance disappears with the file.
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0][0], REPO_ROOT / "docs" / "verification.md")
+            self.assertEqual(findings[0][2], "runtime-boundaries.md")
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ The package has zero runtime dependencies. Optional development installation: `p
 | `work_runtime/adapters.py` | Separate persistent fake OA |
 | `work_runtime/demo.py` | Deterministic proposer and real worker crash demonstration |
 | `tests/test_runtime.py` | Invariants, failure injection and subprocess recovery |
-| `scripts/check_docs.py` | Local Markdown link checker — the documentation contracts gate |
+| `scripts/check_docs.py` | Local Markdown link checker — the documentation contracts gate; ignores fenced examples, inline code, reference definitions inside fences and external URLs |
 | `scripts/verify_install.py` | Fresh-venv install and outside-checkout demo verification |
 | `tests/test_docs.py` | Link checker behavior and repository documentation contracts |
 | `docs/RFC-*.md` | Candidate semantics and protocol |
