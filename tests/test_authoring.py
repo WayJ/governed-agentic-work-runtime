@@ -240,7 +240,8 @@ class PreflightLimitsTests(unittest.TestCase):
         node = 0
         for _ in range(64):
             node = [node]
-        self.assertEqual(lint_sop(node), [])
+        # Only the (expected) root-shape complaint; no DEPTH_LIMIT.
+        self.assertEqual(codes_of(lint_sop(node)), ["TYPE_MISMATCH"])
 
     def test_depth_65_rejected(self):
         node = 0
@@ -259,8 +260,9 @@ class PreflightLimitsTests(unittest.TestCase):
         self.assertEqual(codes_of(result), ["DEPTH_LIMIT"])
 
     def test_wide_tree_lints_fine(self):
-        wide = {"k%d" % i: i for i in range(2000)}
-        self.assertEqual(lint_sop(wide), [])
+        card = valid_card()
+        card["advice"] = ["advice item %d" % i for i in range(2000)]
+        self.assertEqual(lint_sop(card), [])
 
 
 class PreflightCycleAliasTests(unittest.TestCase):
@@ -344,6 +346,231 @@ class PointerOrderTests(unittest.TestCase):
         frozen = copy.deepcopy(card)
         lint_sop(card)
         self.assertEqual(card, frozen)
+
+
+
+class RootSchemaTests(unittest.TestCase):
+    """Root object shape and schema_version checks."""
+
+    def test_non_object_root_is_type_mismatch(self):
+        for bad in ([1], "card", 1, None, True):
+            with self.subTest(bad=bad):
+                result = lint_sop(bad)
+                self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+                self.assertEqual(result[0]["path"], "")
+                self.assertEqual(result[0]["message"], "value must be an object")
+
+    def test_every_root_field_required(self):
+        for field in ("schema_version", "policy", "defaults", "facts",
+                      "collections", "rules", "advice"):
+            with self.subTest(field=field):
+                card = valid_card()
+                del card[field]
+                result = lint_sop(card)
+                self.assertIn("MISSING_FIELD", codes_of(result))
+                self.assertEqual(result[0]["path"], "")
+                self.assertEqual(result[0]["message"], "missing required field '%s'" % field)
+
+    def test_unknown_root_field_anchored_at_key(self):
+        card = valid_card()
+        card["extra"] = 1
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_FIELD"])
+        self.assertEqual(result[0]["path"], "/extra")
+        self.assertEqual(result[0]["message"], "unknown field 'extra'")
+
+    def test_multiple_missing_root_fields_sorted(self):
+        card = valid_card()
+        del card["advice"]
+        del card["rules"]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["MISSING_FIELD", "MISSING_FIELD"])
+        self.assertEqual([d["message"] for d in result],
+                         ["missing required field 'advice'", "missing required field 'rules'"])
+
+    def test_schema_version_must_be_integer_one(self):
+        for bad, code in ((2, "INVALID_VALUE"), (0, "INVALID_VALUE"), (-1, "INVALID_VALUE"),
+                          ("1", "TYPE_MISMATCH"), (True, "TYPE_MISMATCH"),
+                          (1.0, "TYPE_MISMATCH"), (None, "TYPE_MISMATCH")):
+            with self.subTest(bad=bad):
+                card = valid_card()
+                card["schema_version"] = bad
+                result = lint_sop(card)
+                self.assertEqual(codes_of(result), [code])
+                self.assertEqual(result[0]["path"], "/schema_version")
+
+    def test_schema_version_messages(self):
+        card = valid_card()
+        card["schema_version"] = True
+        self.assertEqual(lint_sop(card)[0]["message"], "field must be an integer")
+        card = valid_card()
+        card["schema_version"] = 2
+        self.assertEqual(lint_sop(card)[0]["message"], "schema_version must be 1")
+
+
+class PolicySectionTests(unittest.TestCase):
+    """Policy identity, provenance source, scope shape and capabilities."""
+
+    def test_policy_must_be_object(self):
+        card = valid_card()
+        card["policy"] = []
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/policy")
+        self.assertEqual(result[0]["message"], "value must be an object")
+
+    def test_every_policy_field_required(self):
+        for field in ("id", "version", "goal", "source", "scope", "capabilities"):
+            with self.subTest(field=field):
+                card = valid_card()
+                del card["policy"][field]
+                result = lint_sop(card)
+                self.assertEqual(codes_of(result), ["MISSING_FIELD"])
+                self.assertEqual(result[0]["path"], "/policy")
+                self.assertEqual(result[0]["message"], "missing required field '%s'" % field)
+
+    def test_unknown_policy_field(self):
+        card = valid_card()
+        card["policy"]["note"] = "x"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_FIELD"])
+        self.assertEqual(result[0]["path"], "/policy/note")
+
+    def test_identity_fields_reject_wrong_type_empty_and_whitespace(self):
+        for field in ("id", "version", "goal"):
+            for bad, code in ((5, "TYPE_MISMATCH"), (None, "TYPE_MISMATCH"),
+                              ("", "EMPTY_VALUE"), ("  \t ", "EMPTY_VALUE")):
+                with self.subTest(field=field, bad=bad):
+                    card = valid_card()
+                    card["policy"][field] = bad
+                    result = lint_sop(card)
+                    self.assertEqual(codes_of(result), [code])
+                    self.assertEqual(result[0]["path"], "/policy/" + field)
+                    if code == "TYPE_MISMATCH":
+                        self.assertEqual(result[0]["message"], "field must be a string")
+                    else:
+                        self.assertEqual(result[0]["message"],
+                                         "string is empty or whitespace-only")
+
+    def test_source_shape(self):
+        card = valid_card()
+        card["policy"]["source"] = "handbook"
+        self.assertEqual(codes_of(lint_sop(card)), ["TYPE_MISMATCH"])
+        card = valid_card()
+        del card["policy"]["source"]["section"]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["MISSING_FIELD"])
+        self.assertEqual(result[0]["path"], "/policy/source")
+        card = valid_card()
+        card["policy"]["source"]["page"] = 4
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_FIELD"])
+        self.assertEqual(result[0]["path"], "/policy/source/page")
+        card = valid_card()
+        card["policy"]["source"]["document"] = ""
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["EMPTY_VALUE"])
+        self.assertEqual(result[0]["path"], "/policy/source/document")
+
+    def test_policy_scope_shape_only(self):
+        # Reference resolution (declared collections) is a later layer;
+        # here only string shape and emptiness are checked.
+        card = valid_card()
+        card["policy"]["scope"] = 5
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/policy/scope")
+        card = valid_card()
+        card["policy"]["scope"] = "  "
+        self.assertEqual(codes_of(lint_sop(card))[0], "EMPTY_VALUE")
+
+    def test_capabilities_must_be_list(self):
+        card = valid_card()
+        card["policy"]["capabilities"] = "expense.submit"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/policy/capabilities")
+        self.assertEqual(result[0]["message"], "field must be a list")
+
+    def test_capability_element_checks(self):
+        for bad, code in ((5, "TYPE_MISMATCH"), ("", "EMPTY_VALUE"), ("  ", "EMPTY_VALUE")):
+            with self.subTest(bad=bad):
+                card = valid_card()
+                card["policy"]["capabilities"] = [bad]
+                result = lint_sop(card)
+                self.assertEqual(codes_of(result), [code])
+                self.assertEqual(result[0]["path"], "/policy/capabilities/0")
+
+    def test_duplicate_capability_is_duplicate_id(self):
+        card = valid_card()
+        card["policy"]["capabilities"] = ["expense.submit", "expense.read", "expense.submit"]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["DUPLICATE_ID"])
+        self.assertEqual(result[0]["path"], "/policy/capabilities/2")
+        self.assertEqual(result[0]["message"], "duplicate capability 'expense.submit'")
+
+    def test_goal_capability_is_reserved(self):
+        card = valid_card()
+        card["policy"]["capabilities"] = ["goal"]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["INVALID_VALUE"])
+        self.assertEqual(result[0]["path"], "/policy/capabilities/0")
+        self.assertEqual(result[0]["message"],
+                         "capability 'goal' is reserved as the goal-boundary deadline token")
+
+    def test_empty_capabilities_list_allowed(self):
+        card = valid_card()
+        card["policy"]["capabilities"] = []
+        self.assertEqual(lint_sop(card), [])
+
+
+class DefaultsTests(unittest.TestCase):
+    """Defaults object: exact fields, exact pinned values."""
+
+    def test_defaults_must_be_object(self):
+        card = valid_card()
+        card["defaults"] = []
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/defaults")
+
+    def test_every_defaults_field_required(self):
+        for field in ("unknown", "conflict", "exemptions", "migration"):
+            with self.subTest(field=field):
+                card = valid_card()
+                del card["defaults"][field]
+                result = lint_sop(card)
+                self.assertEqual(codes_of(result), ["MISSING_FIELD"])
+                self.assertEqual(result[0]["path"], "/defaults")
+
+    def test_unknown_defaults_field(self):
+        card = valid_card()
+        card["defaults"]["deadline"] = "goal"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_FIELD"])
+        self.assertEqual(result[0]["path"], "/defaults/deadline")
+
+    def test_defaults_values_are_pinned(self):
+        pinned = {"unknown": "block", "conflict": "escalate",
+                  "exemptions": "forbidden", "migration": "explicit"}
+        for field, expected in pinned.items():
+            for bad in ("ask", "ignore", "BLOCK", ""):
+                with self.subTest(field=field, bad=bad):
+                    card = valid_card()
+                    card["defaults"][field] = bad
+                    result = lint_sop(card)
+                    self.assertEqual(codes_of(result), ["INVALID_VALUE"])
+                    self.assertEqual(result[0]["path"], "/defaults/" + field)
+                    self.assertEqual(result[0]["message"],
+                                     "value must be '%s'" % expected)
+
+    def test_defaults_non_string_is_type_mismatch(self):
+        card = valid_card()
+        card["defaults"]["unknown"] = 1
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/defaults/unknown")
+        self.assertEqual(result[0]["message"], "field must be a string")
 
 
 if __name__ == "__main__":

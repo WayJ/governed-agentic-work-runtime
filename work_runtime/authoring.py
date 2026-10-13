@@ -31,6 +31,13 @@ NO_MANDATORY_RULE = "NO_MANDATORY_RULE"
 
 _INPUT_CYCLE_MESSAGE = "input object contains a reference cycle"
 
+ROOT_FIELDS = ("schema_version", "policy", "defaults", "facts",
+               "collections", "rules", "advice")
+POLICY_FIELDS = ("id", "version", "goal", "source", "scope", "capabilities")
+SOURCE_FIELDS = ("document", "version", "section")
+DEFAULTS_VALUES = {"unknown": "block", "conflict": "escalate",
+                   "exemptions": "forbidden", "migration": "explicit"}
+
 
 def _diag(code: str, path: str, message: str) -> Dict[str, str]:
     return {"code": code, "path": path, "message": message}
@@ -115,6 +122,126 @@ def _preflight(root: Any) -> List[Dict[str, str]]:
     return found
 
 
+
+def _check_exact_fields(container: Dict[str, Any], path: str, fields,
+                        found: List[Dict[str, str]]) -> None:
+    """MISSING_FIELD at the container, UNKNOWN_FIELD at the offending key."""
+    for name in fields:
+        if name not in container:
+            found.append(_diag(MISSING_FIELD, path,
+                               "missing required field '%s'" % name))
+    for key in container:
+        if key not in fields:
+            found.append(_diag(UNKNOWN_FIELD, path + "/" + _escape(key),
+                               "unknown field '%s'" % _snippet(key)))
+
+
+def _snippet(text: str) -> str:
+    """Identifier/enum snippet bounded to 64 characters, never trimmed."""
+    return text if len(text) <= 64 else text[:64]
+
+
+def _require_text(container: Dict[str, Any], base: str, field: str,
+                  found: List[Dict[str, str]]) -> None:
+    value = container[field]
+    path = base + "/" + field
+    if type(value) is not str:
+        found.append(_diag(TYPE_MISMATCH, path, "field must be a string"))
+    elif value.strip() == "":
+        found.append(_diag(EMPTY_VALUE, path, "string is empty or whitespace-only"))
+
+
+def _check_source(container: Dict[str, Any], base: str,
+                  found: List[Dict[str, str]]) -> None:
+    source = container["source"]
+    path = base + "/source"
+    if type(source) is not dict:
+        found.append(_diag(TYPE_MISMATCH, path, "value must be an object"))
+        return
+    _check_exact_fields(source, path, SOURCE_FIELDS, found)
+    for field in SOURCE_FIELDS:
+        if field in source:
+            _require_text(source, path, field, found)
+
+
+def _lint_policy(policy: Any, found: List[Dict[str, str]]) -> None:
+    if type(policy) is not dict:
+        found.append(_diag(TYPE_MISMATCH, "/policy", "value must be an object"))
+        return
+    _check_exact_fields(policy, "/policy", POLICY_FIELDS, found)
+    for field in ("id", "version", "goal"):
+        if field in policy:
+            _require_text(policy, "/policy", field, found)
+    if "source" in policy:
+        _check_source(policy, "/policy", found)
+    if "scope" in policy:
+        _require_text(policy, "/policy", "scope", found)
+    if "capabilities" in policy:
+        _check_capabilities(policy["capabilities"], found)
+
+
+def _check_capabilities(capabilities: Any,
+                        found: List[Dict[str, str]]) -> None:
+    if type(capabilities) is not list:
+        found.append(_diag(TYPE_MISMATCH, "/policy/capabilities", "field must be a list"))
+        return
+    seen = set()
+    for index, capability in enumerate(capabilities):
+        path = "/policy/capabilities/%d" % index
+        if type(capability) is not str:
+            found.append(_diag(TYPE_MISMATCH, path, "field must be a string"))
+            continue
+        if capability.strip() == "":
+            found.append(_diag(EMPTY_VALUE, path, "string is empty or whitespace-only"))
+            continue
+        if capability == "goal":
+            found.append(_diag(INVALID_VALUE, path,
+                               "capability 'goal' is reserved as the "
+                               "goal-boundary deadline token"))
+        if capability in seen:
+            found.append(_diag(DUPLICATE_ID, path,
+                               "duplicate capability '%s'" % _snippet(capability)))
+        seen.add(capability)
+
+
+def _lint_defaults(defaults: Any, found: List[Dict[str, str]]) -> None:
+    if type(defaults) is not dict:
+        found.append(_diag(TYPE_MISMATCH, "/defaults", "value must be an object"))
+        return
+    _check_exact_fields(defaults, "/defaults", tuple(DEFAULTS_VALUES), found)
+    for field, expected in DEFAULTS_VALUES.items():
+        if field not in defaults:
+            continue
+        value = defaults[field]
+        path = "/defaults/" + field
+        if type(value) is not str:
+            found.append(_diag(TYPE_MISMATCH, path, "field must be a string"))
+        elif value != expected:
+            found.append(_diag(INVALID_VALUE, path, "value must be '%s'" % expected))
+
+
+def _lint_schema(root: Any) -> List[Dict[str, str]]:
+    """Strict schema layer; runs only after a clean JSON-native preflight."""
+    found: List[Dict[str, str]] = []
+    if type(root) is not dict:
+        found.append(_diag(TYPE_MISMATCH, "", "value must be an object"))
+        return found
+    _check_exact_fields(root, "", ROOT_FIELDS, found)
+    if "schema_version" in root:
+        version = root["schema_version"]
+        if type(version) is not int:
+            found.append(_diag(TYPE_MISMATCH, "/schema_version",
+                               "field must be an integer"))
+        elif version != 1:
+            found.append(_diag(INVALID_VALUE, "/schema_version",
+                               "schema_version must be 1"))
+    if "policy" in root:
+        _lint_policy(root["policy"], found)
+    if "defaults" in root:
+        _lint_defaults(root["defaults"], found)
+    return found
+
+
 def _finalize(diagnostics: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """Sort by (path, code, message) and drop identical triples."""
     triples = {(d["path"], d["code"], d["message"]) for d in diagnostics}
@@ -129,4 +256,7 @@ def lint_sop(value: Any) -> List[Dict[str, str]]:
     evaluates textual predicates and never touches the filesystem or the
     runtime. JSON-native preflight findings suppress the schema layer.
     """
-    return _finalize(_preflight(value))
+    found = _preflight(value)
+    if not found:
+        found = _lint_schema(value)
+    return _finalize(found)
