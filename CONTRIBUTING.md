@@ -8,6 +8,7 @@ Python 3.9 or newer is sufficient. No service or API key is required.
 
 ```bash
 python3 -m work_runtime demo
+python3 -m work_runtime publish-demo
 python3 -m unittest discover -s tests -v
 python3 scripts/check_docs.py
 ```
@@ -20,13 +21,21 @@ The package has zero runtime dependencies. Optional development installation: `p
 |---|---|
 | `work_runtime/runtime.py` | Transaction boundaries, commands, operation and evidence lifecycles |
 | `work_runtime/policy.py` | Policy interface and the demo expense rules |
+| `work_runtime/adapter_contract.py` | Declared adapter contracts and receipt validation |
 | `work_runtime/adapters.py` | Separate persistent fake OA |
+| `work_runtime/ingress.py` | HMAC-signed evidence envelopes and the authenticated ingress gateway |
+| `work_runtime/publishing.py` | Content publication policy and the separate persistent fake publisher |
 | `work_runtime/demo.py` | Deterministic proposer and real worker crash demonstration |
+| `work_runtime/publishing_demo.py` | Signed-evidence publication demonstration |
 | `tests/test_runtime.py` | Invariants, failure injection and subprocess recovery |
+| `tests/adapter_conformance.py` | Reusable adapter conformance mixin over disposable fixtures |
+| `tests/test_publishing.py` | Publication policy, adapter, runtime flow, demo and CLI tests |
 | `scripts/check_docs.py` | Local Markdown link checker — the documentation contracts gate; ignores fenced examples, inline code, reference definitions inside fences and external URLs |
 | `scripts/verify_install.py` | Fresh-venv install and outside-checkout demo verification |
 | `tests/test_docs.py` | Link checker behavior and repository documentation contracts |
 | `docs/RFC-*.md` | Candidate semantics and protocol |
+| `docs/adapter-contract.md` | Adapter contract boundary and conformance-test adoption |
+| `docs/signed-evidence.md` | Signed-evidence trust model, envelope semantics and key handling |
 | `docs/verification.md` | Honest protocol coverage matrix and deferred scope |
 
 ## Propose a change
@@ -39,11 +48,13 @@ Keep pull requests focused. Describe the observable behavior and validation, and
 
 ## Current contribution opportunities
 
-- Authenticated evidence intake and source-specific verification interfaces.
-- External adapter capability declarations and conformance tests.
+- Source-specific evidence verifiers beyond the demo shape checks.
+- A real external adapter integration that runs the reusable conformance tests.
 - Cancellation and compensation with unknown in-flight effects.
-- A second small business example to challenge the policy abstraction.
-- Improvements to the demo, documentation and failure explanations.
+- A third small business domain to keep challenging the policy abstraction.
+- Improvements to the demos, documentation and failure explanations.
+
+Adding an adapter: declare an `AdapterContract` (see [docs/adapter-contract.md](docs/adapter-contract.md)), pass the reusable conformance mixin with disposable fixtures, and test the domain's own uniqueness rules separately. Adding a domain: write a `Policy` with its own evidence sources and run it in its own database — one policy per database is a prototype constraint.
 
 Discuss distributed execution semantics before introducing workers or leases. The current single-coordinator tests cannot prove distributed guarantees.
 
