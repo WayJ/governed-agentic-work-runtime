@@ -89,10 +89,15 @@ def sign_evidence(secret: bytes, message: dict) -> dict:
     mutations of the caller's message cannot change what was signed.
     """
     _validate_secret(secret)
-    problem = _message_problem(message)
+    try:
+        problem = _message_problem(message)
+        encoded = None if problem is not None else _canonical_bytes(message)
+    except RecursionError:
+        # Self-referencing or pathologically deep data is invalid input, not a
+        # crash: honor the D8 B1 ValueError misuse contract (as record does).
+        problem = "message contains a reference cycle or exceeds the serialization depth"
     if problem is not None:
         raise ValueError(problem)
-    encoded = _canonical_bytes(message)
     envelope = json.loads(encoded)
     envelope["signature"] = _signature(secret, encoded)
     return envelope

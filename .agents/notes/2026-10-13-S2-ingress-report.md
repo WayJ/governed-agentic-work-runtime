@@ -158,3 +158,59 @@ clock; key map copied at construction; empty key map authenticates nothing.
 - Tests were written against the S1 baseline Runtime (63 tests); Foundation A
   (adapter contract) merges separately in the integration session, which owns
   re-running this suite on the assembled carrier.
+
+## Addendum — review correction: signer RecursionError on cyclic/deep data (2026-10-13)
+
+Coordinator follow-up task_995607a53a7e: at 7d21109 `sign_evidence` calls
+`_message_problem` (recursive `_json_native`) and `_canonical_bytes` with no
+conversion, so self-referencing or pathologically deep `data` surfaced as
+`RecursionError` instead of the D8 B1 `ValueError` local-misuse contract.
+`Gateway.record` already converted the same input correctly.
+
+Systematic-debugging Phase 1 probes (verbatim outcomes):
+
+```
+probe 1: cyclic data at signer      -> RecursionError (DEFECT: not ValueError)
+  deepest frames: sign_evidence:92 -> _message_problem:60 -> _json_native:45
+probe 2: 10000-deep acyclic nesting -> RecursionError (DEFECT)
+probe 3: repeated acyclic shared reference -> signed ok, detached: True (control)
+probe 4: cyclic data at gateway.record -> {'decision': 'rejected', 'code': 'EVIDENCE_ENVELOPE_INVALID'} (control)
+```
+
+### RED (tests written first; `python3 -m unittest ... -v`, verbatim tail)
+
+```
+RecursionError: maximum recursion depth exceeded while calling a Python object
+RecursionError: maximum recursion depth exceeded while calling a Python object
+Ran 2 tests in 0.004s
+FAILED (errors=2)
+```
+
+`test_rejects_self_referencing_data_with_value_error` and
+`test_rejects_excessively_deep_nesting_with_value_error` error with
+RecursionError; the two control pins
+(`test_repeated_acyclic_references_sign_and_detach`,
+`test_cyclic_or_deeply_nested_envelope_data_is_envelope_invalid`) already pass.
+
+### GREEN (minimal localized conversion in `sign_evidence`, mirroring `record`)
+
+```
+Ran 40 tests in 0.322s
+
+OK
+```
+
+Full suite `Ran 103 tests ... OK`; `compileall` clean. The fix wraps exactly
+`_message_problem` + `_canonical_bytes` in `try/except RecursionError` and
+raises `ValueError("message contains a reference cycle or exceeds the
+serialization depth")`. No change to `_json_native`, the gateway, HMAC vector,
+schema/key/source/freshness/snapshot/reserved-kind behavior (all still green).
+
+New pins: gateway rejects cyclic and 10000-deep envelope `data` with
+`EVIDENCE_ENVELOPE_INVALID` and all six Runtime tables unchanged; repeated
+acyclic references sign successfully and detach (no shared sub-objects remain
+in the returned envelope). docs/signed-evidence.md gains one paragraph stating
+both behaviors.
+
+Gates after the correction: 103/103 tests, `check_docs` 25 files/75 links/0
+broken, `python3 -m work_runtime demo` all six steps, compileall clean.

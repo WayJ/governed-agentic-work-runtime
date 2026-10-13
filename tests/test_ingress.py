@@ -97,6 +97,30 @@ class SignEvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sign_evidence(self.secret, ["not", "a", "dict"])
 
+    def test_rejects_self_referencing_data_with_value_error(self):
+        cyclic = {"digest": "0" * 64}
+        cyclic["self"] = cyclic
+        with self.assertRaises(ValueError):
+            sign_evidence(self.secret, message(data=cyclic))
+
+    def test_rejects_excessively_deep_nesting_with_value_error(self):
+        node = deep = {}
+        for _ in range(10000):
+            node["child"] = {}
+            node = node["child"]
+        with self.assertRaises(ValueError):
+            sign_evidence(self.secret, message(data=deep))
+
+    def test_repeated_acyclic_references_sign_and_detach(self):
+        shared = {"note": "shared", "n": 1}
+        envelope = sign_evidence(self.secret,
+                                 message(data={"x": shared, "y": shared, "z": [shared]}))
+        self.assertRegex(envelope["signature"], "^[0-9a-f]{64}$")
+        self.assertEqual(envelope["data"]["x"], envelope["data"]["y"])
+        self.assertIsNot(envelope["data"]["x"], envelope["data"]["y"])
+        self.assertIsNot(envelope["data"]["x"], shared)
+        self.assertIsNot(envelope["data"]["z"][0], shared)
+
     def test_rejects_non_json_native_data(self):
         for bad_data in ({"x": float("nan")}, {"x": float("inf")}, {"x": float("-inf")},
                          {"deep": [{"y": (1, 2)}]}, {1: "int-key"}, {"x": {"y": {1, 2}}}):
@@ -412,6 +436,20 @@ class SignedEvidenceGatewayTests(unittest.TestCase):
         before = self.table_counts()
         self.assertEqual(gateway.record(self.signed()),
                          {"decision": "rejected", "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(self.table_counts(), before)
+
+    def test_cyclic_or_deeply_nested_envelope_data_is_envelope_invalid(self):
+        before = self.table_counts()
+        cyclic = self.signed()
+        cyclic["data"]["self"] = cyclic["data"]
+        deep = self.signed(command_id="cmd-deep", event_id="evt-deep")
+        node = deep["data"]
+        for _ in range(10000):
+            node["child"] = {}
+            node = node["child"]
+        for bad in (cyclic, deep):
+            self.assertEqual(self.gateway.record(bad),
+                             {"decision": "rejected", "code": "EVIDENCE_ENVELOPE_INVALID"})
         self.assertEqual(self.table_counts(), before)
 
     def test_utf8_encoding_failure_is_envelope_invalid(self):

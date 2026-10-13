@@ -46,6 +46,12 @@ Canonical form is sorted-key compact JSON (`policy.canonical`, `allow_nan=False`
 The signature covers exactly the seven signed fields; `signature` itself is
 never signed. There is no actor/alias field.
 
+Reference cycles and pathologically deep nesting are invalid input on both
+surfaces: the signer raises `ValueError` (local misuse contract) and the
+gateway rejects with `EVIDENCE_ENVELOPE_INVALID`. Repeated *acyclic*
+references inside `data` are fine — the returned envelope is a fully detached
+copy, so shared sub-objects do not stay shared.
+
 ## Gateway checks and receipts
 
 `SignedEvidenceGateway(runtime, keys, max_age=300, clock=time.time).record(envelope)`
