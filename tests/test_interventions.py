@@ -30,6 +30,7 @@ def initialize_under(runtime, work_id="demo"):
 def intervention_grants():
     grants = demo_grants()
     grants["root"] = {"work.intervene"}
+    grants["delegate"] = {"work.manage", "expense.submit"}
     return grants
 
 
@@ -519,6 +520,151 @@ class FinalizeCancelTests(unittest.TestCase):
                                               self.runtime.get_work("demo")["state_version"]
                                               )["decision"], "accepted")
         self.assertEqual(self.finalize([], actor="root")["decision"], "accepted")
+
+
+class OwnershipTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.oa_path = str(Path(self.temp.name) / "oa.sqlite")
+        self.grants = intervention_grants()
+        self.runtime = Runtime(self.path, ExpensePolicy(), self.grants)
+        self.oa = FakeOA(self.oa_path)
+        initialize(self.runtime)
+
+    def submit(self):
+        prerequisites(self.runtime)
+        receipt = action(self.runtime)
+        self.assertEqual(receipt["decision"], "accepted")
+        return receipt["operation_id"]
+
+    def transfer(self, owner="delegate", reason="handover", actor="agent", work_id="demo"):
+        version = self.runtime.get_work(work_id)["state_version"]
+        return self.runtime.command(actor, uuid.uuid4().hex, work_id, "transfer_owner",
+                                    {"owner": owner, "reason": reason}, version)
+
+    def test_new_work_stores_creator_as_owner(self):
+        self.assertEqual(self.runtime.get_work("demo")["owner"], "agent")
+
+    def test_transfer_persists_actor_reason_and_both_owners(self):
+        receipt = self.transfer(reason="vacation")
+        self.assertEqual(receipt["decision"], "accepted")
+        self.assertEqual(self.runtime.get_work("demo")["owner"], "delegate")
+        events = [e for e in self.runtime.events("demo") if e["type"] == "OwnerTransferred"]
+        self.assertEqual(len(events), 1)
+        details = json.loads(events[0]["body"])
+        self.assertEqual(details, {"actor": "agent", "from": "agent", "to": "delegate",
+                                   "reason": "vacation", "reassigned_waits": [],
+                                   "invalidated_operations": []})
+
+    def test_former_owner_loses_management_proposal_and_dispatch(self):
+        op = self.submit()
+        self.transfer()
+        plan = {"steps": ["submit"], "open_requirements": [], "replan_when": []}
+        for kind, payload in (("revise_plan", plan),
+                              ("revise_document", {"document": document(amount=130000)}),
+                              ("request_completion", None)):
+            self.assertEqual(send(self.runtime, "demo", kind, payload)["code"],
+                             "AUTHORITY_DENIED")
+        self.assertEqual(action(self.runtime)["code"], "AUTHORITY_DENIED")
+        invalidated = self.runtime.get_operation(op)
+        self.assertEqual(invalidated["dispatch_state"], "cancelled")
+        self.assertEqual(invalidated["reason"], "OWNERSHIP_TRANSFERRED")
+        self.assertEqual(self.runtime.dispatch(op, self.oa)["dispatch_state"], "cancelled")
+        self.assertEqual(self.oa.accepted_count(), 0)
+
+    def test_in_flight_operation_survives_transfer_and_reconciles(self):
+        op = self.submit()
+        self.assertEqual(self.runtime.dispatch(op, FakeOA(
+            self.oa_path, timeout_after_commit=True))["status"], "outcome_unknown")
+        self.transfer()
+        self.grants["agent"].clear()  # former owner loses every grant
+        self.runtime.reconcile(op, self.oa)
+        self.assertEqual(self.runtime.get_operation(op)["status"], "confirmed_succeeded")
+        self.assertEqual(self.oa.accepted_count(), 1)
+
+    def test_transfer_reassigns_outstanding_waits(self):
+        send(self.runtime, "demo", "register_wait", {
+            "requirement_id": "E05:EXP-001", "deadline": 2000000000, "owner": "agent"})
+        self.transfer()
+        waits = self.runtime.get_work("demo")["waits"]
+        self.assertEqual(waits[0]["owner"], "delegate")
+        self.assertEqual(waits[0]["status"], "waiting")
+
+    def test_new_owner_reproposes_same_operation_and_dispatches(self):
+        op = self.submit()
+        self.transfer()
+        work = self.runtime.get_work("demo")
+        receipt = send(self.runtime, "demo", "propose_action", {
+            "capability": "expense.submit", "document_digest": work["document_digest"],
+            "contract_revision": work["contract"]["revision"],
+            "plan_revision": work["plan_revision"]}, actor="delegate")
+        self.assertEqual(receipt["decision"], "accepted")
+        self.assertEqual(receipt["operation_id"], op)
+        operation = self.runtime.get_operation(op)
+        self.assertEqual(operation["actor"], "delegate")
+        self.assertEqual(operation["dispatch_state"], "ready")
+        self.assertEqual(self.runtime.dispatch(op, self.oa)["status"], "confirmed_succeeded")
+        self.assertEqual(self.oa.accepted_count(), 1)
+
+    def test_evidence_writers_keep_source_authority(self):
+        self.transfer()
+        self.assertEqual(proof(self.runtime, "demo", "approval", "finance")["decision"],
+                         "accepted")
+        self.assertEqual(self.runtime.verify_pending("demo"), 1)
+
+    def test_transfer_validates_target_and_rejects_same_owner(self):
+        self.assertEqual(self.transfer(owner="finance")["code"], "AUTHORITY_DENIED")
+        self.assertEqual(self.transfer(owner="nobody")["code"], "AUTHORITY_DENIED")
+        self.assertEqual(self.transfer(owner="agent")["code"], "TRANSFER_SAME_OWNER")
+        self.assertEqual(self.transfer(owner="requester")["code"], "AUTHORITY_DENIED")
+
+    def test_transfer_during_cancellation_retains_intent(self):
+        self.submit()
+        version = self.runtime.get_work("demo")["state_version"]
+        self.runtime.command("agent", "cancel-1", "demo", "request_cancel",
+                             {"reason": "stop"}, version)
+        self.assertEqual(self.transfer()["decision"], "accepted")
+        work = self.runtime.get_work("demo")
+        self.assertEqual(work["cancellation"]["reason"], "stop")
+        self.assertEqual(work["owner"], "delegate")
+
+    def test_transfer_payload_must_be_exact(self):
+        for payload in ({"owner": "delegate"}, {"reason": "x"},
+                        {"owner": "", "reason": "x"}, {"owner": "delegate", "reason": 5},
+                        {"owner": "delegate", "reason": "x", "extra": 1}):
+            with self.assertRaises(CommandError, msg=repr(payload)):
+                self.runtime.command("agent", uuid.uuid4().hex, "demo", "transfer_owner",
+                                     payload, self.runtime.get_work("demo")["state_version"])
+
+    def test_legacy_ownerless_work_stays_grant_only_until_admin_adoption(self):
+        strip_owner(self.path, "demo")
+        reopened = Runtime(self.path, ExpensePolicy(), self.grants)
+        # Legacy grant-only behavior: a manager who is not an owner can act.
+        plan = {"steps": ["submit"], "open_requirements": [], "replan_when": []}
+        self.assertEqual(send(reopened, "demo", "revise_plan", plan)["decision"], "accepted")
+        # Non-admin intervention on an ownerless work is denied.
+        version = reopened.get_work("demo")["state_version"]
+        self.assertEqual(reopened.command("agent", uuid.uuid4().hex, "demo", "transfer_owner",
+                                          {"owner": "delegate", "reason": "adopt"},
+                                          version)["code"], "AUTHORITY_DENIED")
+        # Admin adopts ownership explicitly.
+        adopted = reopened.command("root", uuid.uuid4().hex, "demo", "transfer_owner",
+                                   {"owner": "delegate", "reason": "adopt"}, version)
+        self.assertEqual(adopted["decision"], "accepted")
+        details = json.loads([e for e in reopened.events("demo")
+                              if e["type"] == "OwnerTransferred"][-1]["body"])
+        self.assertIsNone(details["from"])
+        # After adoption the work is owner-gated; plain managers lose access.
+        self.assertEqual(send(reopened, "demo", "revise_plan", plan,
+                              actor="agent")["code"], "AUTHORITY_DENIED")
+        self.assertEqual(send(reopened, "demo", "revise_plan", plan,
+                              actor="delegate")["decision"], "accepted")
+
+    def test_admin_can_transfer_without_being_owner(self):
+        self.assertEqual(self.transfer(actor="root")["decision"], "accepted")
+        self.assertEqual(self.runtime.get_work("demo")["owner"], "delegate")
 
 
 if __name__ == "__main__":

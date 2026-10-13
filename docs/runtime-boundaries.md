@@ -156,6 +156,40 @@ management commands on the closed work are `WORK_NOT_ACTIONABLE`, replays
 under the original command id still return the stored receipt while
 authority holds.
 
+## Ownership boundary
+
+Every new Work records `owner = creator` in its own JSON. Management
+mutations (`bind_contract`, `revise_plan`, `revise_document`,
+`register_wait`, `request_completion`) require the **current owner**
+holding `work.manage`; `propose_action` requires the current owner holding
+the requested capability, so a former owner's global grant does not retain
+this Work's execution rights; `dispatch` additionally holds
+(`AUTHORITY_DENIED`) an intent whose actor is no longer the Work's owner.
+Evidence writers keep their existing source-specific authority — ownership
+never gates evidence intake. Authorization is principal *configuration*,
+still not authentication.
+
+`transfer_owner` (payload exactly `owner` and `reason`, both nonempty
+strings; accepted by the current owner with `work.manage` or a
+`work.intervene` administrator) reassigns accountability atomically: it
+persists actor, previous/next owner and reason in an `OwnerTransferred`
+event, reassigns outstanding `waiting`/`expired` waits owned by the prior
+owner, and invalidates never-dispatched prepared intents with reason
+`OWNERSHIP_TRANSFERRED` so the new owner must re-propose. In-flight
+operations keep their actor, key, attempts and results, and reconciliation
+never requires the old execution authority. The target must exist in
+`grants` with `work.manage` (else `AUTHORITY_DENIED`); a same-owner
+transfer is `TRANSFER_SAME_OWNER`. Transfer is possible while a
+cancellation intent is active, never erases it, and grants no capabilities.
+
+**Legacy databases** whose Works predate ownership stay readable and keep
+grant-only behavior for existing commands — no owner is ever guessed from
+historical receipt shapes. Ownership is adopted explicitly: only a
+`work.intervene` administrator may transfer an ownerless Work, and from
+that point the Work is owner-gated like any other.
+
+## Recovery contract
+
 `recover(adapter)` is the restart entry point and performs, in order:
 
 1. `verify_pending` for every work (atomic candidate evaluation),

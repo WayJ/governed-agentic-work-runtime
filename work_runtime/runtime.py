@@ -299,7 +299,9 @@ class Runtime:
             return self._request_cancel(db, actor, work, payload, version)
         if kind == "finalize_cancel":
             return self._finalize_cancel(db, actor, work, payload, version)
-        if "work.manage" not in self.grants[actor]:
+        if kind == "transfer_owner":
+            return self._transfer_owner(db, actor, work, payload, version)
+        if not self._manager(actor, work):
             return self._reject("AUTHORITY_DENIED", version)
         if work.get("cancellation"):
             return self._reject("CANCELLATION_ACTIVE", version)
@@ -387,6 +389,13 @@ class Runtime:
         return (owner is not None and actor == owner
                 and "work.manage" in self.grants.get(actor, set()))
 
+    def _manager(self, actor: str, work: dict) -> bool:
+        """Management mutations: current owner, or grant-only on legacy works."""
+        owner = work.get("owner")
+        if owner is None:
+            return "work.manage" in self.grants.get(actor, set())
+        return actor == owner and "work.manage" in self.grants.get(actor, set())
+
     def _request_cancel(self, db, actor, work, payload, version):
         if (set(payload) != {"reason"} or not isinstance(payload["reason"], str)
                 or not payload["reason"]):
@@ -442,8 +451,35 @@ class Runtime:
         self._save(db, work, "WorkCancelled", work["completion"])
         return self._accepted(work)
 
+    def _transfer_owner(self, db, actor, work, payload, version):
+        if (set(payload) != {"owner", "reason"}
+                or not all(isinstance(v, str) and v for v in payload.values())):
+            raise CommandError("transfer_owner requires exactly owner and reason strings")
+        if not self._intervener(actor, work):
+            return self._reject("AUTHORITY_DENIED", version)
+        target = payload["owner"]
+        if target not in self.grants or "work.manage" not in self.grants[target]:
+            return self._reject("AUTHORITY_DENIED", version)
+        if work.get("owner") == target:
+            return self._reject("TRANSFER_SAME_OWNER", version)
+        previous = work.get("owner")
+        work["owner"] = target
+        reassigned = []
+        for wait in work["waits"]:
+            if wait["status"] in ("waiting", "expired") and wait["owner"] == previous:
+                wait["owner"] = target
+                reassigned.append(wait["id"])
+        invalidated = self._cancel_prepared(db, work["id"], reason="OWNERSHIP_TRANSFERRED")
+        self._save(db, work, "OwnerTransferred", {
+            "actor": actor, "from": previous, "to": target, "reason": payload["reason"],
+            "reassigned_waits": reassigned, "invalidated_operations": invalidated})
+        return self._accepted(work)
+
     def _propose(self, db, actor, work, payload):
         version = work["state_version"]
+        owner = work.get("owner")
+        if owner is not None and actor != owner:
+            return self._reject("AUTHORITY_DENIED", version)
         capability = payload.get("capability")
         if capability not in self.grants[actor]:
             return self._reject("AUTHORITY_DENIED", version)
@@ -579,7 +615,9 @@ class Runtime:
                 self._save(db, work, "DispatchCancelled", {"operation_id": op["id"]})
                 return op
             blockers = policy.action_blockers(op["capability"], work["requirements"])
-            if op["capability"] not in self.grants.get(op["actor"], set()) or blockers:
+            authority_ok = (work.get("owner") in (None, op["actor"])
+                            and op["capability"] in self.grants.get(op["actor"], set()))
+            if not authority_ok or blockers:
                 op["dispatch_state"] = "held"
                 op["reason"] = "AUTHORITY_DENIED" if not blockers else "REQUIREMENT_UNSATISFIED"
                 self._save_op(db, op)
