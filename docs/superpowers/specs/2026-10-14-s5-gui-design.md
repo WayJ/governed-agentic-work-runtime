@@ -1,0 +1,41 @@
+# S5 local operations GUI design (planning, no product code yet)
+
+## Intent and constraints
+
+User asked whether there is a GUI to view the project. Deliver an offline local browser interface over actual durable records, with clear state, obligations, evidence, decisions and operations. This is master choice under continuous authorization, scheduled after S4 release/WIP0. Preserve Python>=3.9, zero runtime dependencies, original engine/policies and CLI compatibility. Vanilla HTML/CSS/JS, Python stdlib local HTTP; no CDN/build-system/framework/remote hosting requirement. First GUI is read-only inspection, not a principal-authenticated write API.
+
+[Python HTTPServer reference](https://docs.python.org/3.9/library/http.server.html) supports a custom ThreadingHTTPServer/BaseHTTPRequestHandler for this local tool; the standard module is not a production server. [SQLite URI reference](https://docs.python.org/3.9/library/sqlite3.html) documents mode=ro with uri=True; use an existing file and a read-only connection rather than constructing Runtime (which initializes/writes schema). These sources justify API choices only, not a security or durability guarantee.
+
+## Reader and data truth
+
+New `work_runtime/inspection.py` reads schema_version1 actualSQLite records using percent-encoded absolute file URI mode=ro, query_only connection, short read transactions and parameterized filters. Reject missing/unreadable/nonSQLite/unsupported schema clearly, never create a DB or initialize metadata. One connection per request; no policy instantiation/evaluation/migration, no grants or actor impersonation. Corrupt JSON/record types give bounded errors, not silently skipped records or fabricated metrics. Read WAL consistently so recent real commits remain visible.
+
+Summary: stored Work status/outcome/owner(contract absent owner shows legacy), contract policy id/version/revision, requirements applicability/fulfillment/explanation, waits, cancellation intent and closure snapshot. Detail also includes evidence source/kind/status/data, operations capability/actor/status/dispatch_state/reason/attempts/external_id, persisted command decision receipts/codes/blockers, and events seq/version/type/body. Do not infer command kind, creation actor or timestamps that were never stored. Command receipts are admissions, not external effects; fresh unpersisted replay-denial receipts are not in the DB. Goal-required E08/C04 is not automatically an action blocker: render recorded requirements and actual decision blockers separately.
+
+Metric definitions are counts of stored records: work statuses and closed outcomes, operation statuses including dispatched/outcome_unknown uncertain count, evidence statuses, command receipt accepted/rejected counts, attempt entries and event types. No invented duration/token/cost/recovery-rate charts. Event order uses actual seq and state_version, not wall time. Observation refresh time may be shown explicitly as sampling time, never business-event time. Counts/versions/seq/cursors serialized as decimal strings where precision matters; documents/evidence data/event bodies expose pretty raw JSON strings for text rendering, preserving integers beyond JavaScript safe range without rounding. No automatic amount/currency inference.
+
+## Local HTTP and API contract (builder pins exact DTO before implementation)
+
+New `work_runtime/ui_server.py`, bespoke route whitelist; bind127.0.0.1 only, ephemeral port default0. Accept Host exactly127.0.0.1 or localhost with actualport; if Origin present require same local origin, reject foreign/null origin; no CORS grants. GET/HEAD only, othermethods405, unknown routes404, invalid/duplicate/unsupported query400; no generic directory listings or arbitraryfile paths. Every response has accurate content length, safe content type/nosniff/no-store and CSP localassets only/frame-ancestors none/no inline scripts or unsafe data rendering; errors JSON code/message without stacktrace/file contents. Loopback is not tenant authentication.
+
+Endpoints: GET /api/summary (metrics/sourcebasename); /api/works?limit=100&offset=0 (bounded1..200, nonnegativeoffset, stable IDs); /api/work?id=<opaqueencodedid> (snapshot/detail); /api/events?work_id=<id>&after=0&limit=100 (ascending seq, limit1..200, exactcursorstrings/has_more). Preserve Unicode/slash/quote Work IDs through URL query parameter encoding; IDs never interpolated intoSQL/HTML/selectors. Static whitelist /, /app.js, /app.css; packagedassets from work_runtime/web, no path traversal or external requests. API error semantics/DTO shapes must be written into the spec from builder check before frontend/backend parallel work.
+
+## Browser experience
+
+Brand Governed Work, clean light business UI with a responsive Work list/sidebar and selected-detail area. Top tiles openworks, closed succeeded/cancelled, uncertainoperations, pendingevidence with documented meanings. Filter/search select work, manualrefresh plus pauseable5s polling, loading/empty/error/disconnected states. Details tabs/sections: overview/requirements, evidence, operations+attempts, persisted decisions, event timeline and exact document/closure JSON. Bilingual English/Chinese labels (browserlanguage default, explicit toggle), keyboard-accessible selection and focus, narrow layout usable without horizontal page overflow. Use textContent/DOM nodes for ALLstoreddata; no HTML execution or clickable untrusted external_id/source URLs. Cancellation banner shows intent independently of presentationstatus; cancelled closure with acknowledgedexternal effects explains retained effect, not reversal. All display grounded in actualDB, no fake agent thinking state.
+
+## CLI, fixture and trial
+
+CLI `ui --db <existingpath> [--port N]` prints actual local URL immediately and runs until stopped; startuperrors exit2. A `ui-demo` seeds a fresh directory through actual Runtime commands/verification/real local adapters (not hand-edited state JSON), exercising waiting, needs_attention/uncertain, transferred owner, succeeded and cancelled states in one expense-family DB with distinct invoice IDs, and starts the same GUI server. Never deletes user data; exact defaultdata/fixture helper pinned by builder. Optional existing parent directory follows prior demos; printedinspect/start commands work. Package staticassets via pyproject package-data alongside S4JSONresources. Installed module AND console UI starts outsidecheckout, actualHTTP HTML/JS/CSS/API reads correctrecords, read-only table snapshots unchanged, subprocess/server shuts down cleanly in verifier. Prior CLI4demos and alltests preserved.
+
+## Ownership and verification
+
+0. Independent bounded GUI builder check, master ratifies DTO/error/fixture/layout choices before ready/start/code.
+1. Backend owner: inspection.py/ui_server.py + tests/test_inspection.py/test_ui_server.py, docs/gui-api.md and ownplan/report; no engine/Policy changes. RealSQLite read-only snapshots, malformedqueries/Host/Origin/method/path tests, largeinteger precision, eventpagination, concurrentwrites observed without lifecyclewrites.
+2. Frontend/CLI owner consumes settled backendDTO: webassets, CLI, ui_demo.py/test_ui_demo.py, pyproject/verifier/CI, docs/gui.md/READMEs and ownplan/report. Could begin staticdesign after DTOsettled; integratedHTTP/browser verification uses actualbackend. No reader/engine edits without originalowner correction.
+3. Independent integration reviews, real browser desktop+narrow interactions and stored-XSS fixture verifies text/noexecution, offline network behavior, bilingual toggle/filter/refresh/empty/error, screenshot evidence and installedHTTPentrypoints. No sourcekeyword-scan tests or mockedUI claiming realbrowser coverage.
+4. Accept allscenarios+verbatimE5DoD, ordered mainmerge/push/remoteequality/actualCI then start a visible main-checkout localpreview with a real URL for user. Preserve user'spreviewserver/session unless explicitly stopped. Continue next roadmap slice automatically.
+
+## Boundaries
+
+Local read-only tool, not production webservice, tenantauth, policycompiler or remoteactuator. No new distributed/authority claims. No fabricated historical timestamps, modelmetrics, globalbusinessuniqueness or compensation reversal. First useful GUI intentionally shows what the engine actually recorded.

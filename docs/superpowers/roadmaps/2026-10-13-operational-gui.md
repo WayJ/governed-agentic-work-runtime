@@ -31,6 +31,9 @@ A local browser UI for real Work state, requirement blockers, evidence and logic
 |---|---|---|---|---|
 | D21 | Prioritize an offline local read-only operations GUI after S4 | User asks for a visible GUI; operational history is already a roadmap need. No lifecycle controls or external hosting required for first useful view. | 2026-10-13 | [current public scope](../../roadmap.md) |
 
+| D23 | Read-only existing-store inspector and loopback-only stdlib server | Avoid Runtime initialization writes and implicit policy changes; local tool, not production host/tenant auth. | 2026-10-14 | [planning design](../specs/2026-10-14-s5-gui-design.md) |
+| D24 | Offline bilingual view of stored truth with exact JSON/sequence values | User can inspect requirements, decisions and retained effects without invented timestamps/metrics or rounded document integers. | 2026-10-14 | [planning design](../specs/2026-10-14-s5-gui-design.md) |
+
 ## Asset Disposition
 
 | asset | disposition | note | date | evidence |
