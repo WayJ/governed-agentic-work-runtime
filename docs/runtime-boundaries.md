@@ -129,6 +129,9 @@ reason.
 
 ## Cancellation boundary
 
+Full command reference, authority matrix and rejection codes:
+[interventions.md](interventions.md).
+
 `request_cancel` (payload exactly `reason`, a nonempty string) records a
 cancellation **intent** in the Work's own JSON (`cancellation.requested_by`
 / `reason`), deliberately separate from presentation status so
