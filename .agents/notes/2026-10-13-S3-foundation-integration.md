@@ -105,3 +105,33 @@ Wave 3 (demo): `intervention_demo.py`, CLI registry flag, `tests/test_interventi
 installed verification/CI smoke, public docs. Wave 4 (release/integration): acceptance, main
 merge, push, remote/CI evidence. Compensation execution, evidence revocation, distributed
 leases and cross-domain registries remain deferred and labeled.
+
+## Correction appendix — cancelled-wait terminal invalidation (2026-10-13, dispatch ctx_8e8481136739)
+
+Master reproduced a resurrection defect on assembled tip 236ac14: a wait registered on a
+satisfied requirement (`triggered`) was returned to `triggered` by `_save` → `_evaluate`
+after `request_cancel` had cancelled it — `_evaluate` re-triggered every wait whose
+requirement was satisfied, regardless of the wait's terminal `cancelled` state (same latent
+path for `migrate_policy` and late evidence after cancel).
+
+- **Independent RED observation** (owner correction 8715151 vs base 7afaf19): the corrected
+  tip's `CancelledWaitTests` (3 tests) applied to the un-fixed 7afaf19 runtime →
+  `Ran 3 tests ... FAILED (failures=3)` — exactly the three scenarios: triggered-wait cancel,
+  late evidence after cancel, migration retaining cancellation. A plain `-k` run on 7afaf19
+  runs 0 tests (class absent) and is not evidence; the tests must be laid onto the old code.
+- **GREEN on corrected tip 8715151**: `Ran 3 tests ... OK`; fix is a two-line terminal guard
+  in `_evaluate` (`cancelled` waits are skipped, never re-triggered) with the same-commit
+  `docs/runtime-boundaries.md` amendment ("terminally: later evaluation (late evidence,
+  verification, migration) can never re-trigger a cancelled wait"). No other runtime change.
+- **Semantics preserved**: waiting waits still trigger on satisfaction (baseline
+  `test_early_approval_and_duplicate_callback` green), expiry only flips `waiting` waits,
+  cancelled is now terminal everywhere (including `revise_document`-cancelled waits — no
+  baseline test relied on resurrection; full suite confirms).
+- **Merge proof**: carrier 236ac14 + core 8715151 → **b25cf66** (clean `ort` merge; root
+  design/master docs untouched; working tree clean).
+- **Fresh assembled-carrier gates at b25cf66**: `python3 -m unittest discover -s tests` →
+  **249 tests OK** (172 baseline + 77 intervention incl. 3 new); `compileall` clean;
+  `check_docs.py` → 34 markdown files, 110 local links, 0 broken; `demo` and `publish-demo`
+  both pass. No demo merge, no main merge, no push, no acceptance, no teardown; the demo
+  wave consumes tip **b25cf66**.
+
