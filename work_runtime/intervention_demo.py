@@ -174,6 +174,8 @@ def _migration_scenario(folder):
     assert (operation["contract_revision"], operation["dispatch_state"]) == (2, "ready")
     print("4. Finance approves under demo-2 ({digest, policy_version}) → E05 satisfied → "
           "SAME operation readmitted", flush=True)
+    print("5. Restart without the registry → fails closed; restart with the registry → "
+          "pinned demo-2 usable", flush=True)
     bare = Runtime(str(folder / "runtime.sqlite"), ExpensePolicy(), intervention_grants())
     try:
         bare.get_work("migrate")
@@ -182,8 +184,6 @@ def _migration_scenario(folder):
         print("   (restart without the registry: %s)" % error, flush=True)
     restarted = registry_runtime(str(folder / "runtime.sqlite"))
     assert restarted.get_work("migrate")["contract"]["policy_version"] == "demo-2"
-    print("5. Restart without the registry → fails closed; restart with the registry → "
-          "pinned demo-2 usable", flush=True)
     assert restarted.dispatch(operation_id, FakeOA(str(folder / "oa.sqlite")))[
         "status"] == "confirmed_succeeded"
     assert oa.accepted_count() == 1
