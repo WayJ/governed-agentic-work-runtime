@@ -51,9 +51,9 @@ GREEN: 16/16 docs tests; full suite OK.
 
 New test names (tests/test_docs.py): test_valid_links_pass, test_broken_link_reported_with_location, test_external_urls_and_mailto_skipped, test_pure_anchor_and_empty_links_skipped, test_fragment_targets_check_file_only, test_fenced_code_blocks_skipped, test_inline_code_spans_skipped, test_reference_links_checked, test_reference_definitions_inside_fences_are_ignored, test_longer_fence_not_closed_by_shorter_marker, test_images_checked, test_leading_slash_resolves_from_root, test_excluded_sources_are_not_checked, test_cli_clean_tree_exits_zero, test_cli_broken_link_exits_one_and_prints, test_repo_docs_no_unexpected_broken_links.
 
-## Coverage claims (docs/verification.md)
+## Coverage claims (docs/verification.md; corrected per coordinator follow-up msg_80b66581745d)
 
-P01–P15: 11 fully covered, P03/P04 covered with caveats (sequential CAS baseline; simulated receipt loss), P06 partial (clean restart only), **P13 deferred** (single local coordinator; no distributed leases or distributed exactly-once claims). E07 partial enforcement via capability allowlist. Local principal names ≠ authentication; FakeOA is a local stand-in. No blanket RFC-001/002 implementation claims.
+P01–P15: **local subsets of 14 protocol cases have named-test evidence, with partial coverage or caveats** — P03 partial (sequential CAS proof only), P04 partial (receipt loss simulated by re-invocation), P06 partial (clean restart only), P09 partial (obsolete-approval invalidation via `test_existing_invoice_proof_reused_after_document_change`, source conflicts, and closed-work callbacks tested as separate local subsets; the complete scenario is not exercised as a whole); **P13 deferred** (no distributed leases or distributed exactly-once claims). Concurrency wording corrected: SQLite serializes command submission across Runtime instances; dispatch assumes a single coordinator. E07 partial enforcement via capability allowlist — no independently evaluated protected-field check exists. Local principal names ≠ authentication; FakeOA is a local stand-in. No blanket RFC-001/002 implementation claims.
 
 ## Coordinator follow-ups → actions
 
