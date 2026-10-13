@@ -96,8 +96,15 @@ class KeyGateTests(FileAdapterTestCase):
         key = "bad\ud800key"
         with self.assertRaises(ValueError) as raised:
             adapter.execute(key, sample_document(), digest(sample_document()))
-        self.assertNotIn("\ud800", str(raised.exception))
-        self.assertNotIn(repr(key), str(raised.exception))
+        # Plain ValueError only: UnicodeEncodeError is a ValueError subclass
+        # and would pass assertRaises silently (review finding F1) — the raw
+        # exception class must never leak, and neither the surrogate nor its
+        # escaped render may appear in the message.
+        self.assertIs(type(raised.exception), ValueError)
+        message = str(raised.exception)
+        self.assertNotIn("\ud800", message)
+        self.assertNotIn("\\ud800", message)
+        self.assertNotIn(repr(key), message)
         self.assertEqual(os.listdir(self.directory), [])
 
 
@@ -164,8 +171,15 @@ class DocumentGateTests(FileAdapterTestCase):
         for bad in ({"a": "bad\ud800"}, {"bad\ud800": 1}, {"a": ["x\udfff"]}):
             with self.assertRaises(ValueError) as raised:
                 adapter.execute("gate-key", bad, "0" * 64)
-            self.assertNotIn("\ud800", str(raised.exception))
-            self.assertNotIn("\udfff", str(raised.exception))
+            # Plain ValueError only (review finding F1): a removed value
+            # UTF-8 gate would leak raw UnicodeEncodeError — a ValueError
+            # subclass — whose message carries the escaped surrogate.
+            self.assertIs(type(raised.exception), ValueError)
+            message = str(raised.exception)
+            self.assertNotIn("\ud800", message)
+            self.assertNotIn("\udfff", message)
+            self.assertNotIn("\\ud800", message)
+            self.assertNotIn("\\udfff", message)
         self.assertEqual(os.listdir(self.directory), [])
 
     def test_cycles_are_rejected_without_recursion_error(self):

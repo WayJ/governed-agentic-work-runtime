@@ -54,7 +54,9 @@ Mid-GREEN fix (Task 2): first implementation draft omitted the `_read_validated`
 - **Platform notes (macOS 25.6.0/darwin, Python 3.9.6):** `os.link` commit and directory fsync
   both supported here; directory fsync is best-effort by design (POSIX-supported, skipped where
   refused). Hardlink-unsupported volumes propagate the explicit `OSError` (no rename fallback —
-  asserted in `ApiShapeTests` against mechanism tokens `os.rename`/`os.replace`/`shutil`/`_exit`).
+  verification basis: the `ApiShapeTests` constructor-signature check, the behavioral
+  non-overwrite/race/corruption tests, and the direct AST call-inventory audit recorded below,
+  independently re-confirmed by the wave-2 reviewer).
 
 ## Design rulings (routine, recorded for integration review)
 
@@ -62,8 +64,9 @@ Mid-GREEN fix (Task 2): first implementation draft omitted the `_read_validated`
    raise (`ValueError`). The D22 text pins "depth<=64"; the plan's "62 nested lists = total 64"
    was off by one against its own "root is depth 1" pin; the test pins 63/64. The gate is
    deliberately independent of the authoring module, which owns its own identical-bound bound.
-2. Whitespace-only keys are accepted (D22 says "nonempty"; only empty/non-string/non-UTF-8 keys
-   are rejected). Documented in docs/file-adapter.md.
+2. Whitespace-only keys are accepted (D22 says "nonempty"; only an empty, non-string or
+   non-UTF-8 **idempotency key** is rejected — JSON document property keys may be empty per
+   D22 B4, fixed in 9c22099). Documented in docs/file-adapter.md.
 3. No pre-commit existence fast path: replay always stages and commits through `os.link`, losing
    the link race to the existing file and reading the validated winner — one code path, no
    check-then-act window, matching the D22 flow literally.
@@ -76,3 +79,42 @@ Mid-GREEN fix (Task 2): first implementation draft omitted the `_read_validated`
   another live racer's stage would be wrong) — bounded growth is left to the operator.
 - The JSON gate here is independent of the future authoring module by design (D22); integration
   may want a one-line cross-reference between the two docs once both land.
+
+## 2026-10-14 correction addendum (review findings F1/S1/S2)
+
+Source: independent wave-2 review `.agents/notes/2026-10-14-S4-file-review.md` (s4-release-control,
+@d119db3) — verdict *integration-ready, product compliant, no product defect*. This addendum records
+the owner-side corrections; all evidence above is preserved unchanged. The Task-5 table row
+"51/51 … 324 OK" remains as the chronological pre-redirect record; the standing final basis is
+**323 tests (50 file tests)** per the redirect paragraph and this addendum.
+
+**F1 — surrogate gate now pinned to plain `ValueError` (test-only fix).** The reviewer's mutation
+M4 (remove the value-string UTF-8 gate) survived the original suite because `UnicodeEncodeError`
+is a `ValueError` subclass and its message carries only the *escaped* surrogate render, so
+`assertRaises(ValueError)` + raw-character `assertNotIn` both passed while the raw exception class
+leaked. Both lone-surrogate tests now assert `type(raised.exception) is ValueError` and that
+neither the raw surrogate nor its escaped render (`\ud800`/`\udfff`) appears in the message.
+Evidence, observed in order:
+
+- strengthened tests on pristine source → 2/2 OK;
+- disposable working-tree mutation (deleted the single `_check_utf8(value)` call in the string
+  branch; **never committed**) → `test_lone_surrogate_strings_are_rejected_without_leaking_them`
+  FAIL, verbatim: `AssertionError: <class 'UnicodeEncodeError'> is not <class 'ValueError'>`;
+  it was the **only** failure in the full 50-test file run under the mutation;
+- `git restore work_runtime/file_adapter.py` → product byte-identical to 9c22099 (working tree
+  showed only `tests/test_file_adapter.py` modified) → GREEN: 50/50 file tests, full suite
+  **Ran 323 tests … OK**.
+
+**S1 — stale platform statement corrected in place.** The Platform-notes sentence attributing the
+no-rename-fallback property to an `ApiShapeTests` mechanism-token scan described the assertion
+commit 1bb1342 removed. Corrected wording names the actual threefold basis: constructor-signature
+check, behavioral tests, and the direct AST call-inventory audit (independently re-confirmed by the
+reviewer's source audit).
+
+**S2 — stale ruling corrected in place.** Design ruling 2's parenthetical listed *empty* keys among
+the rejected; since 9c22099 (and per D22 B4) empty **JSON document property keys are valid** — the
+nonempty rule belongs to the business **idempotency key** only. The ruling now says exactly that.
+
+Product code was not touched by this correction (commit contains `tests/test_file_adapter.py` and
+this report only); no exception property was weakened to accept subclasses and no comment was
+edited to appease a test.
