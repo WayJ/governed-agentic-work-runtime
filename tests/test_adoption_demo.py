@@ -4,6 +4,7 @@ import contextlib
 import importlib.resources
 import io
 import json
+import os
 import re
 import shlex
 import sqlite3
@@ -15,13 +16,20 @@ from pathlib import Path
 
 from work_runtime import cli
 from work_runtime.adoption_demo import (
+    ResponseLossPublisher,
     SopFileError,
     _safe_text,
     load_sop_bytes,
     load_sop_file,
     packaged_card,
+    run_adoption_demo,
 )
 from work_runtime.authoring import lint_sop, sop_digest
+from work_runtime.file_adapter import FilePublisher
+from work_runtime.policy import digest
+from work_runtime.publishing import PublishingPolicy
+from work_runtime.publishing_demo import article, publishing_grants
+from work_runtime.runtime import Runtime
 
 # Pinned packaged-card digests (S4 foundation integration report).
 PINNED_EXPENSE_DIGEST = "4876285f00f5f9ad0287e92825f1aec212e9fc3bce10fd8c073bd2151d817627"
@@ -326,6 +334,178 @@ class LintCliUsageTests(unittest.TestCase):
             code, _, err = run_cli(["lint-sop", str(path), "--yaml"])
             self.assertEqual(code, 2)
             self.assertIn("usage", err.lower())
+
+
+ARTIFACT_NAME = re.compile(r"^[0-9a-f]{64}\.json$")
+INSPECT_LINE = re.compile(r'^  (python3 -m work_runtime inspect .+)$', re.MULTILINE)
+COMMITTED_LINE = re.compile(r'committed artifact: "([^"]+)"')
+ADOPTION_FINAL_LINE = "committed file artifacts: 1"
+
+
+def committed_artifacts(directory):
+    return sorted(path for path in Path(directory).iterdir()
+                  if ARTIFACT_NAME.match(path.name))
+
+
+class ResponseLossWrapperTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name) / "publisher"
+        self.publisher = FilePublisher(str(self.directory))
+
+    def test_execute_raises_timeout_after_the_real_commit(self):
+        wrapper = ResponseLossPublisher(self.publisher)
+        with self.assertRaises(TimeoutError):
+            wrapper.execute("adoption-key", article(), digest(article()))
+        files = committed_artifacts(self.directory)
+        self.assertEqual(len(files), 1)
+        artifact = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(artifact["key"], "adoption-key")
+        self.assertEqual(artifact["document"], article())
+
+    def test_lookup_delegates_to_the_real_publisher(self):
+        wrapper = ResponseLossPublisher(self.publisher)
+        with self.assertRaises(TimeoutError):
+            wrapper.execute("adoption-key", article(), digest(article()))
+        receipt = wrapper.lookup("adoption-key")
+        self.assertEqual(receipt, self.publisher.lookup("adoption-key"))
+        self.assertEqual(receipt["status"], "accepted")
+
+    def test_exposes_the_delegates_declared_contract(self):
+        wrapper = ResponseLossPublisher(self.publisher)
+        self.assertIs(wrapper.contract, self.publisher.contract)
+
+
+class AdoptionDemoTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cls.folder = run_adoption_demo(directory=cls.temp.name)
+        cls.stdout = out.getvalue()
+        cls.runtime_path = Path(cls.folder) / "runtime.sqlite"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    def operations(self):
+        db = sqlite3.connect(str(self.runtime_path))
+        try:
+            return [json.loads(row[0]) for row in db.execute("SELECT body FROM operations")]
+        finally:
+            db.close()
+
+    def test_final_line_counts_exactly_one_committed_artifact(self):
+        self.assertIn(ADOPTION_FINAL_LINE, self.stdout)
+
+    def test_publisher_directory_holds_exactly_one_hash_named_artifact(self):
+        directory = Path(self.folder) / "publisher"
+        files = committed_artifacts(directory)
+        self.assertEqual(len(files), 1)
+        self.assertFalse([p for p in directory.iterdir() if p.suffix == ".stage"])
+
+    def test_artifact_matches_the_work_document_key_and_digest(self):
+        artifact = json.loads(committed_artifacts(Path(self.folder) / "publisher")[0]
+                              .read_text(encoding="utf-8"))
+        self.assertEqual(set(artifact), {"artifact_version", "key", "content_digest",
+                                         "document", "receipt"})
+        self.assertEqual(artifact["artifact_version"], 1)
+        self.assertEqual(artifact["document"], article())
+        self.assertEqual(artifact["content_digest"], digest(article()))
+        operations = self.operations()
+        self.assertEqual(len(operations), 1)
+        self.assertEqual(artifact["key"], operations[0]["business_key"])
+        receipt = artifact["receipt"]
+        self.assertEqual(set(receipt), {"status", "external_id", "digest"})
+        self.assertEqual(receipt["status"], "accepted")
+        self.assertTrue(receipt["external_id"].startswith("FILE-"))
+        self.assertEqual(receipt["digest"], artifact["content_digest"])
+
+    def test_work_completes_succeeded_with_one_attempt(self):
+        runtime = Runtime(str(self.runtime_path), PublishingPolicy(), publishing_grants())
+        work = runtime.get_work("article-1")
+        self.assertEqual((work["status"], work["outcome"]), ("closed", "succeeded"))
+        operation = runtime.get_operation(self.operations()[0]["id"])
+        self.assertEqual(operation["status"], "confirmed_succeeded")
+        self.assertEqual(len(operation["attempts"]), 1)
+
+    def test_printed_inspect_command_runs_verbatim(self):
+        match = INSPECT_LINE.search(self.stdout)
+        self.assertIsNotNone(match, self.stdout)
+        words = shlex.split(match.group(1))
+        self.assertEqual(words[0], "python3")
+        words[0] = sys.executable
+        result = subprocess.run(words, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"outcome": "succeeded"', result.stdout)
+
+    def test_printed_artifact_path_is_the_committed_file(self):
+        match = COMMITTED_LINE.search(self.stdout)
+        self.assertIsNotNone(match, self.stdout)
+        printed = Path(match.group(1))
+        self.assertTrue(printed.exists(), str(printed))
+        self.assertEqual(printed, committed_artifacts(Path(self.folder) / "publisher")[0])
+
+    def test_prologue_prints_pinned_digests_and_static_boundary(self):
+        self.assertIn(PINNED_EXPENSE_DIGEST, self.stdout)
+        self.assertIn(PINNED_PUBLISHING_DIGEST, self.stdout)
+        self.assertIn("not executed by the Runtime", self.stdout)
+        self.assertIn("static", self.stdout.lower())
+
+
+class AdoptionDemoHygieneTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+
+    def test_parent_directory_contents_survive_the_run(self):
+        sentinel = Path(self.temp.name) / "sentinel.txt"
+        sentinel.write_text("user data", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            run_adoption_demo(directory=self.temp.name)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "user data")
+
+    def test_two_runs_use_fresh_stores_each_holding_one_artifact(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            folders = {run_adoption_demo(directory=self.temp.name),
+                       run_adoption_demo(directory=self.temp.name)}
+        self.assertEqual(len(folders), 2)
+        for folder in folders:
+            self.assertEqual(len(committed_artifacts(Path(folder) / "publisher")), 1)
+
+    def test_demo_runs_with_cwd_outside_the_repository(self):
+        previous = os.getcwd()
+        os.chdir(self.temp.name)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                folder = run_adoption_demo()
+        finally:
+            os.chdir(previous)
+        self.assertEqual(len(committed_artifacts(Path(folder) / "publisher")), 1)
+
+
+class AdoptionCliTests(unittest.TestCase):
+    def test_adoption_demo_directory_flag_runs_the_demo(self):
+        with tempfile.TemporaryDirectory() as folder:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = 0
+                try:
+                    cli.main(["adoption-demo", "--directory", folder])
+                except SystemExit as raised:
+                    code = raised.code
+            self.assertEqual(code, 0)
+            self.assertIn(ADOPTION_FINAL_LINE, out.getvalue())
+
+    def test_adoption_demo_rejects_unknown_flags(self):
+        _, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(["adoption-demo", "--nope"])
+        self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":
