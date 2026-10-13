@@ -133,5 +133,20 @@ class CheckDocsTests(unittest.TestCase):
         self.assertIn("1 broken", result.stdout)
 
 
+class RepoDocsContractTests(unittest.TestCase):
+    """The repository's own documentation must resolve, except recorded pending links."""
+
+    def test_repo_docs_no_unexpected_broken_links(self):
+        files, links, findings = check_docs.check(REPO_ROOT)
+        self.assertGreater(files, 0)
+        # docs/runtime-boundaries.md is produced by the parallel S1 runtime
+        # worker; the link from docs/verification.md stays broken in this
+        # worktree until integration assembles both branches.
+        allowed = [finding for finding in findings
+                   if finding[0] == REPO_ROOT / "docs" / "verification.md"
+                   and finding[2] == "runtime-boundaries.md"]
+        self.assertEqual(findings, allowed, "unexpected broken documentation links")
+
+
 if __name__ == "__main__":
     unittest.main()
