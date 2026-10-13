@@ -153,7 +153,9 @@ While the intent is active the work stops: `propose_action` (including
 re-admission), `bind_contract`, `revise_plan`, `revise_document`,
 `register_wait`, `request_completion` and explicit policy migration are
 rejected `CANCELLATION_ACTIVE`; waiting/triggered waits become `cancelled`
-and never-dispatched prepared intents are cancelled with reason
+— terminally: later evaluation (late evidence, verification, migration)
+can never re-trigger a cancelled wait — and never-dispatched prepared
+intents are cancelled with reason
 `WORK_CANCELLED` — a prepared operation is never relabeled as an external
 `confirmed_failed`. Evidence intake, the internal verifier, expiry and
 reconciliation keep running: an attempt that was already durable when

@@ -187,6 +187,8 @@ class Runtime:
         if work["status"] != "closed":
             requirements = {r["id"]: r for r in work["requirements"]}
             for wait in work["waits"]:
+                if wait["status"] == "cancelled":
+                    continue  # Terminal invalidation: never re-trigger a cancelled wait.
                 requirement = requirements.get(wait["requirement_id"])
                 if requirement and (requirement["fulfillment"] == "satisfied"
                                     or requirement["applicability"] == "not_applicable"):
