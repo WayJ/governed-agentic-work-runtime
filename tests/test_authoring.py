@@ -3,6 +3,7 @@
 import copy
 import json
 import unittest
+from pathlib import Path
 
 from work_runtime.authoring import lint_sop, sop_digest
 from work_runtime.policy import digest as policy_digest
@@ -1330,6 +1331,67 @@ class DigestTests(unittest.TestCase):
         for value in (cyclic, 42, {"rules": "x"}):
             with self.subTest(value=type(value).__name__):
                 self.assertIsInstance(lint_sop(value), list)
+
+
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "work_runtime" / "data" / "sop"
+
+
+def load_card(name):
+    with open(DATA_DIR / name, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+class PackagedExampleTests(unittest.TestCase):
+    """The packaged valid cards are the single truth examples (D22)."""
+
+    def test_expense_card_is_lint_clean_with_digest(self):
+        card = load_card("expense.json")
+        self.assertEqual(lint_sop(card), [])
+        digest = sop_digest(card)
+        self.assertEqual(len(digest), 64)
+        int(digest, 16)
+
+    def test_expense_card_mirrors_demo_policy(self):
+        card = load_card("expense.json")
+        self.assertEqual(card["schema_version"], 1)
+        self.assertEqual(card["policy"]["id"], "expense-submit")
+        self.assertEqual(card["policy"]["version"], "demo-1")
+        self.assertEqual(card["policy"]["goal"], "expense.accepted")
+        self.assertEqual([rule["id"] for rule in card["rules"]],
+                         ["E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08"])
+        modalities = {rule["modality"] for rule in card["rules"]}
+        self.assertEqual(modalities, {"must", "forbidden"})
+        deadlines = {rule["deadline"] for rule in card["rules"]}
+        self.assertIn("goal", deadlines)
+        self.assertIn("expense.submit", deadlines)
+        self.assertEqual(card["policy"]["capabilities"], ["expense.submit"])
+
+    def test_publishing_card_is_lint_clean_with_digest(self):
+        card = load_card("publishing.json")
+        self.assertEqual(lint_sop(card), [])
+        digest = sop_digest(card)
+        self.assertEqual(len(digest), 64)
+        int(digest, 16)
+
+    def test_publishing_card_mirrors_publishing_policy(self):
+        card = load_card("publishing.json")
+        self.assertEqual(card["schema_version"], 1)
+        self.assertEqual(card["policy"]["id"], "content-publish")
+        self.assertEqual(card["policy"]["capabilities"], ["content.publish"])
+        self.assertEqual([rule["id"] for rule in card["rules"]],
+                         ["C01", "C02", "C03", "C04"])
+        # Exercises empty facts/collections lists (valid where meaningful).
+        self.assertEqual(card["facts"], [])
+        self.assertEqual(card["collections"], [])
+        for rule in card["rules"]:
+            self.assertEqual(rule["scope"], "document")
+
+    def test_packaged_cards_key_order_neutral_digest(self):
+        for name in ("expense.json", "publishing.json"):
+            with self.subTest(name=name):
+                self.assertEqual(sop_digest(load_card(name)),
+                                 sop_digest(reorder_keys(load_card(name))))
 
 
 if __name__ == "__main__":

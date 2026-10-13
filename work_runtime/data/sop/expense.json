@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "id": "expense-submit",
+    "version": "demo-1",
+    "goal": "expense.accepted",
+    "source": {
+      "document": "expense-policy-handbook",
+      "version": "2026-03",
+      "section": "4 Expense submission"
+    },
+    "scope": "document",
+    "capabilities": ["expense.submit"]
+  },
+  "defaults": {
+    "unknown": "block",
+    "conflict": "escalate",
+    "exemptions": "forbidden",
+    "migration": "explicit"
+  },
+  "facts": [
+    {"id": "invoice.valid"},
+    {"id": "duplicate.clear"},
+    {"id": "amount.limit.known"},
+    {"id": "approval.current"},
+    {"id": "confirmation.current"},
+    {"id": "acceptance.current"}
+  ],
+  "collections": [
+    {
+      "id": "expense.invoices",
+      "version": "v1",
+      "completeness": "sealed-by-requester",
+      "allow_empty": false
+    }
+  ],
+  "rules": [
+    {
+      "id": "E01",
+      "source": {"document": "expense-policy-handbook", "version": "2026-03", "section": "4.1"},
+      "modality": "must",
+      "type": "state",
+      "scope": "expense.invoices",
+      "trigger": "before expense.submit is proposed",
+      "depends_on": ["expense.invoices"],
+      "requirement": "The claimed invoice collection must be complete, nonempty and sealed by the requester for this submission",
+      "deadline": "expense.submit",
+      "evidence": {"kind": "requester_confirmation", "source": "requester", "subject": "invoice-collection", "version": "document-digest"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "E02",
+      "source": {"document": "expense-policy-handbook", "version": "2026-03", "section": "4.2"},
+      "modality": "must",
+      "type": "state",
+      "scope": "expense.invoices",
+      "trigger": "for each invoice in the sealed collection, before expense.submit",
+      "depends_on": ["invoice.valid"],
+      "requirement": "Every invoice in the sealed collection must be covered by a valid verification for its current revision",
+      "deadline": "expense.submit",
+      "evidence": {"kind": "invoice_valid", "source": "invoice-service", "subject": "invoice", "version": "invoice-revision"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "E03",
+      "source": {"document": "expense-policy-handbook", "version": "2026-03", "section": "4.3"},
+      "modality": "forbidden",
+      "type": "action",
+      "scope": "document",
+      "trigger": "at expense.submit",
+      "depends_on": ["duplicate.clear"],
+      "requirement": "An expense must not be reimbursed twice for the same invoice; the external acceptance enforces uniqueness when the request lands",
+      "deadline": "expense.submit",
+      "evidence": {"kind": "duplicate_clear", "source": "expense-service", "subject": "invoice-set", "version": "document-digest"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "E04",
+      "source": {"document": "expense-policy-handbook", "version": "2026-03", "section": "4.4"},
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before expense.submit",
+      "depends_on": ["amount.limit.known"],
+      "requirement": "The submission amount and the applicable limit must both be known before submission",
+      "deadline": "expense.submit",
+      "evidence": {"kind": "amount_limit_record", "source": "expense-service", "subject": "document", "version": "document-digest"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "E05",
+      "source": {"document": "expense-policy-handbook", "version": "2026-03", "section": "4.5"},
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "the submission amount exceeds the applicable limit",
+      "depends_on": ["amount.limit.known", "approval.current", "E04"],
+      "requirement": "When the amount exceeds the limit, a special approval covering the current content must exist before submission",
+      "deadline": "expense.submit",
+      "evidence": {"kind": "approval", "source": "finance", "subject": "document", "version": "document-digest"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "E06",
+      "source": {"document": "expense-policy-handbook", "version": "2026-03", "section": "4.6"},
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before expense.submit",
+      "depends_on": ["confirmation.current"],
+      "requirement": "The requester must confirm the final submission content before it is submitted",
+      "deadline": "expense.submit",
+      "evidence": {"kind": "confirmation", "source": "requester", "subject": "document", "version": "document-digest"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "E07",
+      "source": {"document": "expense-policy-handbook", "version": "2026-03", "section": "4.7"},
+      "modality": "forbidden",
+      "type": "action",
+      "scope": "document",
+      "trigger": "on every write action that touches expense material",
+      "depends_on": [],
+      "requirement": "Original invoice records must never be rewritten; corrections append a change record with its own justification instead",
+      "deadline": "goal",
+      "evidence": {"kind": "audit_trail", "source": "oa", "subject": "invoice", "version": "invoice-revision"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "E08",
+      "source": {"document": "expense-policy-handbook", "version": "2026-03", "section": "4.8"},
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before successful completion",
+      "depends_on": ["acceptance.current"],
+      "requirement": "The OA office must have accepted the current content before the work can complete successfully",
+      "deadline": "goal",
+      "evidence": {"kind": "accepted", "source": "oa", "subject": "document", "version": "document-digest"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    }
+  ],
+  "advice": [
+    "Collect invoices and compute the applicable limit in parallel before requesting verification",
+    "Reuse still-valid verification records instead of re-calling the invoice service for unchanged revisions",
+    "When the amount is unknown, gather the amount facts before requesting a special approval"
+  ]
+}
