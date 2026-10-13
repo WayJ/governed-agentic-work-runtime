@@ -43,8 +43,49 @@ def _declared_contract(adapter: Adapter) -> Optional[object]:
     return descriptor
 
 
+_POLICY_METHODS = ("validate_document", "evaluate", "action_blockers",
+                   "operation_key", "validate_evidence")
+
+
+def _validated_registry(policy: Policy, policies: Optional[Dict[str, Policy]]) -> Dict[str, Policy]:
+    """Validate an explicitly loaded, same-family policy registry.
+
+    Returns a copied mapping that always contains the default version bound
+    to the default object. Malformed input raises before any filesystem or
+    database write; definitions themselves stay trusted-local.
+    """
+    if policies is None:
+        return {policy.version: policy}
+    if not isinstance(policies, dict):
+        raise CommandError("policies must be a dict of version to Policy")
+    registry: Dict[str, Policy] = {}
+    for version, candidate in policies.items():
+        if not isinstance(version, str) or not version:
+            raise CommandError("Registry keys must be nonempty version strings")
+        for attribute in ("id", "version", "goal"):
+            value = getattr(candidate, attribute, None)
+            if not isinstance(value, str) or not value:
+                raise CommandError("Registry policies require a nonempty " + attribute)
+        if not isinstance(getattr(candidate, "evidence_sources", None), dict):
+            raise CommandError("Registry policies require an evidence_sources dict")
+        for method in _POLICY_METHODS:
+            if not callable(getattr(candidate, method, None)):
+                raise CommandError("Registry policies require a callable " + method)
+        if candidate.version != version:
+            raise CommandError("Registry key must equal the policy version")
+        if (candidate.id, candidate.goal) != (policy.id, policy.goal):
+            raise CommandError("Registry policies must share the default policy family and goal")
+        registry[version] = candidate
+    if registry.get(policy.version, policy) is not policy:
+        raise CommandError("The default version must map to the default policy object")
+    registry[policy.version] = policy
+    return registry
+
+
 class Runtime:
-    def __init__(self, path: str, policy: Policy, grants: Dict[str, set]):
+    def __init__(self, path: str, policy: Policy, grants: Dict[str, set],
+                 *, policies: Optional[Dict[str, Policy]] = None):
+        self.policies = _validated_registry(policy, policies)
         self.path, self.policy, self.grants = str(path), policy, grants
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as db:
@@ -107,17 +148,32 @@ class Runtime:
         if not row:
             raise CommandError("Unknown work: " + work_id)
         work = json.loads(row[0])
-        contract = work.get("contract")
-        if contract and (contract["policy_id"], contract["policy_version"]) != (self.policy.id, self.policy.version):
-            raise CommandError("Load the policy version bound to this Work; migration is not implicit")
+        self._policy_for(work)  # Fails closed on a pinned version that is not loaded.
         return work
+
+    def _policy_for(self, work: dict) -> Policy:
+        """Every Work resolves its own pinned policy; migration is never implicit."""
+        contract = work.get("contract")
+        if not contract:
+            return self.policy
+        if contract["policy_version"] == self.policy.version:
+            # The default version tracks the live default slot, so trusted-local
+            # reconfiguration of the default keeps its fail-closed semantics.
+            if (self.policy.id, self.policy.goal) != (contract["policy_id"], contract["goal"]):
+                raise CommandError("Load the policy version bound to this Work; migration is not implicit")
+            return self.policy
+        policy = self.policies.get(contract["policy_version"])
+        if policy is None or (policy.id, policy.goal) != (contract["policy_id"], contract["goal"]):
+            raise CommandError("Load the policy version bound to this Work; migration is not implicit")
+        return policy
 
     def _proofs(self, db, work_id):
         return [json.loads(r[0]) for r in db.execute(
             "SELECT body FROM evidence WHERE work_id=?", (work_id,))]
 
     def _evaluate(self, db, work):
-        work["requirements"] = self.policy.evaluate(work, self._proofs(db, work["id"]))
+        policy = self._policy_for(work)
+        work["requirements"] = policy.evaluate(work, self._proofs(db, work["id"]))
         if not work["contract"]:
             work["status"] = "establishing"
             return
@@ -243,8 +299,9 @@ class Runtime:
         if kind == "bind_contract":
             if work["contract"]:
                 return self._reject("CONTRACT_ALREADY_BOUND", version)
-            if payload != {"policy_id": self.policy.id, "policy_version": self.policy.version,
-                           "goal": self.policy.goal}:
+            policy = self._policy_for(work)
+            if payload != {"policy_id": policy.id, "policy_version": policy.version,
+                           "goal": policy.goal}:
                 return self._reject("CONTRACT_UNSUPPORTED", version)
             work["contract"] = {**payload, "revision": 1}
             work["status"] = "active"
@@ -261,7 +318,7 @@ class Runtime:
             self._save(db, work, "PlanRevised", {"revision": work["plan_revision"]})
         elif kind == "revise_document":
             # Example-specific object command; not a general Contract mutation.
-            self.policy.validate_document(payload["document"])
+            self._policy_for(work).validate_document(payload["document"])
             if payload["document"]["id"] != work["document"]["id"]:
                 return self._reject("DOCUMENT_ID_MISMATCH", version)
             work["document"] = payload["document"]
@@ -322,7 +379,8 @@ class Runtime:
         capability = payload.get("capability")
         if capability not in self.grants[actor]:
             return self._reject("AUTHORITY_DENIED", version)
-        blockers = self.policy.action_blockers(capability, work["requirements"])
+        policy = self._policy_for(work)
+        blockers = policy.action_blockers(capability, work["requirements"])
         if blockers:
             code = "APPLICABILITY_UNRESOLVED" if any(
                 r.get("applicability") in ("unknown", "conflict") for r in blockers
@@ -333,7 +391,7 @@ class Runtime:
             if (pending["status"] in ("dispatched", "outcome_unknown")
                     and pending["document_digest"] != work["document_digest"]):
                 return self._reject("OUTCOME_UNRESOLVED", version, [pending["id"]])
-        key = self.policy.operation_key(capability, work)
+        key = policy.operation_key(capability, work)
         old = db.execute("SELECT body FROM operations WHERE business_key=?", (key,)).fetchone()
         if old:
             operation = json.loads(old[0])
@@ -362,7 +420,8 @@ class Runtime:
         kind, event_id = payload["kind"], payload["event_id"]
         if not isinstance(event_id, str) or not event_id:
             raise CommandError("Source event id is required")
-        if self.policy.evidence_sources.get(kind) != actor or "evidence.write" not in self.grants[actor]:
+        if (self._policy_for(work).evidence_sources.get(kind) != actor
+                or "evidence.write" not in self.grants[actor]):
             return self._reject("AUTHORITY_DENIED", work["state_version"])
         fingerprint = digest([work["id"], payload])
         old = db.execute("SELECT fingerprint,body FROM evidence WHERE source=? AND event_id=?",
@@ -382,11 +441,12 @@ class Runtime:
         """Trusted verifier entry point; candidate validation and evaluation are atomic."""
         with self._transaction() as db:
             work = self._work(db, work_id)
+            policy = self._policy_for(work)
             count = 0
             for candidate in self._proofs(db, work_id):
                 if candidate["status"] != "pending_verification":
                     continue
-                candidate["status"] = "verified" if self.policy.validate_evidence(work, candidate) else "invalid"
+                candidate["status"] = "verified" if policy.validate_evidence(work, candidate) else "invalid"
                 db.execute("UPDATE evidence SET body=? WHERE source=? AND event_id=?",
                            (canonical(candidate), candidate["source"], candidate["event_id"]))
                 count += 1
@@ -411,8 +471,8 @@ class Runtime:
                 self._save(db, work, "WaitExpired", {"count": count})
             return count
 
-    def _accepted_source(self) -> str:
-        source = self.policy.evidence_sources.get("accepted")
+    def _accepted_source(self, work: dict) -> str:
+        source = self._policy_for(work).evidence_sources.get("accepted")
         if not isinstance(source, str) or not source:
             raise CommandError(
                 "Policy must configure a nonempty accepted evidence source for external effects")
@@ -425,6 +485,7 @@ class Runtime:
             if op["status"] != "prepared" or op["dispatch_state"] == "cancelled":
                 return op
             work = self._work(db, op["work_id"])
+            policy = self._policy_for(work)
             if (work["status"] == "closed" or op["document_digest"] != work["document_digest"]
                     or op["plan_revision"] != work["plan_revision"]):
                 op["dispatch_state"] = "cancelled"
@@ -432,14 +493,14 @@ class Runtime:
                 self._save_op(db, op)
                 self._save(db, work, "DispatchCancelled", {"operation_id": op["id"]})
                 return op
-            blockers = self.policy.action_blockers(op["capability"], work["requirements"])
+            blockers = policy.action_blockers(op["capability"], work["requirements"])
             if op["capability"] not in self.grants.get(op["actor"], set()) or blockers:
                 op["dispatch_state"] = "held"
                 op["reason"] = "AUTHORITY_DENIED" if not blockers else "REQUIREMENT_UNSATISFIED"
                 self._save_op(db, op)
                 self._save(db, work, "DispatchHeld", {"operation_id": op["id"], "reason": op["reason"]})
                 return op
-            self._accepted_source()
+            self._accepted_source(work)
             contract = _declared_contract(adapter)
             if contract is not None and op["capability"] not in contract.actions:
                 op["dispatch_state"] = "held"
@@ -474,7 +535,7 @@ class Runtime:
         op = self.get_operation(operation_id)
         if op["status"] not in ("dispatched", "outcome_unknown"):
             return op
-        self._accepted_source()
+        self._accepted_source(self.get_work(op["work_id"]))
         try:
             result = adapter.lookup(op["business_key"])
         except Exception as error:
@@ -507,7 +568,7 @@ class Runtime:
                 op["status"], op["reason"] = "outcome_unknown", "ADAPTER_RESULT_INVALID"
                 work["status"] = "needs_attention"
             else:
-                source = self._accepted_source()
+                source = self._accepted_source(work)
                 op["status"] = "confirmed_succeeded" if result["status"] == "accepted" else "confirmed_failed"
                 op["dispatch_state"] = "finished"
                 op["external_id"] = result["external_id"]

@@ -27,6 +27,29 @@ regressions that pin each guarantee live in `tests/test_boundaries.py`.
 | operation | business key derived by the policy (expense demo: policy id + capability + document id + document revision) | a new command proposing the same logical effect re-associates the existing operation instead of creating a second one; same key with different content is rejected `OPERATION_CONTENT_CONFLICT` |
 | external effect | idempotency key = the operation's business key, enforced by the adapter | the external system deduplicates repeated calls with the same key and content |
 
+## Policy registry and per-work binding
+
+`Runtime(path, policy, grants, *, policies=None)` accepts an optional
+keyword-only registry of explicitly loaded policy versions. The registry is
+validated **before** any filesystem or database write and raises
+`CommandError` on malformed input: it must be a dict keyed by nonempty
+version strings where each key equals `value.version`, every value must
+expose nonempty `id`/`version`/`goal` strings, a dict `evidence_sources`
+and the five callable `Policy` methods, and every entry must share the
+default policy's family (`id`) and `goal` — a cross-domain registry is not
+a supported shared-database runtime. The mapping is copied; the default
+version always resolves to the default policy object.
+
+Every Work resolves its policy through its pinned contract binding
+(`contract.policy_version`) in **all** validation, evaluation,
+source-lookup, blocker, key, receipt and recovery paths. Unbound works use
+the default policy. A work pinned to a version that is not loaded fails
+closed with `CommandError` on access; migration is never implicit. Works
+pinned to the default version track the live default slot, so
+trusted-local reconfiguration of the default policy keeps its existing
+fail-closed semantics; works pinned to other versions resolve through the
+registry fixed at construction.
+
 ## The dispatch boundary
 
 `dispatch(operation_id, adapter)` is the only path to an external effect.
@@ -145,8 +168,11 @@ Guarantees:
 - **Directly re-`dispatch`ing a `held` intent re-runs the checks** and may
   dispatch if authority and blockers now pass; `recover` never auto-dispatches
   `held` intents — they are re-admitted explicitly through `propose_action`.
-- **Single policy version per database.** Opening a runtime with a different
-  policy version raises on work access; migration is never implicit.
+- **One policy family per database; versions are pinned per Work.** A work
+  whose pinned version is not in the loaded registry raises on access, and
+  switching versions is never implicit — an explicit migration command is
+  required. Business-key stability across same-family versions is a
+  policy-author obligation; the runtime does not rewrite keys.
 
 ## Verification
 
