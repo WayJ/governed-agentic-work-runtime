@@ -1136,5 +1136,66 @@ class PendingSourceTests(unittest.TestCase):
         self.assertEqual(self.requirement("E05")["fulfillment"], "pending")
 
 
+class CancelledWaitTests(unittest.TestCase):
+    """Cancelled waits are terminally invalidated: evaluation never resurrects them."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.grants = intervention_grants()
+        self.runtime = Runtime(self.path, ExpensePolicy(), self.grants)
+        initialize(self.runtime)
+
+    def register_wait(self, requirement_id="E05:EXP-001"):
+        send(self.runtime, "demo", "register_wait", {
+            "requirement_id": requirement_id, "deadline": 2000000000, "owner": "finance"})
+
+    def wait_status(self):
+        return self.runtime.get_work("demo")["waits"][0]["status"]
+
+    def cancel(self):
+        version = self.runtime.get_work("demo")["state_version"]
+        receipt = self.runtime.command("agent", "cancel-1", "demo", "request_cancel",
+                                       {"reason": "stop"}, version)
+        self.assertEqual(receipt["decision"], "accepted")
+
+    def test_cancelled_triggered_wait_stays_cancelled(self):
+        prerequisites(self.runtime)
+        self.register_wait()
+        self.assertEqual(self.wait_status(), "triggered")
+        self.cancel()
+        self.assertEqual(self.wait_status(), "cancelled")
+
+    def test_cancelled_wait_stays_cancelled_after_late_evidence(self):
+        prerequisites(self.runtime, approval=False)
+        self.register_wait()
+        self.assertEqual(self.wait_status(), "waiting")
+        self.cancel()
+        self.assertEqual(self.wait_status(), "cancelled")
+        proof(self.runtime, "demo", "approval", "finance")
+        self.runtime.verify_pending("demo")
+        work = self.runtime.get_work("demo")
+        requirement = next(r for r in work["requirements"] if r["rule_id"] == "E05")
+        self.assertEqual(requirement["fulfillment"], "satisfied")
+        self.assertEqual(self.wait_status(), "cancelled")
+
+    def test_migration_cancelled_wait_stays_cancelled_when_requirement_satisfied(self):
+        prerequisites(self.runtime)   # E06 confirmation stays verified under demo-2
+        self.register_wait(requirement_id="E06:EXP-001")
+        self.assertEqual(self.wait_status(), "triggered")
+        runtime = Runtime(self.path, ExpensePolicy(), self.grants,
+                          policies={"demo-2": ExpensePolicyV2()})
+        version = runtime.get_work("demo")["state_version"]
+        receipt = runtime.command("root", "migrate-1", "demo", "migrate_policy", {
+            "policy_id": "expense-submit", "policy_version": "demo-2",
+            "reason": "strengthen"}, version)
+        self.assertEqual(receipt["decision"], "accepted")
+        work = runtime.get_work("demo")
+        requirement = next(r for r in work["requirements"] if r["rule_id"] == "E06")
+        self.assertEqual(requirement["fulfillment"], "satisfied")
+        self.assertEqual(work["waits"][0]["status"], "cancelled")
+
+
 if __name__ == "__main__":
     unittest.main()

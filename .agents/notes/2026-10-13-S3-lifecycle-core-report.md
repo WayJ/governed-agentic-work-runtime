@@ -128,3 +128,34 @@ may omit the default key; a supplied default key must identity-match;
   application) and `python3 -m work_runtime publish-demo` (1 artifact) green.
 - tests/test_interventions.py, work_runtime/runtime.py and
   docs/runtime-boundaries.md committed together (same commit).
+
+## Post-merge defect fix: cancelled waits must stay cancelled (after 7afaf19)
+
+Integration review found (reproduced here with real Runtime/SQLite/FakeOA
+evidence before any fix): `_evaluate` unconditionally flipped any wait to
+`triggered` when its requirement was satisfied, so (a) `request_cancel`
+cancelling an already-triggered wait had its cancellation immediately
+undone by its own `_save`→`_evaluate`, and (b) a wait cancelled while its
+requirement was unsatisfied was resurrected by later valid evidence (and
+likewise by policy migration when the requirement stayed satisfied under
+the target). Root cause: the wait-triggering loop in `_evaluate` had no
+guard for terminal `cancelled` waits. This was a second miss of my
+S3 self-review: I asserted waits were cancelled at decision time but never
+re-read them after a subsequent evaluation.
+
+Fix: one localized guard in `_evaluate` — `status == "cancelled"` waits are
+skipped, so cancellation/migration invalidation is terminal while the
+existing waiting→triggered wakeup and expired-wait behavior are untouched.
+
+- RED: `python3 -m unittest tests.test_interventions.CancelledWaitTests -v`
+  → 3/3 FAILED (`triggered != cancelled`) for
+  `test_cancelled_triggered_wait_stays_cancelled`,
+  `test_cancelled_wait_stays_cancelled_after_late_evidence`,
+  `test_migration_cancelled_wait_stays_cancelled_when_requirement_satisfied`.
+- GREEN: same command → 3/3 OK; full `python3 -m unittest discover -s tests`
+  → 249 tests OK (246 + 3).
+- Gates: `python3 scripts/check_docs.py` 0 broken; `python3 -m compileall -q
+  work_runtime tests scripts` clean; `python3 -m work_runtime demo` and
+  `publish-demo` green with exact effect counts.
+- runtime.py, tests/test_interventions.py, docs/runtime-boundaries.md in the
+  same commit; no other lifecycle or gate semantics changed.
