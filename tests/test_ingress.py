@@ -413,3 +413,16 @@ class SignedEvidenceGatewayTests(unittest.TestCase):
         self.assertEqual(gateway.record(self.signed()),
                          {"decision": "rejected", "code": "EVIDENCE_AUTHENTICATION_FAILED"})
         self.assertEqual(self.table_counts(), before)
+
+    def test_utf8_encoding_failure_is_envelope_invalid(self):
+        # Lone surrogates pass the str type check and defeat canonical UTF-8
+        # encoding; B1 requires record to catch it, not leak a stacktrace.
+        before = self.table_counts()
+        surrogate_identity = self.signed()
+        surrogate_identity["source"] = "fin\ud800ance"
+        surrogate_data = self.signed(command_id="cmd-sur", event_id="evt-sur")
+        surrogate_data["data"] = {"digest": "\ud800"}
+        for bad in (surrogate_identity, surrogate_data):
+            self.assertEqual(self.gateway.record(bad),
+                             {"decision": "rejected", "code": "EVIDENCE_ENVELOPE_INVALID"})
+        self.assertEqual(self.table_counts(), before)

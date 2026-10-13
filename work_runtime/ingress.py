@@ -155,8 +155,10 @@ class SignedEvidenceGateway:
         try:
             message, signature, problem = _open_envelope(envelope)
             encoded = None if problem is not None else _canonical_bytes(message)
-        except RecursionError:
-            problem = "envelope nesting exceeds the serialization depth"
+        except (TypeError, ValueError, RecursionError):
+            # Canonicalization/UTF-8 failures (non-serializable values, lone
+            # surrogates, extreme nesting) are schema failures, not crashes (B1).
+            problem = "envelope cannot be canonically encoded as UTF-8"
         if problem is not None:
             return _reject(CODE_ENVELOPE_INVALID)
         secret = self.keys.get(message["source"])
