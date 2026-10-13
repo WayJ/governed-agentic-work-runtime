@@ -36,6 +36,8 @@ Cancellation, uncertain-effect reconciliation, responsibility transfer and expli
 | D14 | One core developer, dependent demo and independent integration | Runtime mutations overlap; staged work avoids conflicting lifecycle implementations. | 2026-10-13 | [S2 lessons](../../../.agents/notes/2026-10-13-S2-close.md) |
 | D15 | Ratify builder B1/B2 and pin registry, source revalidation and demo v2 | Intent-preserving unsupported probe amendment; authority-before-replay; no pending-source bypass; cancellation adds no waits. | 2026-10-13 | [ratified design](../specs/2026-10-13-s3-intervention-design.md) |
 
+| D16 | Clarify additive registry and require default validation for explicit mapping | Default is explicitly loaded by policy argument, never an implicit version upgrade; retrospective API detail at b6adae8, malformed-default gap corrected by original owner before merge. | 2026-10-13 | [design amendment](../specs/2026-10-13-s3-intervention-design.md) |
+
 ## Asset Disposition
 
 | asset | disposition | note | date | evidence |

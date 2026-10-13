@@ -15,3 +15,7 @@ Bounded builder review surfaced an actual inherited-test collision before produc
 ## Handover
 
 Core owner receives D15 in complete task brief; integration merges report plus corrected core tip into current carrier. Demo owner consumes settled registry/v2/command APIs after foundation review. No compensation/revocation scope added.
+
+## D16 review addendum
+
+Core b6adae8 passed244 but explicit empty policies mapping skipped default structural validation. Actual root probe created DB with noncallable default operation_key. Original owner receives scoped TDD correction; independent integration holds merge. Additive mapping omission clarified after code with retrospective discipline note in design; default object explicitly passed, no implicit upgrade.
