@@ -23,13 +23,13 @@ evidence: ../../roadmap.md
 - [ ] Installation into a fresh virtual environment works; module and console CLI demos run outside the checkout.
 - [ ] RFC coverage and local trust limitations are explicit, and local documentation links resolve.
 - [ ] Behavior changes have observed RED/GREEN evidence, scoped commits and independent integration review.
-- [ ] The integration session merges the accepted sprint into main and pushes without force; origin/main matches the final published commit.
+- [ ] The integration runbook requires acceptance before main merge, a non-force push and remote commit verification; release completion is reported only after publication evidence exists.
 
 ## Sprint Breakdown
 
 | sprint | state | note |
 |---|---|---|
-| S1 | ready | Runtime boundaries + install/docs verification, then independent integration. Strategic go: existing 35 tests and real crash demo pass. 2026-10-13; evidence: [baseline note](../../../.agents/notes/2026-10-13-baseline.md). |
+| S1 | started | Runtime boundaries + install/docs verification, then independent integration. Strategic go: existing 35 tests and real crash demo pass. Materialized 2026-10-13: [S1](../sprints/2026-10-13-S1-plan.md). 2026-10-13; evidence: [baseline note](../../../.agents/notes/2026-10-13-baseline.md). |
 
 ## Decisions (ADR)
 
