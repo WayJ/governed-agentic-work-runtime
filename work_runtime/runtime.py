@@ -428,6 +428,8 @@ class Runtime:
     def _unknown(self, operation_id, reason):
         with self._transaction() as db:
             op = self._get_op(db, operation_id)
+            if op["status"] == "outcome_unknown" and op.get("reason") == reason:
+                return op  # Repeated reconciliation with the same finding writes nothing.
             op["status"], op["reason"] = "outcome_unknown", reason
             self._save_op(db, op)
             self._save(db, self._work(db, op["work_id"]), "OutcomeUnknown", {"operation_id": op["id"]})
@@ -445,10 +447,13 @@ class Runtime:
             return self._resolve(operation_id, result)
         with self._transaction() as db:
             op = self._get_op(db, operation_id)
+            work = self._work(db, op["work_id"])
+            if (op["status"] == "outcome_unknown" and op.get("reason") == "NO_AUTHORITATIVE_RESULT"
+                    and work["status"] == "needs_attention"):
+                return op  # Idempotent recovery: the escalation is already durable.
             op["status"] = "outcome_unknown"
             op["reason"] = "NO_AUTHORITATIVE_RESULT"
             self._save_op(db, op)
-            work = self._work(db, op["work_id"])
             work["status"] = "needs_attention"
             self._save(db, work, "ReconciliationRequired", {"operation_id": op["id"]})
             return op
@@ -462,6 +467,9 @@ class Runtime:
             if (not isinstance(result, dict) or result.get("digest") != op["document_digest"]
                     or result.get("status") not in ("accepted", "rejected")
                     or not isinstance(result.get("external_id"), str) or not result["external_id"]):
+                if (op["status"] == "outcome_unknown" and op.get("reason") == "ADAPTER_RESULT_INVALID"
+                        and work["status"] == "needs_attention"):
+                    return op  # Idempotent recovery: the quarantine is already durable.
                 op["status"], op["reason"] = "outcome_unknown", "ADAPTER_RESULT_INVALID"
                 work["status"] = "needs_attention"
             else:
