@@ -127,3 +127,24 @@ Wave 3 (dependent adoption harness): `adoption_demo.py`, CLI `lint-sop` (loader 
 nonfinite/UTF-8/1MiB rules, exits 0/1/2), pyproject package-data, `verify_install` adoption
 stages + CI, contributor guide; wave 6 guide-only rehearsal; wave 7 accept → ordered main
 merge/push/CI. No lifecycle edits anywhere in scope.
+
+## Docs-only alignment merge (2026-10-14, task_b0d29bc4892d)
+
+Merge `acdb436` brings the authoring owner's plan/report alignment tip `a672ae5` (the followup
+master announced). Reviewed delta vs the already-merged `86d4a9e`: exactly two owned files
+(`docs/superpowers/plans/2026-10-13-s4-sop-authoring.md` +146/−49, own report +20), no
+product/tests/examples changes. Content verified truthful: the plan's alignment note discloses
+the writing-plans timeline honestly (authored 2026-10-13 without it; loaded only for the
+2026-10-14 audit and this alignment); the unknown-field anchor is corrected to the
+implemented, tested and master-accepted key-pointer form (`/extra`, "formerly pinned here as
+`''`" — history preserved, not erased); a Review Focus section and per-task
+Consumes/Produces Interfaces were added; folded steps became explicit five-phase checkboxes
+with commit identities annotated (`→ 008d429` … `→ d1051b6`); the stale `_sorted_dedup` name
+was corrected to `_finalize`. All aligned statements match the product I reviewed at
+`d1051b6`. Evidence per dispatch: `check_docs` → 44 files/139 links/0 broken and
+`git diff --stat cc40ef0..HEAD -- work_runtime tests examples scripts pyproject.toml` →
+**empty** (code byte-identical; no 469 rerun needed for this reversible docs-only delta).
+Cosmetic only: task checkboxes other than Task 0 remain unchecked, preserving the historical
+artifact per the alignment note. No accept/main merge/push/teardown; master authorization,
+E5-GUI docs and all previous merges untouched (additions only). Final carrier tip after this
+note: see the commit this addendum rides on.
