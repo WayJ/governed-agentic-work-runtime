@@ -5,6 +5,8 @@ import io
 import json
 import secrets
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -204,6 +206,47 @@ class PublishingEvaluateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublishingCliTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, "-m", "work_runtime", *args],
+                              capture_output=True, text=True)
+
+    def test_publish_demo_command_runs_the_harness(self):
+        result = self.run_cli("publish-demo", "--directory", self.temp.name)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("published artifacts: 1", result.stdout)
+
+    def test_inspect_content_publish_policy_reads_publication_work(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            folder = run_demo(directory=self.temp.name)
+        result = self.run_cli("inspect", "--db", str(Path(folder) / "runtime.sqlite"),
+                              "--work", "article-1", "--policy", "content-publish")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        snapshot = json.loads(result.stdout)
+        self.assertEqual(snapshot["work"]["contract"]["goal"], "content.published")
+        self.assertEqual(snapshot["work"]["status"], "closed")
+
+    def test_inspect_defaults_to_expense_policy(self):
+        from work_runtime.demo import run_demo as expense_demo
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            folder = expense_demo(self.temp.name)
+        result = self.run_cli("inspect", "--db", str(Path(folder) / "runtime.sqlite"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        snapshot = json.loads(result.stdout)
+        self.assertEqual(snapshot["work"]["contract"]["goal"], "expense.accepted")
+
+    def test_inspect_rejects_unknown_policy_choice(self):
+        result = self.run_cli("inspect", "--db", "unused.sqlite", "--policy", "bogus")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid choice", result.stderr)
 
 
 class PublishingDemoTests(unittest.TestCase):
