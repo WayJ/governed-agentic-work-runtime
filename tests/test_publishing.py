@@ -1,10 +1,19 @@
 """Content publication domain tests: policy rules, adapter, runtime flow, demo, CLI."""
 
+import json
+import sqlite3
+import tempfile
 import unittest
 import uuid
+from pathlib import Path
 
 from work_runtime.policy import digest
-from work_runtime.publishing import PublishingPolicy
+from work_runtime.publishing import FakePublisher, PublishingPolicy
+
+try:
+    from adapter_conformance import AdapterConformanceMixin
+except ImportError:
+    from tests.adapter_conformance import AdapterConformanceMixin
 
 
 def article(article_id="ART-001", title="Release notes", body="Draft body",
@@ -189,3 +198,91 @@ class PublishingEvaluateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakePublisherConformanceTests(AdapterConformanceMixin, unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+
+    def make_adapter(self):
+        return FakePublisher(str(Path(self.temp.name) / ("publisher-" + uuid.uuid4().hex + ".sqlite")))
+
+    def sample_document(self):
+        return article()
+
+    def changed_document(self):
+        return article(body="A substantially revised body")
+
+    def effect_count(self, adapter):
+        return adapter.published_count()
+
+
+def store_counts(path):
+    db = sqlite3.connect(path)
+    try:
+        return {t: db.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
+                for t in ("receipts", "publications")}
+    finally:
+        db.close()
+
+
+class FakePublisherDomainTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "publisher.sqlite")
+
+    def test_digest_mismatch_is_rejected_without_writes(self):
+        publisher = FakePublisher(self.path)
+        doc = article()
+        with self.assertRaises(ValueError):
+            publisher.execute("key-1", doc, digest(article(body="other")))
+        self.assertEqual(store_counts(self.path), {"receipts": 0, "publications": 0})
+
+    def test_same_key_different_content_raises_without_new_effect(self):
+        publisher = FakePublisher(self.path)
+        doc = article()
+        publisher.execute("key-1", doc, digest(doc))
+        with self.assertRaises(ValueError):
+            publisher.execute("key-1", article(body="changed"), digest(article(body="changed")))
+        self.assertEqual(store_counts(self.path), {"receipts": 1, "publications": 1})
+
+    def test_duplicate_content_under_another_key_reuses_external_id_and_one_artifact(self):
+        publisher = FakePublisher(self.path)
+        doc = article()
+        first = publisher.execute("key-1", doc, digest(doc))
+        second = publisher.execute("key-2", doc, digest(doc))
+        self.assertEqual(first["external_id"], second["external_id"])
+        self.assertEqual(store_counts(self.path), {"receipts": 2, "publications": 1})
+        self.assertEqual(publisher.published_count(), 1)
+
+    def test_changed_content_under_another_key_adds_a_publication_version(self):
+        publisher = FakePublisher(self.path)
+        original = article()
+        revised = article(body="Revised body")
+        first = publisher.execute("key-1", original, digest(original))
+        second = publisher.execute("key-2", revised, digest(revised))
+        self.assertNotEqual(first["external_id"], second["external_id"])
+        self.assertEqual(store_counts(self.path), {"receipts": 2, "publications": 2})
+
+    def test_timeout_after_commit_raises_with_publication_committed(self):
+        publisher = FakePublisher(self.path, timeout_after_commit=True)
+        doc = article()
+        with self.assertRaises(TimeoutError):
+            publisher.execute("key-1", doc, digest(doc))
+        self.assertEqual(store_counts(self.path), {"receipts": 1, "publications": 1})
+        replay = FakePublisher(self.path)
+        self.assertEqual(replay.lookup("key-1")["external_id"],
+                         sqlite3.connect(self.path).execute(
+                             "SELECT external_id FROM publications").fetchone()[0])
+
+    def test_lookup_missing_key_returns_none_and_persisted_document_matches(self):
+        publisher = FakePublisher(self.path)
+        self.assertIsNone(publisher.lookup("missing"))
+        doc = article()
+        publisher.execute("key-1", doc, digest(doc))
+        with sqlite3.connect(self.path) as db:
+            row = db.execute("SELECT document_id,digest,document FROM publications").fetchone()
+        self.assertEqual((row[0], row[1]), (doc["id"], digest(doc)))
+        self.assertEqual(json.loads(row[2]), doc)

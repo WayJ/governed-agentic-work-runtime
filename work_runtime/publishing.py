@@ -8,9 +8,14 @@ authenticates evidence sources and direct Runtime calls stay trusted-local
 (see docs/signed-evidence.md and docs/adapter-contract.md).
 """
 
+import json
+import sqlite3
+import uuid
+from pathlib import Path
 from typing import List
 
-from .policy import digest
+from .adapter_contract import AdapterContract
+from .policy import canonical, digest
 
 
 class PublishingPolicy:
@@ -97,3 +102,89 @@ class PublishingPolicy:
     def operation_key(self, capability: str, work: dict) -> str:
         return digest([self.id, capability, work["document"]["id"],
                        work["document_digest"]])
+
+
+class FakePublisher:
+    """A separate SQLite store models an external publishing service.
+
+    Survives worker crashes like FakeOA. One published artifact per
+    (document id, content digest): identical content resubmitted under
+    another idempotency key reuses the existing external id, changed
+    content becomes a new publication version.
+    """
+
+    # Declared assertions for trusted local configuration, not a remote guarantee.
+    contract = AdapterContract(
+        actions=("content.publish",),
+        idempotency_scope="adapter-store:key",
+        retention="lifetime-of-store",
+        lookup_consistency="authoritative-by-key",
+        uniqueness=("document.id+content_digest",))
+
+    def __init__(self, path: str, timeout_after_commit: bool = False):
+        self.path = str(path)
+        self.timeout_after_commit = timeout_after_commit
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(self.path)
+        try:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS receipts (
+                    key TEXT PRIMARY KEY, digest TEXT NOT NULL, result TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS publications (
+                    document_id TEXT, digest TEXT, external_id TEXT NOT NULL,
+                    document TEXT NOT NULL, PRIMARY KEY(document_id, digest));
+            """)
+            db.commit()
+        finally:
+            db.close()
+
+    def execute(self, key: str, document: dict, content_digest: str) -> dict:
+        if digest(document) != content_digest:
+            raise ValueError("Content digest does not match document")
+        db = sqlite3.connect(self.path, timeout=15)
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            old = db.execute("SELECT digest,result FROM receipts WHERE key=?", (key,)).fetchone()
+            if old:
+                if old[0] != content_digest:
+                    raise ValueError("Idempotency key reused with different content")
+                result = json.loads(old[1])
+            else:
+                existing = db.execute(
+                    "SELECT external_id FROM publications WHERE document_id=? AND digest=?",
+                    (document["id"], content_digest)).fetchone()
+                if existing:
+                    external_id = existing[0]
+                else:
+                    external_id = "PUB-" + uuid.uuid4().hex[:12]
+                    db.execute("INSERT INTO publications VALUES (?,?,?,?)",
+                               (document["id"], content_digest, external_id,
+                                canonical(document)))
+                result = {"status": "accepted", "external_id": external_id,
+                          "digest": content_digest}
+                db.execute("INSERT INTO receipts VALUES (?,?,?)",
+                           (key, content_digest, canonical(result)))
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+        if self.timeout_after_commit:
+            raise TimeoutError("Response lost after the publisher committed")
+        return result
+
+    def lookup(self, key: str):
+        db = sqlite3.connect(self.path)
+        try:
+            row = db.execute("SELECT result FROM receipts WHERE key=?", (key,)).fetchone()
+            return json.loads(row[0]) if row else None
+        finally:
+            db.close()
+
+    def published_count(self) -> int:
+        db = sqlite3.connect(self.path)
+        try:
+            return db.execute("SELECT COUNT(*) FROM publications").fetchone()[0]
+        finally:
+            db.close()
