@@ -134,3 +134,55 @@ pinned store (foundation fail-closed design, integration report documents it).
   are grants-map configuration, never authentication.
 - Local suite excludes the 3 carrier wait-correction tests until assembly (see honest
   count note above); integration must run the combined suite.
+
+## Review-correction addendum — post-d29aa04 (2026-10-13)
+
+Coordinator review (msg_c239d0f46044, 14:31:51, delivered inside the correction brief)
+found two defects in the verifier as shipped at d29aa04:
+
+1. **Console intervention-demo had no independent store proof.** The module stage
+   extracted the three printed stores and counted each external SQLite store
+   (accepted == 1); the console stage checked only `INTERVENTION_FINAL_LINE` and then
+   PASS followed. The wave requirement — independent counts for BOTH entry points —
+   was not met.
+2. **This report's "Final gates" line overclaimed coverage.** It said "module +
+   console runs of all three demos outside the checkout". The script actually runs
+   module demo, module publish-demo, module intervention-demo, console demo and
+   console intervention-demo — there is no console publish-demo stage. The underlying
+   evidence was real; the wording overstated it. The original section above is
+   retained exactly as shipped; this addendum supersedes that wording.
+
+### Correction
+
+- `require_intervention_store_counts(stdout, source)` extracted in
+  `scripts/verify_install.py` and reused by BOTH stages: requires exactly three
+  printed `--db` paths, all distinct (one store repeated three times is rejected even
+  when its own count is 1), named transfer/cancel/migrate in that order, each with an
+  existing external database holding exactly one accepted application (direct
+  receipts query). Returns the resolved paths; the module stage's result still feeds
+  the installed migrated-inspect check.
+- TDD: 6 new tests in `tests/test_intervention_demo.py`
+  (`VerifyInstallInterventionCountsTests`) with real SQLite fixtures — valid distinct
+  three stores pass; repeated path, wrong order, missing scenario line, incorrect
+  actual count (two accepted) and missing store file are each rejected with clear
+  messages.
+  RED: `python3 -m unittest tests.test_intervention_demo.VerifyInstallInterventionCountsTests -v`
+  → FAILED (errors=6), all `AttributeError: module 'verify_install' has no attribute
+  'require_intervention_store_counts'`. GREEN: 6/6 OK; full local suite **269 OK**
+  (263 + 6; the carrier's 3 wait-correction tests remain absent locally by the
+  standing no-rebase instruction — expected assembled total now 272).
+- Fresh non-editable verification: `python3 scripts/verify_install.py` → **PASS**
+  with the console stage now executing the same raw count checks as the module stage.
+  Exact entry-point coverage after the fix: module demo, module publish-demo, module
+  intervention-demo, console demo and console intervention-demo, all outside the
+  checkout; independent counts run for module demo (1 accepted application), module
+  publish-demo (1 publication), module AND console intervention-demo (3 distinct
+  ordered stores, 1 accepted each), plus the installed
+  `inspect --policy-versions demo-1,demo-2` reading the migrated demo-2 pin.
+- Other gates at the corrected tip: `check_docs` 35 files / 113 links / 0 broken;
+  compileall clean; in-checkout demo, publish-demo and intervention-demo each produce
+  their exact final count line.
+- `docs/verification.md` sharpened to claim per-entry-point counts explicitly.
+- Scope held: only `scripts/verify_install.py`, `tests/test_intervention_demo.py`,
+  `docs/verification.md` and this addendum. No CLI/harness/lifecycle changes, no
+  merge, no push.

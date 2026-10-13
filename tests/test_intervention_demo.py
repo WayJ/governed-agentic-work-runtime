@@ -1,9 +1,11 @@
 """S3 wave 3: intervention demo harness, CLI policy-version flag, printed commands."""
 
 import contextlib
+import importlib.util
 import io
 import json
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -293,3 +295,86 @@ class InterventionDemoCliTests(unittest.TestCase):
         # The printed migrated command carries the registry flag and reads the demo-2 pin.
         self.assertTrue(commands[2].endswith("--policy-versions demo-1,demo-2"))
         self.assertIn('"policy_version": "demo-2"', results[2].stdout)
+
+
+def _load_verify_install():
+    spec = importlib.util.spec_from_file_location(
+        "verify_install", REPO_ROOT / "scripts" / "verify_install.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _seed_oa(path, accepted):
+    db = sqlite3.connect(str(path))
+    try:
+        db.executescript("CREATE TABLE IF NOT EXISTS receipts ("
+                         "key TEXT PRIMARY KEY, digest TEXT NOT NULL, result TEXT NOT NULL)")
+        for index in range(accepted):
+            db.execute("INSERT INTO receipts VALUES (?,?,?)",
+                       ("key-%d" % index, "digest", json.dumps(
+                           {"status": "accepted", "external_id": "OA-%d" % index})))
+        db.commit()
+    finally:
+        db.close()
+
+
+class VerifyInstallInterventionCountsTests(unittest.TestCase):
+    """The shared helper gives module and console intervention runs equal proof."""
+
+    def setUp(self):
+        self.verify_install = _load_verify_install()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.folder = Path(self.temp.name)
+
+    def store(self, scenario, accepted=1):
+        scenario_dir = self.folder / scenario
+        scenario_dir.mkdir(parents=True, exist_ok=True)
+        _seed_oa(scenario_dir / "oa.sqlite", accepted)
+        return str(scenario_dir / "runtime.sqlite")
+
+    def printed(self, *stores):
+        return "".join('  python3 -m work_runtime inspect --db "%s" --work x\n' % store
+                       for store in stores)
+
+    def test_three_distinct_stores_with_one_accepted_each_pass(self):
+        stdout = self.printed(self.store("transfer"), self.store("cancel"),
+                              self.store("migrate"))
+        stores = self.verify_install.require_intervention_store_counts(stdout, "test")
+        self.assertEqual([Path(store).parent.name for store in stores],
+                         ["transfer", "cancel", "migrate"])
+
+    def test_repeated_single_store_is_rejected_even_when_its_count_is_one(self):
+        store = self.store("transfer")
+        with self.assertRaises(SystemExit) as raised:
+            self.verify_install.require_intervention_store_counts(
+                self.printed(store, store, store), "test")
+        self.assertIn("duplicate", str(raised.exception))
+
+    def test_wrong_scenario_order_is_rejected(self):
+        stdout = self.printed(self.store("transfer"), self.store("migrate"),
+                              self.store("cancel"))
+        with self.assertRaises(SystemExit) as raised:
+            self.verify_install.require_intervention_store_counts(stdout, "test")
+        self.assertIn("transfer, cancel, migrate", str(raised.exception))
+
+    def test_missing_scenario_line_is_rejected(self):
+        stdout = self.printed(self.store("transfer"), self.store("cancel"))
+        with self.assertRaises(SystemExit) as raised:
+            self.verify_install.require_intervention_store_counts(stdout, "test")
+        self.assertIn("expected exactly 3", str(raised.exception))
+
+    def test_incorrect_actual_accepted_count_is_rejected(self):
+        stdout = self.printed(self.store("transfer"), self.store("cancel"),
+                              self.store("migrate", accepted=2))
+        with self.assertRaises(SystemExit) as raised:
+            self.verify_install.require_intervention_store_counts(stdout, "test")
+        self.assertIn("expected exactly 1", str(raised.exception))
+
+    def test_missing_external_store_is_rejected(self):
+        ghost = str(self.folder / "migrate" / "runtime.sqlite")
+        stdout = self.printed(self.store("transfer"), self.store("cancel"), ghost)
+        with self.assertRaises(SystemExit) as raised:
+            self.verify_install.require_intervention_store_counts(stdout, "test")
+        self.assertIn("oa.sqlite", str(raised.exception))

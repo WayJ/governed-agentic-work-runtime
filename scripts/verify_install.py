@@ -27,7 +27,8 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
 8. Run the `work-runtime demo` console entry point outside the checkout and
    assert the same printed result.
 9. Run the `work-runtime intervention-demo` console entry point outside the
-   checkout and assert the same printed result.
+   checkout and assert the same printed result and the same independent
+   per-store counts as stage 7.
 
 Usage: python3 scripts/verify_install.py [--python INTERP] [--repo PATH] [--keep]
 """
@@ -91,6 +92,35 @@ def count_publications(publisher_db):
 def require(condition, message):
     if not condition:
         raise SystemExit("FAILED: " + message)
+
+
+def require_intervention_store_counts(stdout, source):
+    """Give a module or console intervention-demo run independent store proof.
+
+    Extracts the printed scenario databases and requires exactly three
+    distinct stores named transfer, cancel, migrate in that order, then
+    counts each store's receipts directly: exactly one accepted application
+    per store. Returns the resolved store paths.
+    """
+    stores = INSPECT_DB.findall(stdout)
+    require(len(stores) == 3,
+            "%s printed %d inspect databases (expected exactly 3: "
+            "transfer, cancel, migrate)" % (source, len(stores)))
+    require(len(set(stores)) == 3,
+            "%s printed duplicate store paths: %s" % (source, stores))
+    names = [Path(store).parent.name for store in stores]
+    require(names == ["transfer", "cancel", "migrate"],
+            "%s printed scenario directories %s (expected transfer, cancel, "
+            "migrate in order)" % (source, names))
+    for store in stores:
+        oa_db = Path(store).parent / "oa.sqlite"
+        require(oa_db.exists(),
+                "%s store %s has no external database at %s" % (source, store, oa_db))
+        accepted = count_accepted(oa_db)
+        require(accepted == 1,
+                "%s store %s holds %d accepted applications (expected exactly 1)"
+                % (source, store, accepted))
+    return stores
 
 
 def main(argv=None):
@@ -170,15 +200,8 @@ def main(argv=None):
                                   outside, show=True)
         require(INTERVENTION_FINAL_LINE in module_intervention.stdout,
                 "module intervention-demo output lacks %r" % INTERVENTION_FINAL_LINE)
-        stores = INSPECT_DB.findall(module_intervention.stdout)
-        require(len(stores) == 3,
-                "intervention-demo printed %d inspect databases (expected exactly 3: "
-                "transfer, cancel, migrate)" % len(stores))
-        for store in stores:
-            accepted = count_accepted(Path(store).parent / "oa.sqlite")
-            require(accepted == 1,
-                    "intervention store %s holds %d accepted applications "
-                    "(expected exactly 1)" % (store, accepted))
+        stores = require_intervention_store_counts(module_intervention.stdout,
+                                                   "module intervention-demo")
         print("independent check: one accepted application per intervention store")
 
         print("=== installed inspect reads the migrated pinned work ===")
@@ -197,6 +220,8 @@ def main(argv=None):
         console_intervention = run([console, "intervention-demo"], outside, show=True)
         require(INTERVENTION_FINAL_LINE in console_intervention.stdout,
                 "console intervention-demo output lacks %r" % INTERVENTION_FINAL_LINE)
+        require_intervention_store_counts(console_intervention.stdout,
+                                          "console intervention-demo")
 
         print("=== PASS ===")
         print("fresh venv install; import origin inside the venv; no third-party runtime "
