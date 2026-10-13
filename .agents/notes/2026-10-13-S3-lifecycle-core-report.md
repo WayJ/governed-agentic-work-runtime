@@ -159,3 +159,26 @@ existing waiting→triggered wakeup and expired-wait behavior are untouched.
   `publish-demo` green with exact effect counts.
 - runtime.py, tests/test_interventions.py, docs/runtime-boundaries.md in the
   same commit; no other lifecycle or gate semantics changed.
+
+## Diagnostics fix: v2 E05 explanation (after 8715151)
+
+Master observed in migrated inspect output that ExpensePolicyV2 inherited
+v1's E05 explanation ("Over-limit submissions require approval...") while
+requiring approval for every known amount, so a correctly blocked
+under-limit migrated work showed a misleading reason (reproduced here
+before the fix: under-limit v2 work, REQUIREMENT_UNSATISFIED, explanation
+"Over-limit submissions require approval of the current content").
+
+Fix: `ExpensePolicyV2.evaluate` overrides only the E05 requirement's
+explanation in the result of `super().evaluate()` — "Every known amount
+requires version-bound approval of the current content". Admission logic,
+v1 explanation (pinned byte-exact in the new test), unknown applicability
+(existing pin), Runtime, demo and docs are untouched.
+
+- RED: `python3 -m unittest tests.test_interventions.ExpensePolicyV2Tests.test_v2_blocker_explains_all_known_amount_approval`
+  → FAILED (`'known amount' not found in 'over-limit submissions require approval of the current content'`).
+- GREEN: same test passes; full `python3 -m unittest discover -s tests` →
+  250 tests OK (249 + 1).
+- Gates: check_docs 0 broken; compileall clean; demo and publish-demo green.
+- Files: work_runtime/policy.py (V2.evaluate only), tests/test_interventions.py,
+  this addendum — one commit.

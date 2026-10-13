@@ -153,6 +153,16 @@ class ExpensePolicyV2(ExpensePolicy):
     def approval_applicability(self, known: bool, over: bool) -> str:
         return "unknown" if not known else "applicable"
 
+    def evaluate(self, work: dict, evidence: list) -> list:
+        requirements = super().evaluate(work, evidence)
+        for requirement in requirements:
+            if requirement["rule_id"] == "E05":
+                # Same rule, truthful guidance: v2 demands approval for every
+                # known amount and the approval proof is version-bound.
+                requirement["explanation"] = ("Every known amount requires version-bound "
+                                              "approval of the current content")
+        return requirements
+
     def validate_evidence(self, work: dict, candidate: dict) -> bool:
         if candidate["kind"] == "approval":
             data = candidate["data"]
