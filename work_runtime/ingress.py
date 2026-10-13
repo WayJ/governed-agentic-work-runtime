@@ -96,3 +96,82 @@ def sign_evidence(secret: bytes, message: dict) -> dict:
     envelope = json.loads(encoded)
     envelope["signature"] = _signature(secret, encoded)
     return envelope
+
+
+def _open_envelope(envelope):
+    """Read each envelope field exactly once; return (message, signature, problem).
+
+    A problem string is static diagnostic text and never echoes candidate
+    content. The single-read discipline plus the canonical snapshot in
+    ``record`` guarantee the gateway authenticates and forwards the same
+    bytes even if the caller passed a mutable or lying mapping.
+    """
+    if not isinstance(envelope, dict) or set(envelope) != set(ENVELOPE_FIELDS):
+        return None, None, "envelope requires exactly the signed fields plus signature"
+    message = {field: envelope[field] for field in SIGNED_FIELDS}
+    signature = envelope["signature"]
+    problem = _message_problem(message)
+    if problem is None:
+        if (not isinstance(signature, str) or len(signature) != 64
+                or not set(signature) <= _HEX_DIGITS):
+            problem = "signature must be 64 lowercase hex characters"
+    return message, signature, problem
+
+
+class SignedEvidenceGateway:
+    """Authenticates signed envelopes in front of a trusted-local Runtime.
+
+    This is the only work_runtime surface intended to face untrusted envelope
+    input. Every candidate is schema-checked, authenticated (HMAC-SHA256,
+    ``compare_digest``) and freshness-checked before ``runtime.command`` is
+    invoked, so intake failures persist nothing; authenticated business
+    rejections keep normal Runtime receipt semantics. Configure one distinct
+    random secret of at least 32 bytes per source — there is no default key.
+    """
+
+    def __init__(self, runtime, keys: Dict[str, bytes], max_age: int = 300,
+                 clock: Callable = time.time):
+        if not isinstance(keys, dict):
+            raise ValueError("keys must map source names to bytes")
+        material = []
+        for name, secret in keys.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("source names must be nonempty strings")
+            _validate_secret(secret)
+            material.append(secret)
+        if len(set(material)) != len(material):
+            raise ValueError("each source requires distinct key material")
+        if type(max_age) is not int or max_age < 0:
+            raise ValueError("max_age must be a nonnegative integer, not bool")
+        if not callable(clock):
+            raise ValueError("clock must be callable")
+        self.runtime = runtime
+        self.keys = dict(keys)
+        self.max_age = max_age
+        self.clock = clock
+
+    def record(self, envelope: dict) -> dict:
+        """Authenticate one envelope and record its evidence; never raises on bad input."""
+        try:
+            message, signature, problem = _open_envelope(envelope)
+            encoded = None if problem is not None else _canonical_bytes(message)
+        except RecursionError:
+            problem = "envelope nesting exceeds the serialization depth"
+        if problem is not None:
+            return _reject(CODE_ENVELOPE_INVALID)
+        secret = self.keys.get(message["source"])
+        if secret is None:
+            return _reject(CODE_AUTHENTICATION_FAILED)
+        if not hmac.compare_digest(_signature(secret, encoded), signature):
+            return _reject(CODE_AUTHENTICATION_FAILED)
+        snapshot = json.loads(encoded)
+        if abs(self.clock() - snapshot["issued_at"]) > self.max_age:
+            return _reject(CODE_EXPIRED)
+        if snapshot["kind"] == RESERVED_KIND:
+            return _reject(CODE_KIND_UNSUPPORTED)
+        return self.runtime.command(
+            actor=snapshot["source"], command_id=snapshot["command_id"],
+            work_id=snapshot["work_id"], kind="record_evidence",
+            payload={"event_id": snapshot["event_id"], "kind": snapshot["kind"],
+                     "data": snapshot["data"]},
+            expected_version=None)
