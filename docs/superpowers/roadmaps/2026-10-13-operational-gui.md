@@ -34,6 +34,8 @@ A local browser UI for real Work state, requirement blockers, evidence and logic
 | D23 | Read-only existing-store inspector and loopback-only stdlib server | Avoid Runtime initialization writes and implicit policy changes; local tool, not production host/tenant auth. | 2026-10-14 | [planning design](../specs/2026-10-14-s5-gui-design.md) |
 | D24 | Offline bilingual view of stored truth with exact JSON/sequence values | User can inspect requirements, decisions and retained effects without invented timestamps/metrics or rounded document integers. | 2026-10-14 | [planning design](../specs/2026-10-14-s5-gui-design.md) |
 
+| D25 | Ratify real-store DTO, exact-value text, command receipts and five-work seed | Correct nested-payload byte claims and timeout/attention distinction before code; empirical reader/schema/WAL review01b93c3. | 2026-10-14 | [ratification](../specs/2026-10-14-s5-gui-design.md) |
+
 ## Asset Disposition
 
 | asset | disposition | note | date | evidence |
@@ -45,7 +47,7 @@ A local browser UI for real Work state, requirement blockers, evidence and logic
 
 | id | question | status | resolution |
 |---|---|---|---|
-| Q1 | Which exact read-only API and view layout is smallest useful? | open | Master settles with builder before S5 ready; no routine approval wait. |
+| Q1 | Which exact read-only API and view layout is smallest useful? | closed | D23–D25: actual snapshot/receipt/event viewer, offline bilingual, loopback only. 2026-10-14; [design](../specs/2026-10-14-s5-gui-design.md). |
 
 ## Cross-cutting
 
