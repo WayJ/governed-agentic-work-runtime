@@ -24,5 +24,11 @@ jobs:
       - run: python -m work_runtime demo
       - run: python -m work_runtime publish-demo
       - run: python -m work_runtime intervention-demo
+      - run: python -m work_runtime adoption-demo
+      - run: python -c "import importlib.resources as r, pathlib; pathlib.Path('publishing-sample.json').write_bytes(r.files('work_runtime').joinpath('data', 'sop', 'publishing.json').read_bytes())"
+      - run: python -m work_runtime lint-sop publishing-sample.json
+      - run: python -m work_runtime lint-sop examples/sop/rule-cycle.json || test $? -eq 1
+      - run: printf '{' > malformed-sample.json
+      - run: python -m work_runtime lint-sop malformed-sample.json || test $? -eq 2
       - run: work-runtime demo
       - run: python scripts/verify_install.py
