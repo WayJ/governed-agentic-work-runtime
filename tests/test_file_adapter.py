@@ -6,6 +6,7 @@ mocked filesystem. See docs/file-adapter.md for the declared boundaries.
 """
 
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -16,6 +17,7 @@ from pathlib import Path
 from work_runtime.adapter_contract import AdapterContract, receipt_is_valid
 from work_runtime.file_adapter import FilePublisher
 from work_runtime.policy import digest
+from tests.adapter_conformance import AdapterConformanceMixin
 
 _HEX_JSON = re.compile(r"[0-9a-f]{64}\.json")
 
@@ -315,6 +317,230 @@ class ContractMetadataTests(FileAdapterTestCase):
             retention="lifetime-of-directory",
             lookup_consistency="authoritative-by-key",
             uniqueness=()))
+
+
+class FilePublisherConformanceTests(AdapterConformanceMixin, FileAdapterTestCase):
+    """The reusable adapter conformance suite over real committed files."""
+
+    def make_adapter(self):
+        return FilePublisher(self.directory)
+
+    def sample_document(self):
+        return sample_document()
+
+    def changed_document(self):
+        return changed_document()
+
+    def effect_count(self, adapter):
+        # Actual committed hash-named file enumeration, not an internal counter.
+        return len(committed_files(adapter.directory))
+
+
+class CorruptionTests(FileAdapterTestCase):
+    def fresh_directory(self):
+        tmp = tempfile.TemporaryDirectory(prefix="file-adapter-test-")
+        self.addCleanup(tmp.cleanup)
+        return tmp.name
+
+    def publish_into(self, directory, key="victim"):
+        adapter = FilePublisher(directory)
+        document = sample_document()
+        adapter.execute(key, document, digest(document))
+        return adapter, Path(path_for(directory, key)).read_bytes()
+
+    def damaged_adapter(self, transform):
+        """A committed artifact, then the same file rewritten with damage."""
+        directory = self.fresh_directory()
+        adapter, raw = self.publish_into(directory)
+        artifact = transform(json.loads(raw.decode("utf-8")))
+        with open(path_for(directory, "victim"), "wb") as handle:
+            handle.write(canonical_bytes(artifact))
+        return adapter
+
+    def write_raw(self, directory, data):
+        with open(path_for(directory, "victim"), "wb") as handle:
+            handle.write(data)
+
+    def test_invalid_json_bytes_raise_bounded_valueerror(self):
+        adapter, raw = self.publish_into(self.fresh_directory())
+        damaged = raw.replace(b'"requires_review":true', b'"requires_review":true,,')
+        self.assertNotEqual(damaged, raw)
+        self.write_raw(adapter.directory, damaged)
+        with self.assertRaises(ValueError) as raised:
+            adapter.lookup("victim")
+        self.assertNotIsInstance(raised.exception, RecursionError)
+
+    def test_invalid_utf8_bytes_raise_bounded_valueerror(self):
+        adapter = self.damaged_adapter(lambda a: a)
+        self.write_raw(adapter.directory, b"\xff\xfe not utf8")
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+
+    def test_non_object_artifact_raises(self):
+        adapter = self.damaged_adapter(lambda a: a)
+        self.write_raw(adapter.directory, b"[1, 2, 3]")
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+
+    def test_missing_or_extra_top_level_keys_raise(self):
+        adapter = self.damaged_adapter(
+            lambda a: {k: v for k, v in a.items() if k != "receipt"})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+        adapter = self.damaged_adapter(lambda a: {**a, "extra": 1})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+
+    def test_unsupported_artifact_version_raises(self):
+        adapter = self.damaged_adapter(lambda a: {**a, "artifact_version": 2})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+        adapter = self.damaged_adapter(lambda a: {**a, "artifact_version": True})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+
+    def test_wrong_key_field_raises(self):
+        adapter = self.damaged_adapter(
+            lambda a: {**a, "key": "other-key"})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+
+    def test_tampered_content_digest_raises_on_recomputed_document_digest(self):
+        other = sample_document(doc_id="ART-009")
+        adapter = self.damaged_adapter(lambda a: {**a, "content_digest": digest(other)})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+
+    def test_non_dict_document_raises(self):
+        adapter = self.damaged_adapter(
+            lambda a: {**a, "document": ["not", "a", "dict"]})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+
+    def test_malformed_receipt_raises(self):
+        adapter = self.damaged_adapter(
+            lambda a: {**a, "receipt": {"status": "accepted", "digest": a["content_digest"]}})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+        adapter = self.damaged_adapter(
+            lambda a: {**a, "receipt": {"status": "accepted", "external_id": "",
+                                        "digest": a["content_digest"]}})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+        adapter = self.damaged_adapter(
+            lambda a: {**a, "receipt": {"status": "rejected", "external_id": "FILE-" + "0" * 32,
+                                        "digest": a["content_digest"]}})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+        adapter = self.damaged_adapter(
+            lambda a: {**a, "receipt": {"status": "accepted", "external_id": "FILE-x",
+                                        "digest": a["content_digest"], "extra": True}})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+        adapter = self.damaged_adapter(
+            lambda a: {**a, "receipt": {**a["receipt"], "digest": "0" * 64}})
+        with self.assertRaises(ValueError):
+            adapter.lookup("victim")
+
+    def test_replay_against_corrupted_winner_raises_and_leaves_it_untouched(self):
+        adapter = self.damaged_adapter(lambda a: {**a, "artifact_version": 3})
+        raw = Path(path_for(adapter.directory, "victim")).read_bytes()
+        document = sample_document()
+        with self.assertRaises(ValueError):
+            adapter.execute("victim", document, digest(document))
+        self.assertEqual(Path(path_for(adapter.directory, "victim")).read_bytes(), raw)
+        self.assertEqual(len(committed_files(adapter.directory)), 1)
+
+
+def canonical_bytes(artifact):
+    import work_runtime.file_adapter as module
+    return module.canonical(artifact).encode("utf-8")
+
+
+class SnapshotDetachmentTests(FileAdapterTestCase):
+    def test_caller_mutations_after_publish_leave_the_artifact_fixed(self):
+        adapter = self.make_adapter()
+        document = {"id": "D-1", "items": ["a", "b"], "meta": {"n": 1}}
+        receipt = adapter.execute("detach", document, digest(document))
+        raw = Path(path_for(self.directory, "detach")).read_bytes()
+        document["items"].append("MUTATED")
+        document["meta"]["n"] = 999
+        document["new"] = "field"
+        self.assertEqual(Path(path_for(self.directory, "detach")).read_bytes(), raw)
+        self.assertEqual(adapter.lookup("detach"), receipt)
+        artifact = read_artifact(self.directory, "detach")
+        self.assertEqual(artifact["document"],
+                         {"id": "D-1", "items": ["a", "b"], "meta": {"n": 1}})
+
+    def test_mutated_document_is_new_content_under_another_key(self):
+        adapter = self.make_adapter()
+        document = {"id": "D-1", "n": 1}
+        adapter.execute("first", document, digest(document))
+        document["n"] = 2
+        with self.assertRaises(ValueError):
+            adapter.execute("first", document, "0" * 64)  # digest no longer matches
+        receipt = adapter.execute("second", document, digest(document))
+        self.assertEqual(receipt["digest"], digest({"id": "D-1", "n": 2}))
+        artifact = read_artifact(self.directory, "second")
+        self.assertEqual(artifact["document"], {"id": "D-1", "n": 2})
+
+
+class StagingHygieneTests(FileAdapterTestCase):
+    def test_foreign_stage_files_are_ignored_by_lookup_and_publish(self):
+        adapter = self.make_adapter()
+        document = sample_document()
+        with open(os.path.join(self.directory, "junk.stage"), "wb") as handle:
+            handle.write(b"not json")
+        self.assertIsNone(adapter.lookup("nobody"))
+        receipt = adapter.execute("fresh", document, digest(document))
+        self.assertEqual(receipt["status"], "accepted")
+        self.assertEqual(stage_files(self.directory), ["junk.stage"])
+        self.assertEqual(len(committed_files(self.directory)), 1)
+
+    def test_effect_count_ignores_stage_files(self):
+        adapter = self.make_adapter()
+        document = sample_document()
+        adapter.execute("counted", document, digest(document))
+        with open(os.path.join(self.directory, "stale.stage"), "wb") as handle:
+            handle.write(b"junk")
+        self.assertEqual(len(committed_files(self.directory)), 1)
+
+
+class BoundedMessageTests(FileAdapterTestCase):
+    MARKER = "SECRET-MARKER-42"
+
+    def test_gate_and_corruption_messages_never_echo_payload(self):
+        adapter = self.make_adapter()
+        bad_document = {"note": "leak " + self.MARKER, "oops": (1, 2)}
+        with self.assertRaises(ValueError) as raised:
+            adapter.execute("key-" + self.MARKER, bad_document, "0" * 64)
+        self.assertNotIn(self.MARKER, str(raised.exception))
+        document = {"note": self.MARKER}
+        adapter.execute("victim", document, digest(document))
+        raw = Path(path_for(self.directory, "victim")).read_bytes()
+        artifact = json.loads(raw.decode("utf-8"))
+        artifact["content_digest"] = "f" * 64
+        self.write_raw(canonical_bytes(artifact))
+        with self.assertRaises(ValueError) as raised:
+            adapter.lookup("victim")
+        self.assertNotIn(self.MARKER, str(raised.exception))
+
+    def write_raw(self, data):
+        with open(path_for(self.directory, "victim"), "wb") as handle:
+            handle.write(data)
+
+
+class ApiShapeTests(FileAdapterTestCase):
+    def test_constructor_takes_only_a_directory(self):
+        parameters = list(inspect.signature(FilePublisher.__init__).parameters)
+        self.assertEqual(parameters, ["self", "directory"])
+
+    def test_production_source_has_no_crash_exit_or_rename_fallback(self):
+        source = Path(inspect.getfile(FilePublisher)).read_text()
+        # No rename-fallback mechanism and no crash-exit flag anywhere in
+        # the production module: the commit is os.link or an explicit error.
+        for absent in ("_exit", "os.rename", "os.replace", "shutil"):
+            self.assertNotIn(absent, source)
 
 
 if __name__ == "__main__":
