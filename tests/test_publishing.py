@@ -204,10 +204,6 @@ class PublishingEvaluateTests(unittest.TestCase):
         self.assertNotEqual(key, self.policy.operation_key("content.publish", changed))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PublishingCliTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -642,3 +638,7 @@ class FakePublisherDomainTests(unittest.TestCase):
             row = db.execute("SELECT document_id,digest,document FROM publications").fetchone()
         self.assertEqual((row[0], row[1]), (doc["id"], digest(doc)))
         self.assertEqual(json.loads(row[2]), doc)
+
+
+if __name__ == "__main__":
+    unittest.main()
