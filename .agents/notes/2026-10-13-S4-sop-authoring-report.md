@@ -93,3 +93,62 @@ guarantee; CLI `lint-sop` (loader duplicate-key/nonfinite/UTF-8/1MiB
 recursion-safe handling, exit 0/1/2) and pyproject package-data wiring for
 `data/sop/*.json` belong to the later harness-owning sprint; foundation
 tests read the packaged source files directly.
+
+## Workflow audit note (2026-10-14, docs-only dispatch task_84acf4c301f3)
+
+**Skills actually loaded, and when.** During the 2026-10-13 implementation
+run: `superpowers:using-superpowers` (auto-loaded at session start),
+`superpowers:brainstorming` (invoked as the first tool call, before any repo
+exploration — architectural path satisfied by the already-ratified carrier
+spec/D22), then `superpowers:executing-plans` and
+`superpowers:test-driven-development` together at execution start, before
+Task 1. `superpowers:writing-plans` was **not** loaded at any point during
+that run — including after the mid-run coordinator message
+(msg_949d43281eab): the graph clarification was incorporated directly from
+the message and a same-day diff against the carrier spec, with no
+writing-plans involvement. The plan (0c45af0) was therefore authored
+manually in the repo's established S3 plan format. That timing deviation is
+recorded here truthfully, not retroactively erased; writing-plans was loaded
+only now (2026-10-14) for this audit, and no rewrite followed.
+
+**Bounded audit of `docs/superpowers/plans/2026-10-13-s4-sop-authoring.md`
+against the writing-plans contract.** Substance conforms: required header
+with the executing-plans sub-skill pointer, Goal/Architecture/Tech
+Stack/Spec (naming the CURRENT carrier and the graph clarification with the
+Orca message id), Global Constraints with exact values, a Settled contracts
+section pinning exact signatures (lint_sop/sop_digest), all 14 codes,
+pointer/order/dedup rules, preflight bounds, schema shapes, SCC cycle
+semantics and digest reuse; Tasks 0–9 each carry exact Files, a RED→GREEN
+step cycle and a commit step, and they map 1:1 onto the delivered commits
+(0c45af0, 008d429, 2141787, 1b8457e, 38ed5fe — amended locally pre-push and
+disclosed above, 9ed2fcc, 7684dd5, d9e622e, bf53e98, d1051b6) with the
+planned test classes/files present. Current D22 remains covered: the
+carrier's "D22 graph traversal clarification" section was re-verified
+verbatim today and is quoted in the plan and implemented in Task 5
+(iterative Tarjan SCC, one component diagnostic, 2000-rule chain /
+1500-rule cycle regressions, 80-rule fixture).
+
+Template gaps found (form, not substance), left unrewritten per this
+dispatch's constraints: (1) no **Review Focus** section — the equivalent
+uncovered-input coverage (hostile `__repr__`/`__iter__` hooks, depth-64/65
+boundary, ±(2^53−1) bounds, surrogate keys, alias-vs-cycle, long flat
+graphs, bounded no-leak messages) lives in the test suite and fixtures, not
+in a plan section; (2) no per-task **Interfaces (Consumes/Produces)**
+blocks — interfaces are pinned centrally in Settled contracts instead;
+(3) the skill's separate "write failing test" / "run to observe failure"
+steps are folded into single RED steps, and test steps name classes and
+assertion targets in prose rather than verbatim code blocks; (4) Task 2
+carries a visible inline self-correction ("Correction (pinned)"), a drafting
+artifact whose substance was followed.
+
+**One concrete plan-vs-artifact divergence (for master/integration, no
+change made here):** the plan's settled Root bullet anchors an unknown root
+field at `""`, while the implementation, tests and docs anchor UNKNOWN_FIELD
+at the offending key's own pointer (`/extra`), per ledger ruling #1 already
+disclosed in "Decisions and rulings" above. It is implemented, tested and
+documented consistently; master may accept the ruling or direct integration
+to change the anchor — no edit was made in this docs-only dispatch.
+
+Gates re-verified with this note: `python3 scripts/check_docs.py` → 0
+broken; git scope clean apart from this report edit; no product, code,
+test, plan or other files touched.
