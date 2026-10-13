@@ -23,7 +23,7 @@ python3 scripts/verify_install.py                 # fresh-venv install + demos o
 
 ## Protocol acceptance matrix (P01–P15)
 
-Definitions: [RFC-003 §9](RFC-003-runtime-protocol.md). All evidence tests are in `tests/test_runtime.py` (the 35 baseline tests; the parallel runtime wave may add more at integration).
+Definitions: [RFC-003 §9](RFC-003-runtime-protocol.md). All evidence tests are in `tests/test_runtime.py` (the 35 baseline tests); the S1 runtime wave additionally pins the dispatch/reconciliation boundary guarantees in `tests/test_boundaries.py` ([runtime boundaries](runtime-boundaries.md)).
 
 | Case | Injected condition | Status | Evidence |
 |---|---|---|---|
@@ -64,5 +64,5 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 
 ## Related
 
-- [Runtime boundaries](runtime-boundaries.md) — transaction and dispatch boundary internals, produced by the parallel S1 runtime work. Until that branch is integrated, this link is the one recorded pending link in the contracts gate.
+- [Runtime boundaries](runtime-boundaries.md) — transaction and dispatch boundary internals, produced by the parallel S1 runtime work and integrated with this document in the S1 carrier. Before that integration this link was the one recorded pending link in the contracts gate; with both branches assembled the gate requires zero broken links.
 - [RFC-001](RFC-001-core-semantics.md) · [RFC-002](RFC-002-sop-authoring-and-binding.md) · [RFC-003](RFC-003-runtime-protocol.md) · [Reference scenarios](reference-scenarios.md) · [Roadmap](roadmap.md)
