@@ -89,9 +89,20 @@ class BoundaryTests(unittest.TestCase):
     def events_of_type(self, event_type, work_id="demo"):
         return [e for e in self.runtime.events(work_id) if e["type"] == event_type]
 
-    def requirement(self, rule, work_id="demo"):
-        return next(r for r in self.runtime.get_work(work_id)["requirements"]
+    def requirement(self, rule, work_id="demo", runtime=None):
+        runtime = runtime or self.runtime
+        return next(r for r in runtime.get_work(work_id)["requirements"]
                     if r["rule_id"] == rule)
+
+    def new_ready_runtime(self):
+        """A fresh runtime whose demo work has a distinct business key."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        runtime = Runtime(str(Path(temp.name) / "runtime.sqlite"),
+                          ExpensePolicy(), demo_grants())
+        initialize(runtime)
+        prerequisites(runtime)
+        return runtime
 
     def test_repeated_reconcile_without_authoritative_result_is_idempotent(self):
         op = self.submit()
@@ -137,24 +148,33 @@ class BoundaryTests(unittest.TestCase):
 
 
     def test_malformed_adapter_results_leave_inspectable_uncertainty(self):
-        digest = self.runtime.get_work("demo")["document_digest"]
+        # Each variant needs its own runtime: one work has one business key,
+        # so a second dispatch would return the already-quarantined operation
+        # without ever calling the adapter.
         variants = {
-            "non-dict": "ok",
-            "digest-missing": {"status": "accepted", "external_id": "OA-1"},
-            "status-unknown": {"digest": digest, "status": "pending", "external_id": "OA-1"},
-            "external-id-empty": {"digest": digest, "status": "accepted", "external_id": ""},
+            "non-dict": lambda digest: "ok",
+            "digest-missing": lambda digest: {"status": "accepted", "external_id": "OA-1"},
+            "status-unknown": lambda digest: {"digest": digest, "status": "pending",
+                                              "external_id": "OA-1"},
+            "external-id-empty": lambda digest: {"digest": digest, "status": "accepted",
+                                                 "external_id": ""},
         }
-        for name, result in variants.items():
+        for name, make_result in variants.items():
             with self.subTest(variant=name):
-                op = self.submit()
-                quarantined = self.runtime.dispatch(op, MalformedAdapter(result))
+                runtime = self.new_ready_runtime()
+                op = action(runtime)["operation_id"]
+                adapter = MalformedAdapter(
+                    make_result(runtime.get_work("demo")["document_digest"]))
+                quarantined = runtime.dispatch(op, adapter)
+                self.assertEqual(adapter.execute_calls, 1)
                 self.assertEqual((quarantined["status"], quarantined.get("reason")),
                                  ("outcome_unknown", "ADAPTER_RESULT_INVALID"))
-                persisted = self.runtime.get_operation(op)
+                persisted = runtime.get_operation(op)
                 self.assertEqual(persisted["attempts"][-1]["status"], "outcome_unknown")
                 self.assertNotIn("external_id", persisted)
-                self.assertEqual(self.runtime.get_work("demo")["status"], "needs_attention")
-                self.assertEqual(self.requirement("E08")["fulfillment"], "pending")
+                self.assertEqual(runtime.get_work("demo")["status"], "needs_attention")
+                self.assertEqual(self.requirement("E08", runtime=runtime)["fulfillment"],
+                                 "pending")
 
     def test_mismatched_digest_result_is_quarantined(self):
         op = self.submit()

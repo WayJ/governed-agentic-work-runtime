@@ -95,16 +95,25 @@ Guarantees:
 
 ## Recorded limitations
 
-- **Unqueryable adapters stop at `needs_attention`.** If the process dies
-  between the attempt commit and the external call, or the adapter cannot
-  answer lookups, recovery conservatively escalates instead of re-sending;
-  there is no automatic resend path. RFC-003 P06's "recoverable dispatch" is
-  met only through reconciliation, and only when the adapter can answer.
+- **Unqueryable adapters never trigger a resend — and not every uncertainty
+  reaches the work status.** A `lookup` returning `None`, a malformed result
+  and a business rejection all escalate the work to `needs_attention`; a
+  `lookup` that keeps raising records only operation-level
+  `outcome_unknown`/`<ExceptionName>` plus an `OutcomeUnknown` event while the
+  work status itself stays unchanged, so the operation, not the work status,
+  is the authoritative signal there. If the process dies between the attempt
+  commit and the external call, recovery likewise escalates or records instead
+  of re-sending; there is no automatic resend path. RFC-003 P06's "recoverable
+  dispatch" is met only through reconciliation, and only when the adapter can
+  answer.
 - **In-flight calls cannot be cancelled.** A document revision that lands after
   the external call started cannot revoke it; the old operation confirms
   against the old digest, which satisfies only that revision's requirements.
-  New content requires a new operation (new business key) and the external
-  system's own uniqueness constraints.
+  While that operation is still unresolved, `propose_action` for new content
+  is rejected `OUTCOME_UNRESOLVED`: the uncertain operation must be reconciled
+  first, and only then can new content be prepared as a new operation (new
+  business key), still subject to the external system's own uniqueness
+  constraints.
 - **Evidence receipts are immutable.** Re-submitting the same source event id
   with different content is `SOURCE_EVENT_CONFLICT`; an `invalid` candidate is
   never overwritten by a corrected re-submission under the same event id.
