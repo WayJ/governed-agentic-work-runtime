@@ -746,5 +746,232 @@ class GlobalIdNamespaceTests(unittest.TestCase):
         self.assertEqual(result[0]["message"], "duplicate ID 'E01'")
 
 
+
+RULE_FIELDS = ("id", "source", "modality", "type", "scope", "trigger",
+               "depends_on", "requirement", "deadline", "evidence",
+               "unknown", "conflict", "exemption", "migration")
+
+
+class RulesSchemaTests(unittest.TestCase):
+    """Rule cards: all fourteen fields, exact shapes, pinned enums."""
+
+    def test_rules_must_be_list(self):
+        card = valid_card()
+        card["rules"] = "none"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/rules")
+        self.assertEqual(result[0]["message"], "field must be a list")
+
+    def test_rule_must_be_object(self):
+        card = valid_card()
+        card["rules"] = ["E01"]
+        # The list exists but holds no mandatory rule, so cardinality fires too.
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["NO_MANDATORY_RULE", "TYPE_MISMATCH"])
+        self.assertEqual(result[1]["path"], "/rules/0")
+
+    def test_every_rule_field_required(self):
+        for field in RULE_FIELDS:
+            with self.subTest(field=field):
+                card = valid_card()
+                del card["rules"][0][field]
+                result = lint_sop(card)
+                self.assertIn("MISSING_FIELD", codes_of(result))
+                missing = [d for d in result
+                           if d["code"] == "MISSING_FIELD" and d["path"] == "/rules/0"]
+                self.assertEqual(missing[0]["message"],
+                                 "missing required field '%s'" % field)
+
+    def test_unknown_rule_field(self):
+        card = valid_card()
+        card["rules"][0]["note"] = "why"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_FIELD"])
+        self.assertEqual(result[0]["path"], "/rules/0/note")
+
+    def test_modality_enum(self):
+        for bad, code in (("should", "INVALID_VALUE"), ("MUST", "INVALID_VALUE"),
+                          (5, "TYPE_MISMATCH"), (None, "TYPE_MISMATCH")):
+            with self.subTest(bad=bad):
+                card = valid_card()
+                card["rules"][0]["modality"] = bad
+                result = lint_sop(card)
+                self.assertEqual(codes_of(result), [code])
+                self.assertEqual(result[0]["path"], "/rules/0/modality")
+                if code == "INVALID_VALUE":
+                    self.assertEqual(result[0]["message"],
+                                     "value must be 'must' or 'forbidden'")
+
+    def test_type_enum(self):
+        for bad, code in (("state-change", "INVALID_VALUE"), ([], "TYPE_MISMATCH")):
+            with self.subTest(bad=bad):
+                card = valid_card()
+                card["rules"][0]["type"] = bad
+                result = lint_sop(card)
+                self.assertEqual(codes_of(result), [code])
+                self.assertEqual(result[0]["path"], "/rules/0/type")
+                if code == "INVALID_VALUE":
+                    self.assertEqual(result[0]["message"],
+                                     "value must be 'state', 'action' or 'history'")
+
+    def test_rule_source_shape(self):
+        card = valid_card()
+        card["rules"][0]["source"] = []
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/rules/0/source")
+        card = valid_card()
+        card["rules"][0]["source"]["section"] = " "
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["EMPTY_VALUE"])
+        self.assertEqual(result[0]["path"], "/rules/0/source/section")
+
+    def test_rule_scope_shape(self):
+        card = valid_card()
+        card["rules"][0]["scope"] = 5
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/rules/0/scope")
+
+    def test_trigger_and_requirement_text(self):
+        for field in ("trigger", "requirement"):
+            for bad, code in (("", "EMPTY_VALUE"), ("\n\t", "EMPTY_VALUE"),
+                              (7, "TYPE_MISMATCH")):
+                with self.subTest(field=field, bad=bad):
+                    card = valid_card()
+                    card["rules"][0][field] = bad
+                    result = lint_sop(card)
+                    self.assertEqual(codes_of(result), [code])
+                    self.assertEqual(result[0]["path"], "/rules/0/" + field)
+
+    def test_depends_on_shape(self):
+        card = valid_card()
+        card["rules"][0]["depends_on"] = "invoice.valid"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/rules/0/depends_on")
+        card = valid_card()
+        card["rules"][0]["depends_on"] = [5]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/rules/0/depends_on/0")
+        card = valid_card()
+        card["rules"][0]["depends_on"] = [" "]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["EMPTY_VALUE"])
+        self.assertEqual(result[0]["path"], "/rules/0/depends_on/0")
+
+    def test_deadline_shape(self):
+        card = valid_card()
+        card["rules"][0]["deadline"] = []
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/rules/0/deadline")
+
+    def test_evidence_shape(self):
+        card = valid_card()
+        card["rules"][0]["evidence"] = "kind"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/rules/0/evidence")
+        card = valid_card()
+        del card["rules"][0]["evidence"]["kind"]
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["MISSING_FIELD"])
+        self.assertEqual(result[0]["path"], "/rules/0/evidence")
+        card = valid_card()
+        card["rules"][0]["evidence"]["format"] = "pdf"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["UNKNOWN_FIELD"])
+        self.assertEqual(result[0]["path"], "/rules/0/evidence/format")
+        card = valid_card()
+        card["rules"][0]["evidence"]["subject"] = ""
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["EMPTY_VALUE"])
+        self.assertEqual(result[0]["path"], "/rules/0/evidence/subject")
+
+    def test_fixed_handling_values(self):
+        pinned = {"unknown": "block", "conflict": "escalate",
+                  "exemption": "forbidden", "migration": "explicit"}
+        for field, expected in pinned.items():
+            for bad in ("ask", "allowed", "", None):
+                with self.subTest(field=field, bad=bad):
+                    card = valid_card()
+                    card["rules"][0][field] = bad
+                    result = lint_sop(card)
+                    self.assertEqual(len(result), 1)
+                    self.assertEqual(result[0]["path"], "/rules/0/" + field)
+                    if type(bad) is not str:
+                        self.assertEqual(result[0]["code"], "TYPE_MISMATCH")
+                    else:
+                        self.assertEqual(result[0]["code"], "INVALID_VALUE")
+                        self.assertEqual(result[0]["message"],
+                                         "value must be '%s'" % expected)
+
+
+class AdviceTests(unittest.TestCase):
+    """Advice strings stay separate from mandatory rules."""
+
+    def test_advice_must_be_list(self):
+        card = valid_card()
+        card["advice"] = "be careful"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+        self.assertEqual(result[0]["path"], "/advice")
+
+    def test_advice_elements_must_be_nonempty_strings(self):
+        for bad, code in ((5, "TYPE_MISMATCH"), ("", "EMPTY_VALUE"), ("  ", "EMPTY_VALUE")):
+            with self.subTest(bad=bad):
+                card = valid_card()
+                card["advice"] = [bad]
+                result = lint_sop(card)
+                self.assertEqual(codes_of(result), [code])
+                self.assertEqual(result[0]["path"], "/advice/0")
+
+    def test_empty_advice_allowed(self):
+        card = valid_card()
+        card["advice"] = []
+        self.assertEqual(lint_sop(card), [])
+
+
+class MandatoryRuleTests(unittest.TestCase):
+    """At least one mandatory (must or forbidden) rule; D22 B3."""
+
+    def test_empty_rules_gives_no_mandatory_rule(self):
+        card = valid_card()
+        card["rules"] = []
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["NO_MANDATORY_RULE"])
+        self.assertEqual(result[0]["path"], "/rules")
+        self.assertEqual(result[0]["message"],
+                         "package has no mandatory (must or forbidden) rule")
+
+    def test_all_forbidden_package_is_valid(self):
+        card = valid_card()
+        card["rules"][0]["modality"] = "forbidden"
+        self.assertEqual(lint_sop(card), [])
+
+    def test_advice_never_satisfies_mandatory_cardinality(self):
+        card = valid_card()
+        card["rules"] = []
+        card["advice"] = ["Verify invoices", "Confirm amounts", "Respect limits"]
+        self.assertEqual(codes_of(lint_sop(card)), ["NO_MANDATORY_RULE"])
+
+    def test_invalid_modality_does_not_count_as_mandatory(self):
+        card = valid_card()
+        card["rules"] = [card["rules"][1]]
+        card["rules"][0]["modality"] = "should"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["NO_MANDATORY_RULE", "INVALID_VALUE"])
+        self.assertEqual([d["path"] for d in result], ["/rules", "/rules/0/modality"])
+
+    def test_malformed_rules_list_skips_cardinality(self):
+        card = valid_card()
+        card["rules"] = "none"
+        result = lint_sop(card)
+        self.assertEqual(codes_of(result), ["TYPE_MISMATCH"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,12 @@ SOURCE_FIELDS = ("document", "version", "section")
 DEFAULTS_VALUES = {"unknown": "block", "conflict": "escalate",
                    "exemptions": "forbidden", "migration": "explicit"}
 COLLECTION_FIELDS = ("id", "version", "completeness", "allow_empty")
+RULE_FIELDS = ("id", "source", "modality", "type", "scope", "trigger",
+               "depends_on", "requirement", "deadline", "evidence",
+               "unknown", "conflict", "exemption", "migration")
+EVIDENCE_FIELDS = ("kind", "source", "subject", "version")
+RULE_HANDLING = {"unknown": "block", "conflict": "escalate",
+                 "exemption": "forbidden", "migration": "explicit"}
 ID_LISTS = ("facts", "collections", "rules")
 
 
@@ -295,6 +301,101 @@ def _collect_global_ids(root: Dict[str, Any],
                 seen[identifier] = path
 
 
+
+def _require_enum(container: Dict[str, Any], base: str, field: str,
+                  allowed: tuple, message: str,
+                  found: List[Dict[str, str]]) -> None:
+    value = container[field]
+    path = base + "/" + field
+    if type(value) is not str:
+        found.append(_diag(TYPE_MISMATCH, path, "field must be a string"))
+    elif value not in allowed:
+        found.append(_diag(INVALID_VALUE, path, message))
+
+
+def _require_pinned(container: Dict[str, Any], base: str, field: str,
+                    expected: str, found: List[Dict[str, str]]) -> None:
+    value = container[field]
+    path = base + "/" + field
+    if type(value) is not str:
+        found.append(_diag(TYPE_MISMATCH, path, "field must be a string"))
+    elif value != expected:
+        found.append(_diag(INVALID_VALUE, path, "value must be '%s'" % expected))
+
+
+def _lint_rules(rules: Any, found: List[Dict[str, str]]) -> None:
+    _lint_id_list(rules, "/rules", found)
+    if type(rules) is not list:
+        return
+    mandatory = False
+    for index, rule in enumerate(rules):
+        if type(rule) is not dict:
+            continue
+        base = "/rules/%d" % index
+        _check_exact_fields(rule, base, RULE_FIELDS, found)
+        for field in ("id", "scope", "trigger", "requirement", "deadline"):
+            if field in rule:
+                _require_text(rule, base, field, found)
+        if "source" in rule:
+            _check_source(rule, base, found)
+        if "modality" in rule:
+            _require_enum(rule, base, "modality", ("must", "forbidden"),
+                          "value must be 'must' or 'forbidden'", found)
+            if rule["modality"] in ("must", "forbidden"):
+                mandatory = True
+        if "type" in rule:
+            _require_enum(rule, base, "type", ("state", "action", "history"),
+                          "value must be 'state', 'action' or 'history'", found)
+        if "depends_on" in rule:
+            _lint_depends_on_shape(rule["depends_on"], base, found)
+        if "evidence" in rule:
+            _lint_evidence(rule["evidence"], base, found)
+        for field, expected in RULE_HANDLING.items():
+            if field in rule:
+                _require_pinned(rule, base, field, expected, found)
+    if not mandatory:
+        found.append(_diag(NO_MANDATORY_RULE, "/rules",
+                           "package has no mandatory (must or forbidden) rule"))
+
+
+def _lint_depends_on_shape(depends_on: Any, base: str,
+                           found: List[Dict[str, str]]) -> None:
+    if type(depends_on) is not list:
+        found.append(_diag(TYPE_MISMATCH, base + "/depends_on",
+                           "field must be a list"))
+        return
+    for index, entry in enumerate(depends_on):
+        path = base + "/depends_on/%d" % index
+        if type(entry) is not str:
+            found.append(_diag(TYPE_MISMATCH, path, "field must be a string"))
+        elif entry.strip() == "":
+            found.append(_diag(EMPTY_VALUE, path, "string is empty or whitespace-only"))
+
+
+def _lint_evidence(evidence: Any, base: str,
+                   found: List[Dict[str, str]]) -> None:
+    path = base + "/evidence"
+    if type(evidence) is not dict:
+        found.append(_diag(TYPE_MISMATCH, path, "value must be an object"))
+        return
+    _check_exact_fields(evidence, path, EVIDENCE_FIELDS, found)
+    for field in EVIDENCE_FIELDS:
+        if field in evidence:
+            _require_text(evidence, path, field, found)
+
+
+def _lint_advice(advice: Any, found: List[Dict[str, str]]) -> None:
+    if type(advice) is not list:
+        found.append(_diag(TYPE_MISMATCH, "/advice", "field must be a list"))
+        return
+    for index, entry in enumerate(advice):
+        path = "/advice/%d" % index
+        if type(entry) is not str:
+            found.append(_diag(TYPE_MISMATCH, path, "field must be a string"))
+        elif entry.strip() == "":
+            found.append(_diag(EMPTY_VALUE, path, "string is empty or whitespace-only"))
+
+
 def _lint_schema(root: Any) -> List[Dict[str, str]]:
     """Strict schema layer; runs only after a clean JSON-native preflight."""
     found: List[Dict[str, str]] = []
@@ -318,6 +419,10 @@ def _lint_schema(root: Any) -> List[Dict[str, str]]:
         _lint_facts(root["facts"], found)
     if "collections" in root:
         _lint_collections(root["collections"], found)
+    if "rules" in root:
+        _lint_rules(root["rules"], found)
+    if "advice" in root:
+        _lint_advice(root["advice"], found)
     _collect_global_ids(root, found)
     return found
 
