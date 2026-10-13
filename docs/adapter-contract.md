@@ -46,12 +46,15 @@ enrich receipts without being quarantined. Anything else is quarantined as
 
 ## Optional metadata and legacy adapters
 
-The `contract` attribute is **optional**. An adapter without one (all S1 test
-adapters, and any trusted duck-typed adapter) takes the legacy path: no
+Only an **absent** `contract` attribute is the legacy path: adapters without
+one (all S1 test adapters, and any trusted duck-typed adapter) get no
 capability gating, identical pre-S2 dispatch behavior. A descriptor that is
-present but not a valid `AdapterContract` (a string, a dict, a tampered
-instance) fails closed with `CommandError` **before** any external call —
-garbage metadata is never silently treated as "no metadata".
+**present** but is not a valid `AdapterContract` — a string, a dict, an
+explicit `None`, or an incomplete/tampered instance (including
+`object.__new__` bypasses that never set fields) — fails closed with
+`CommandError` **before** any external call: garbage metadata is never
+silently treated as "no metadata", and `contract = None` is a malformed
+declaration, not an opt-out.
 
 ## Declared-capability preflight
 
@@ -156,6 +159,7 @@ domain tests its own external constraints separately.
 | unsupported capability holds with zero attempts/calls | `test_unsupported_declared_capability_holds_with_zero_attempts_or_calls` |
 | held operation dispatches with a compatible adapter | `test_held_operation_dispatches_with_compatible_adapter` |
 | malformed descriptor fails closed before effects | `test_malformed_descriptor_fails_closed_before_external_call` |
+| present `None` / incomplete instance fail closed; absent stays legacy | `DescriptorPresenceTests` (three tests) |
 | legacy adapters without a descriptor keep dispatching | `test_legacy_adapter_without_contract_still_dispatches` |
 
 Design source: [S2 spec](superpowers/specs/2026-10-13-s2-trusted-boundaries.md)

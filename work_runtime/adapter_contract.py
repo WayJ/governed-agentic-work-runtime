@@ -52,7 +52,9 @@ def valid_contract(value: object) -> bool:
         return False
     try:
         _check_invariants(value)
-    except ValueError:
+    except (ValueError, AttributeError):
+        # ValueError: invariant violation; AttributeError: an incomplete
+        # instance whose fields were never set (e.g. object.__new__ bypass).
         return False
     return True
 

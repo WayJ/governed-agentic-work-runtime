@@ -45,7 +45,10 @@ regressions that pin each guarantee live in `tests/test_boundaries.py`.
    capability is `held` with reason `ADAPTER_ACTION_UNSUPPORTED` — again zero
    attempts and zero external calls — and stays dispatchable by a compatible
    adapter. A malformed descriptor raises `CommandError` before an external
-   call; a missing descriptor keeps the legacy trusted duck-typed path.
+   call; only a missing `contract` attribute keeps the legacy trusted
+   duck-typed path — a descriptor that is present but invalid (a non-contract
+   value, an explicit `None`, or an incomplete `AdapterContract` instance) is
+   malformed, never silently legacy.
 3. It persists `status="dispatched"`, `dispatch_state="in_flight"` and a new
    attempt with `outcome_unknown` **before** the external call. A process death
    anywhere after this commit is therefore treated as "the effect may have

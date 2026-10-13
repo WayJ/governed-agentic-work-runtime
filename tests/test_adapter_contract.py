@@ -401,3 +401,67 @@ class DeclaredCapabilityTests(unittest.TestCase):
         self.assertFalse(hasattr(legacy, "contract"))
         resolved = runtime.dispatch(op, legacy)
         self.assertEqual((resolved["status"], legacy.executed), ("confirmed_succeeded", 1))
+
+
+class NoneContractOA(FakeOA):
+    contract = None
+
+
+class BareContractOA(FakeOA):
+    contract = object.__new__(AdapterContract)
+
+
+class DescriptorPresenceTests(unittest.TestCase):
+    """Only an absent descriptor is legacy; a present None or broken instance is malformed."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.oa_path = str(Path(self.temp.name) / "oa.sqlite")
+
+    def prepared_operation(self):
+        runtime = Runtime(self.path, ExpensePolicy(), demo_grants())
+        initialize(runtime)
+        prerequisites(runtime)
+        return runtime, action(runtime)["operation_id"]
+
+    def test_present_none_descriptor_fails_closed_before_external_call(self):
+        runtime, op = self.prepared_operation()
+        adapter = NoneContractOA(self.oa_path)
+        with self.assertRaises(CommandError):
+            runtime.dispatch(op, adapter)
+        persisted = runtime.get_operation(op)
+        self.assertEqual((persisted["status"], persisted["dispatch_state"]),
+                         ("prepared", "ready"))
+        self.assertEqual(persisted["attempts"], [])
+        self.assertEqual(adapter.accepted_count(), 0)
+
+    def test_absent_descriptor_keeps_legacy_dispatch(self):
+        class LegacyAdapter:
+            def __init__(self, inner):
+                self.inner = inner
+                self.executed = 0
+
+            def execute(self, *args):
+                self.executed += 1
+                return self.inner.execute(*args)
+
+            def lookup(self, *args):
+                return self.inner.lookup(*args)
+
+        runtime, op = self.prepared_operation()
+        legacy = LegacyAdapter(FakeOA(self.oa_path))
+        self.assertFalse(hasattr(legacy, "contract"))
+        resolved = runtime.dispatch(op, legacy)
+        self.assertEqual((resolved["status"], legacy.executed), ("confirmed_succeeded", 1))
+
+    def test_incomplete_contract_instance_is_invalid_and_fails_closed(self):
+        self.assertFalse(valid_contract(object.__new__(AdapterContract)))
+        runtime, op = self.prepared_operation()
+        adapter = BareContractOA(self.oa_path)
+        with self.assertRaises(CommandError):
+            runtime.dispatch(op, adapter)
+        persisted = runtime.get_operation(op)
+        self.assertEqual(persisted["attempts"], [])
+        self.assertEqual(adapter.accepted_count(), 0)

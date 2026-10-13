@@ -25,10 +25,17 @@ class Adapter(Protocol):
     def lookup(self, key: str) -> Optional[dict]: ...
 
 
+_MISSING_CONTRACT = object()
+
+
 def _declared_contract(adapter: Adapter) -> Optional[object]:
-    """Declared metadata only; a missing descriptor keeps legacy adapters trusted."""
-    descriptor = getattr(adapter, "contract", None)
-    if descriptor is None:
+    """Only an absent descriptor keeps legacy adapters trusted.
+
+    A descriptor that is present but None or invalid is malformed, never
+    silently legacy.
+    """
+    descriptor = getattr(adapter, "contract", _MISSING_CONTRACT)
+    if descriptor is _MISSING_CONTRACT:
         return None
     if not valid_contract(descriptor):
         raise CommandError("Adapter contract descriptor is malformed: "
