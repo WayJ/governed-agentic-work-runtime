@@ -78,6 +78,7 @@ Scenario C — explicit policy migration demo-1 → demo-2 (own store: migrate/)
 3. Re-propose → REQUIREMENT_UNSATISFIED; stale contract revision → CONTRACT_REVISION_MISMATCH
 4. Finance approves under demo-2 ({digest, policy_version}) → E05 satisfied → SAME operation readmitted
 5. Restart without the registry → fails closed; restart with the registry → pinned demo-2 usable
+   (restart without the registry: Load the policy version bound to this Work; migration is not implicit)
 6. Dispatch → confirmed_succeeded; accepted applications in this store: 1
 
 3 scenarios; accepted applications: 3 (one per store); effects reversed: 0
