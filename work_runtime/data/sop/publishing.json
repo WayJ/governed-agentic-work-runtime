@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "id": "content-publish",
+    "version": "demo-1",
+    "goal": "content.published",
+    "source": {
+      "document": "publishing-playbook",
+      "version": "2026-03",
+      "section": "3 Publication"
+    },
+    "scope": "document",
+    "capabilities": ["content.publish"]
+  },
+  "defaults": {
+    "unknown": "block",
+    "conflict": "escalate",
+    "exemptions": "forbidden",
+    "migration": "explicit"
+  },
+  "facts": [],
+  "collections": [],
+  "rules": [
+    {
+      "id": "C01",
+      "source": {"document": "publishing-playbook", "version": "2026-03", "section": "3.1"},
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before content.publish is proposed",
+      "depends_on": [],
+      "requirement": "The artifact must be complete, with a nonempty title and a nonempty body",
+      "deadline": "content.publish",
+      "evidence": {"kind": "document_completeness", "source": "author", "subject": "document", "version": "document-digest"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "C02",
+      "source": {"document": "publishing-playbook", "version": "2026-03", "section": "3.2"},
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "the document is flagged as requiring review",
+      "depends_on": [],
+      "requirement": "A flagged document needs the reviewer's approval of the current content; an unknown flag blocks publication until decided",
+      "deadline": "content.publish",
+      "evidence": {"kind": "approval", "source": "reviewer", "subject": "document", "version": "document-digest"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "C03",
+      "source": {"document": "publishing-playbook", "version": "2026-03", "section": "3.3"},
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before content.publish is proposed",
+      "depends_on": [],
+      "requirement": "The author must confirm the current content before it is published",
+      "deadline": "content.publish",
+      "evidence": {"kind": "confirmation", "source": "author", "subject": "document", "version": "document-digest"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "C04",
+      "source": {"document": "publishing-playbook", "version": "2026-03", "section": "3.4"},
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before successful completion",
+      "depends_on": [],
+      "requirement": "The publisher must have accepted the current content before the work can complete successfully",
+      "deadline": "goal",
+      "evidence": {"kind": "accepted", "source": "publisher", "subject": "document", "version": "document-digest"},
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    }
+  ],
+  "advice": [
+    "Request review and author confirmation in parallel once the artifact is complete"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "id": "fixture-policy",
+    "version": "v1",
+    "goal": "fixture.goal",
+    "source": {
+      "document": "fixture-handbook",
+      "version": "1",
+      "section": "1"
+    },
+    "scope": "document",
+    "capabilities": [
+      "fixture.act"
+    ]
+  },
+  "defaults": {
+    "unknown": "block",
+    "conflict": "escalate",
+    "exemptions": "forbidden",
+    "migration": "explicit"
+  },
+  "facts": [
+    {
+      "id": "fixture.fact"
+    }
+  ],
+  "collections": [
+    {
+      "id": "fixture.items",
+      "version": "v1",
+      "completeness": "sealed",
+      "allow_empty": false
+    }
+  ],
+  "rules": [],
+  "advice": [
+    "Fixture advice"
+  ]
+}

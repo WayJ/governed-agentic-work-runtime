@@ -1,0 +1,2190 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "id": "fixture-policy",
+    "version": "v1",
+    "goal": "fixture.goal",
+    "source": {
+      "document": "fixture-handbook",
+      "version": "1",
+      "section": "1"
+    },
+    "scope": "document",
+    "capabilities": [
+      "fixture.act"
+    ]
+  },
+  "defaults": {
+    "unknown": "block",
+    "conflict": "escalate",
+    "exemptions": "forbidden",
+    "migration": "explicit"
+  },
+  "facts": [],
+  "collections": [],
+  "rules": [
+    {
+      "id": "CH0000",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0001"
+      ],
+      "requirement": "Requirement for CH0000",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0001",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0002"
+      ],
+      "requirement": "Requirement for CH0001",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0002",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0003"
+      ],
+      "requirement": "Requirement for CH0002",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0003",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0004"
+      ],
+      "requirement": "Requirement for CH0003",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0004",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0005"
+      ],
+      "requirement": "Requirement for CH0004",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0005",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0006"
+      ],
+      "requirement": "Requirement for CH0005",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0006",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0007"
+      ],
+      "requirement": "Requirement for CH0006",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0007",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0008"
+      ],
+      "requirement": "Requirement for CH0007",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0008",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0009"
+      ],
+      "requirement": "Requirement for CH0008",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0009",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0010"
+      ],
+      "requirement": "Requirement for CH0009",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0010",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0011"
+      ],
+      "requirement": "Requirement for CH0010",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0011",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0012"
+      ],
+      "requirement": "Requirement for CH0011",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0012",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0013"
+      ],
+      "requirement": "Requirement for CH0012",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0013",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0014"
+      ],
+      "requirement": "Requirement for CH0013",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0014",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0015"
+      ],
+      "requirement": "Requirement for CH0014",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0015",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0016"
+      ],
+      "requirement": "Requirement for CH0015",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0016",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0017"
+      ],
+      "requirement": "Requirement for CH0016",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0017",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0018"
+      ],
+      "requirement": "Requirement for CH0017",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0018",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0019"
+      ],
+      "requirement": "Requirement for CH0018",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0019",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0020"
+      ],
+      "requirement": "Requirement for CH0019",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0020",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0021"
+      ],
+      "requirement": "Requirement for CH0020",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0021",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0022"
+      ],
+      "requirement": "Requirement for CH0021",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0022",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0023"
+      ],
+      "requirement": "Requirement for CH0022",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0023",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0024"
+      ],
+      "requirement": "Requirement for CH0023",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0024",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0025"
+      ],
+      "requirement": "Requirement for CH0024",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0025",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0026"
+      ],
+      "requirement": "Requirement for CH0025",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0026",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0027"
+      ],
+      "requirement": "Requirement for CH0026",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0027",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0028"
+      ],
+      "requirement": "Requirement for CH0027",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0028",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0029"
+      ],
+      "requirement": "Requirement for CH0028",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0029",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0030"
+      ],
+      "requirement": "Requirement for CH0029",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0030",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0031"
+      ],
+      "requirement": "Requirement for CH0030",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0031",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0032"
+      ],
+      "requirement": "Requirement for CH0031",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0032",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0033"
+      ],
+      "requirement": "Requirement for CH0032",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0033",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0034"
+      ],
+      "requirement": "Requirement for CH0033",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0034",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0035"
+      ],
+      "requirement": "Requirement for CH0034",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0035",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0036"
+      ],
+      "requirement": "Requirement for CH0035",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0036",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0037"
+      ],
+      "requirement": "Requirement for CH0036",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0037",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0038"
+      ],
+      "requirement": "Requirement for CH0037",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0038",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0039"
+      ],
+      "requirement": "Requirement for CH0038",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0039",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0040"
+      ],
+      "requirement": "Requirement for CH0039",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0040",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0041"
+      ],
+      "requirement": "Requirement for CH0040",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0041",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0042"
+      ],
+      "requirement": "Requirement for CH0041",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0042",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0043"
+      ],
+      "requirement": "Requirement for CH0042",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0043",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0044"
+      ],
+      "requirement": "Requirement for CH0043",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0044",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0045"
+      ],
+      "requirement": "Requirement for CH0044",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0045",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0046"
+      ],
+      "requirement": "Requirement for CH0045",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0046",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0047"
+      ],
+      "requirement": "Requirement for CH0046",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0047",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0048"
+      ],
+      "requirement": "Requirement for CH0047",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0048",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0049"
+      ],
+      "requirement": "Requirement for CH0048",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0049",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0050"
+      ],
+      "requirement": "Requirement for CH0049",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0050",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0051"
+      ],
+      "requirement": "Requirement for CH0050",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0051",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0052"
+      ],
+      "requirement": "Requirement for CH0051",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0052",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0053"
+      ],
+      "requirement": "Requirement for CH0052",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0053",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0054"
+      ],
+      "requirement": "Requirement for CH0053",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0054",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0055"
+      ],
+      "requirement": "Requirement for CH0054",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0055",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0056"
+      ],
+      "requirement": "Requirement for CH0055",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0056",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0057"
+      ],
+      "requirement": "Requirement for CH0056",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0057",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0058"
+      ],
+      "requirement": "Requirement for CH0057",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0058",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0059"
+      ],
+      "requirement": "Requirement for CH0058",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0059",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0060"
+      ],
+      "requirement": "Requirement for CH0059",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0060",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0061"
+      ],
+      "requirement": "Requirement for CH0060",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0061",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0062"
+      ],
+      "requirement": "Requirement for CH0061",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0062",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0063"
+      ],
+      "requirement": "Requirement for CH0062",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0063",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0064"
+      ],
+      "requirement": "Requirement for CH0063",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0064",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0065"
+      ],
+      "requirement": "Requirement for CH0064",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0065",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0066"
+      ],
+      "requirement": "Requirement for CH0065",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0066",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0067"
+      ],
+      "requirement": "Requirement for CH0066",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0067",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0068"
+      ],
+      "requirement": "Requirement for CH0067",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0068",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0069"
+      ],
+      "requirement": "Requirement for CH0068",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0069",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0070"
+      ],
+      "requirement": "Requirement for CH0069",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0070",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0071"
+      ],
+      "requirement": "Requirement for CH0070",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0071",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0072"
+      ],
+      "requirement": "Requirement for CH0071",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0072",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0073"
+      ],
+      "requirement": "Requirement for CH0072",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0073",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0074"
+      ],
+      "requirement": "Requirement for CH0073",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0074",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0075"
+      ],
+      "requirement": "Requirement for CH0074",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0075",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0076"
+      ],
+      "requirement": "Requirement for CH0075",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0076",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0077"
+      ],
+      "requirement": "Requirement for CH0076",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0077",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0078"
+      ],
+      "requirement": "Requirement for CH0077",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0078",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0079"
+      ],
+      "requirement": "Requirement for CH0078",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "CH0079",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "document",
+      "trigger": "before goal",
+      "depends_on": [
+        "CH0000"
+      ],
+      "requirement": "Requirement for CH0079",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "confirmation",
+        "source": "requester",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    }
+  ],
+  "advice": [
+    "Fixture advice"
+  ]
+}

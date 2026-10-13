@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "id": "fixture-policy",
+    "version": "v1",
+    "goal": "fixture.goal",
+    "source": {
+      "document": "fixture-handbook",
+      "version": "1",
+      "section": "1"
+    },
+    "scope": "document",
+    "capabilities": [
+      "fixture.act"
+    ]
+  },
+  "defaults": {
+    "unknown": "block",
+    "conflict": "escalate",
+    "exemptions": "forbidden",
+    "migration": "explicit"
+  },
+  "facts": "none",
+  "collections": [
+    {
+      "id": "fixture.items",
+      "version": "v1",
+      "completeness": "sealed",
+      "allow_empty": "no"
+    }
+  ],
+  "rules": [
+    {
+      "id": "R1",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1.1"
+      },
+      "modality": "must",
+      "type": "state",
+      "scope": "fixture.items",
+      "trigger": "before fixture.act",
+      "depends_on": [
+        "fixture.fact"
+      ],
+      "requirement": "Fixture requirement one",
+      "deadline": "fixture.act",
+      "evidence": 5,
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    },
+    {
+      "id": "R2",
+      "source": {
+        "document": "fixture-handbook",
+        "version": "1",
+        "section": "1.2"
+      },
+      "modality": "forbidden",
+      "type": "action",
+      "scope": "document",
+      "trigger": "at fixture.act",
+      "depends_on": [
+        "R1"
+      ],
+      "requirement": "Fixture requirement two",
+      "deadline": "goal",
+      "evidence": {
+        "kind": "audit_trail",
+        "source": "service",
+        "subject": "document",
+        "version": "document-digest"
+      },
+      "unknown": "block",
+      "conflict": "escalate",
+      "exemption": "forbidden",
+      "migration": "explicit"
+    }
+  ],
+  "advice": [
+    "Fixture advice"
+  ]
+}
