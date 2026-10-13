@@ -9,6 +9,7 @@ Python 3.9 or newer is sufficient. No service or API key is required.
 ```bash
 python3 -m work_runtime demo
 python3 -m unittest discover -s tests -v
+python3 scripts/check_docs.py
 ```
 
 The package has zero runtime dependencies. Optional development installation: `python3 -m pip install -e .`.
@@ -22,6 +23,8 @@ The package has zero runtime dependencies. Optional development installation: `p
 | `work_runtime/adapters.py` | Separate persistent fake OA |
 | `work_runtime/demo.py` | Deterministic proposer and real worker crash demonstration |
 | `tests/test_runtime.py` | Invariants, failure injection and subprocess recovery |
+| `scripts/check_docs.py` | Local Markdown link checker — the documentation contracts gate |
+| `tests/test_docs.py` | Link checker behavior and repository documentation contracts |
 | `docs/RFC-*.md` | Candidate semantics and protocol |
 
 ## Propose a change
@@ -30,7 +33,7 @@ For a bug, include the command or minimal code, expected behavior, observed beha
 
 For a new feature, describe the business case and the guarantee it needs. Changes to command semantics should update the RFC and coverage report together with a behavior test. Changes to external-effect recovery should check the external objects, not only the returned status.
 
-Keep pull requests focused. Describe the observable behavior and validation. Avoid adding model, cloud or framework dependencies to the core; adapters can carry their own dependencies when needed.
+Keep pull requests focused. Describe the observable behavior and validation, and run the local checks (`python3 -m unittest discover -s tests -v` and `python3 scripts/check_docs.py`) before submitting — documentation links must resolve. Avoid adding model, cloud or framework dependencies to the core; adapters can carry their own dependencies when needed.
 
 ## Current contribution opportunities
 
