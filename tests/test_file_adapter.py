@@ -14,11 +14,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 from work_runtime.adapter_contract import AdapterContract, receipt_is_valid
 from work_runtime.file_adapter import FilePublisher
 from work_runtime.policy import digest
+from work_runtime.publishing import PublishingPolicy
+from work_runtime.publishing_demo import publishing_grants
+from work_runtime.runtime import Runtime
 from tests.adapter_conformance import AdapterConformanceMixin
 
 _HEX_JSON = re.compile(r"[0-9a-f]{64}\.json")
@@ -668,6 +672,50 @@ class SubprocessRaceTests(FileAdapterTestCase):
         replayed = adapter.execute(key, document, digest(document))
         self.assertEqual(replayed, artifact["receipt"])
         self.assertEqual(len(committed_files(directory)), 1)
+
+
+class RuntimeDispatchTests(FileAdapterTestCase):
+    """Third adapter through the unchanged Runtime: no lifecycle edits here."""
+
+    def _send(self, runtime, work_id, kind, payload=None, actor="agent"):
+        version = None if kind in ("create_work", "record_evidence") \
+            else runtime.get_work(work_id)["state_version"]
+        return runtime.command(actor, uuid.uuid4().hex, work_id, kind, payload, version)
+
+    def test_third_adapter_dispatches_through_the_unchanged_lifecycle(self):
+        artifacts = self.fresh_directory()
+        runtime = Runtime(os.path.join(self.directory, "runtime.sqlite"),
+                          PublishingPolicy(), publishing_grants())
+        policy = PublishingPolicy()
+        document = sample_document("ART-SMOKE")
+        self._send(runtime, "smoke", "create_work", {"document": document})
+        self._send(runtime, "smoke", "bind_contract",
+                   {"policy_id": policy.id, "policy_version": policy.version,
+                    "goal": policy.goal})
+        self._send(runtime, "smoke", "record_evidence",
+                   {"event_id": "rev-1", "kind": "approval",
+                    "data": {"digest": digest(document)}}, actor="reviewer")
+        self._send(runtime, "smoke", "record_evidence",
+                   {"event_id": "auth-1", "kind": "confirmation",
+                    "data": {"digest": digest(document)}}, actor="author")
+        runtime.verify_pending("smoke")
+        work = runtime.get_work("smoke")
+        proposal = self._send(runtime, "smoke", "propose_action", {
+            "capability": "content.publish", "document_digest": digest(document),
+            "contract_revision": work["contract"]["revision"],
+            "plan_revision": work["plan_revision"]})
+        operation = runtime.get_operation(proposal["operation_id"])
+        resolved = runtime.dispatch(proposal["operation_id"], FilePublisher(artifacts))
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        self.assertTrue(resolved["external_id"].startswith("FILE-"))
+        self.assertEqual(len(committed_files(artifacts)), 1)
+        # The Runtime's business key is the adapter's idempotency key.
+        artifact = read_artifact(artifacts, operation["business_key"])
+        self.assertEqual(artifact["key"], operation["business_key"])
+        self.assertEqual(artifact["receipt"]["external_id"], resolved["external_id"])
+        work = runtime.get_work("smoke")
+        c04 = [r for r in work["requirements"] if r["rule_id"] == "C04"][0]
+        self.assertEqual(c04["fulfillment"], "satisfied")
 
 
 if __name__ == "__main__":
