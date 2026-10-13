@@ -140,3 +140,123 @@ class InspectPolicyVersionsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def accepted_in_store(oa_path):
+    """Count accepted applications by querying the external store directly."""
+    import sqlite3
+    db = sqlite3.connect(str(oa_path))
+    try:
+        rows = [json.loads(row[0]) for row in db.execute("SELECT result FROM receipts")]
+    finally:
+        db.close()
+    return sum(1 for row in rows if row.get("status") == "accepted")
+
+
+def operation_bodies(runtime_db):
+    """Read operation rows straight from the runtime database."""
+    import sqlite3
+    db = sqlite3.connect(str(runtime_db))
+    try:
+        return [json.loads(row[0]) for row in db.execute("SELECT body FROM operations")]
+    finally:
+        db.close()
+
+
+class InterventionDemoTests(unittest.TestCase):
+    def setUp(self):
+        from work_runtime import intervention_demo
+        self.intervention_demo = intervention_demo
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+
+    def run_demo(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            folder = self.intervention_demo.run_intervention_demo(self.temp.name)
+        return folder, out.getvalue()
+
+    def test_demo_creates_separate_fresh_stores_per_scenario(self):
+        folder, _ = self.run_demo()
+        paths = [folder / scenario / name
+                 for scenario in ("transfer", "cancel", "migrate")
+                 for name in ("runtime.sqlite", "oa.sqlite")]
+        for path in paths:
+            self.assertTrue(path.exists(), path)
+        self.assertEqual(len({str(path) for path in paths}), 6)
+
+    def test_each_store_independently_holds_exactly_one_accepted_application(self):
+        folder, _ = self.run_demo()
+        for scenario in ("transfer", "cancel", "migrate"):
+            # The same invoice id (INV-001) is submitted in all three scenarios;
+            # exactly one accepted application per store is possible only
+            # because every scenario owns a separate external database.
+            self.assertEqual(accepted_in_store(folder / scenario / "oa.sqlite"), 1, scenario)
+
+    def test_transfer_state_old_owner_denied_operation_preserved(self):
+        folder, _ = self.run_demo()
+        runtime = Runtime(str(folder / "transfer" / "runtime.sqlite"), ExpensePolicy(),
+                          self.intervention_demo.intervention_grants())
+        self.assertEqual(runtime.get_work("transfer")["owner"], "delegate")
+        operations = operation_bodies(folder / "transfer" / "runtime.sqlite")
+        self.assertEqual([op["status"] for op in operations], ["confirmed_succeeded"])
+        # The denied replay left the stored accepted receipt untouched.
+        stored = runtime.get_command("agent", "transfer-submit-once")
+        self.assertEqual(stored["decision"], "accepted")
+        event_types = [event["type"] for event in runtime.events("transfer")]
+        for event_type in ("OwnerTransferred", "OperationReadmitted"):
+            self.assertIn(event_type, event_types)
+
+    def test_cancel_state_closed_cancelled_with_retained_effect(self):
+        folder, _ = self.run_demo()
+        runtime = Runtime(str(folder / "cancel" / "runtime.sqlite"), ExpensePolicy(),
+                          self.intervention_demo.intervention_grants())
+        work = runtime.get_work("cancel")
+        self.assertEqual((work["status"], work["outcome"]), ("closed", "cancelled"))
+        acknowledged = work["completion"]["acknowledged_operations"]
+        self.assertEqual(len(acknowledged), 1)
+        self.assertTrue(acknowledged[0]["external_id"])
+        disposition = next(d for d in work["completion"]["operation_dispositions"]
+                           if d["operation_id"] == acknowledged[0]["operation_id"])
+        self.assertEqual(disposition["status"], "confirmed_succeeded")
+        self.assertEqual(len(runtime.get_operation(
+            acknowledged[0]["operation_id"])["attempts"]), 1)
+        self.assertEqual(accepted_in_store(folder / "cancel" / "oa.sqlite"), 1)
+
+    def test_migration_state_pinned_demo2_same_operation(self):
+        folder, _ = self.run_demo()
+        runtime = self.intervention_demo.registry_runtime(
+            str(folder / "migrate" / "runtime.sqlite"))
+        work = runtime.get_work("migrate")
+        self.assertEqual((work["contract"]["policy_version"], work["contract"]["revision"]),
+                         ("demo-2", 2))
+        operations = operation_bodies(folder / "migrate" / "runtime.sqlite")
+        self.assertEqual([op["status"] for op in operations], ["confirmed_succeeded"])
+        self.assertEqual(operations[0]["contract_revision"], 2)
+        self.assertEqual(len(operations[0]["attempts"]), 1)
+        self.assertIn("PolicyMigrated",
+                      [event["type"] for event in runtime.events("migrate")])
+        bare = Runtime(str(folder / "migrate" / "runtime.sqlite"), ExpensePolicy(),
+                       self.intervention_demo.intervention_grants())
+        with self.assertRaises(CommandError):
+            bare.get_work("migrate")
+
+    def test_demo_output_pins_key_markers(self):
+        _, out = self.run_demo()
+        for marker in ("OWNERSHIP_TRANSFERRED", "OUTCOME_UNRESOLVED",
+                       "CANCEL_ACKNOWLEDGEMENT_MISMATCH", "POLICY_MIGRATED",
+                       "accepted applications: 3 (one per store)"):
+            self.assertIn(marker, out)
+        inspect_lines = [line.strip() for line in out.splitlines() if "inspect --db" in line]
+        self.assertEqual(len(inspect_lines), 3)
+        self.assertTrue(inspect_lines[2].endswith("--policy-versions demo-1,demo-2"),
+                        inspect_lines[2])
+
+    def test_demo_runs_are_repeatable(self):
+        folder_a, out_a = self.run_demo()
+        folder_b, out_b = self.run_demo()
+        self.assertIn("accepted applications: 3 (one per store)", out_a)
+        self.assertIn("accepted applications: 3 (one per store)", out_b)
+        for folder in (folder_a, folder_b):
+            for scenario in ("transfer", "cancel", "migrate"):
+                self.assertEqual(accepted_in_store(folder / scenario / "oa.sqlite"), 1)
