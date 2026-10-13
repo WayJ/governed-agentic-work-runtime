@@ -23,16 +23,16 @@ python3 scripts/verify_install.py                 # fresh-venv install + demos o
 
 ## Protocol acceptance matrix (P01–P15)
 
-Definitions: [RFC-003 §9](RFC-003-runtime-protocol.md). All evidence tests are in `tests/test_runtime.py` (35 tests total).
+Definitions: [RFC-003 §9](RFC-003-runtime-protocol.md). All evidence tests are in `tests/test_runtime.py` (the 35 baseline tests; the parallel runtime wave may add more at integration).
 
 | Case | Injected condition | Status | Evidence |
 |---|---|---|---|
 | P01 | Same command arrives concurrently | covered | `test_duplicate_commands_concurrently_have_one_receipt` — 4 threads, identical receipts, exactly one `OperationPrepared` event |
 | P02 | Same command ID, changed parameters | covered | `test_changed_content_with_same_command_id_rejected` — `COMMAND_ID_REUSED` |
-| P03 | Two plan revisions from the same state version | covered | `test_conflicting_plan_revisions_use_compare_and_swap` — one accepted, one `STATE_VERSION_CONFLICT` |
+| P03 | Two plan revisions from the same state version | covered, with caveat | `test_conflicting_plan_revisions_use_compare_and_swap` — sequential two-command CAS baseline; genuinely concurrent plan revisions are not separately tested |
 | P04 | Receipt lost, command resent | covered, with caveat | `test_duplicate_commands_concurrently_have_one_receipt`, `test_rejected_command_replay_remains_rejected` — resend returns the original receipt; transport loss is simulated by re-invocation, not a dropped socket |
 | P05 | Same submission re-proposed under a new command ID | covered | `test_new_command_same_business_operation_reuses_identity` — same Operation identity; two dispatches → exactly 1 accepted OA application |
-| P06 | Crash between intent commit and dispatch | covered, with caveat | `test_prepared_intent_survives_restart` — recovery is exercised through a clean restart; real process deaths are injected for P07 and P15 |
+| P06 | Crash between intent commit and dispatch | partial | `test_prepared_intent_survives_restart` — recovery is exercised through a clean restart, not a crash injected at that exact point; real process deaths are injected for P07 and P15 |
 | P07 | External success, local result lost to a crash | covered | `test_actual_process_crash_after_external_commit` — worker subprocess exits 73 after the OA commit; recovery queries the same business key; still exactly 1 accepted application |
 | P08 | Approval arrives before the wait is registered | covered | `test_early_approval_and_duplicate_callback_do_not_lose_wakeup` — stored event triggers the wait; duplicate callback is a no-op |
 | P09 | Old-version approval and duplicate callbacks | covered | `test_conflicting_source_event_preserves_original` (`SOURCE_EVENT_CONFLICT`), `test_late_event_does_not_reopen_closed_work` |
@@ -43,7 +43,7 @@ Definitions: [RFC-003 §9](RFC-003-runtime-protocol.md). All evidence tests are 
 | P14 | Amount unknown / invoice set not closed | covered | `test_unknown_amount_blocks` (`APPLICABILITY_UNRESOLVED`), `test_empty_and_unsealed_invoice_sets_block` (E01 pending blocks submission) |
 | P15 | Evaluation process crashes after evidence adoption | covered | `test_verification_crash_rolls_back_adoption_and_evaluation`, `test_real_process_death_during_evidence_adoption` — real `os._exit(74)`; re-evaluation succeeds after restart |
 
-Net: **14 of 15 cases covered by named tests; P13 explicitly deferred.** Single-process recovery (restart, subprocess death) is real; "crash" never means an exception was caught and ignored.
+Net: **11 cases fully covered; P03 and P04 covered with caveats (sequential CAS baseline; simulated receipt loss); P06 partial (clean restart only); P13 explicitly deferred — 14 of 15 have named-test evidence.** Single-process recovery (restart, subprocess death) is real; "crash" never means an exception was caught and ignored.
 
 ## RFC-001 acceptance behaviors (R1–R7)
 
@@ -51,7 +51,7 @@ R1 restart/persistence — `test_prepared_intent_survives_restart`, `test_wait_e
 
 ## SOP example rules and review cases (E01–E08, T01–T12)
 
-The demonstration policy embodies rules E01–E08 from [RFC-002 §4](RFC-002-sop-authoring-and-binding.md) as executable checks (`work_runtime/policy.py`), including set-closedness (E01), per-invoice validity (E02), cross-work uniqueness via the external stand-in (E03, `test_external_uniqueness_across_works`), unknown-amount blocking (E04), over-limit approval (E05), content-bound confirmation (E06), and acceptance evidence before closure (E08). Of the review judgments T01–T12, the ones mirrored by named tests include T02/T07 (P14 tests), T05 (E05/confirmation invalidation tests), T09 (P10 test) and T10 (P07/P12 tests); the remaining judgments are still desk reasoning in [reference scenarios](reference-scenarios.md). The rule-card publication process itself (RFC-002 §6) is **not implemented**.
+The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-002-sop-authoring-and-binding.md) into executable checks (`work_runtime/policy.py`): set-closedness (E01), per-invoice validity (E02), cross-work uniqueness via the external stand-in (E03, `test_external_uniqueness_across_works`), unknown-amount blocking (E04), over-limit approval (E05), content-bound confirmation (E06), and acceptance evidence before closure (E08). E07 (original invoices must not be rewritten) is only **partially enforced**: the demo capability allowlist grants no invoice-write capability at all, so protected fields are excluded by construction rather than by an independently evaluated check. Of the review judgments T01–T12, the ones mirrored by named tests include T02/T07 (P14 tests), T05 (E05/confirmation invalidation tests), T09 (P10 test) and T10 (P07/P12 tests); the remaining judgments are still desk reasoning in [reference scenarios](reference-scenarios.md). The rule-card publication process itself (RFC-002 §6) is **not implemented**.
 
 ## Explicitly out of scope
 
