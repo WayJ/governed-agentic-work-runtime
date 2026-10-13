@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Dict, Optional, Protocol
 
+from .adapter_contract import receipt_is_valid, valid_contract
 from .policy import Policy, canonical, digest
 
 
@@ -22,6 +23,24 @@ class CommandError(ValueError):
 class Adapter(Protocol):
     def execute(self, key: str, document: dict, content_digest: str) -> dict: ...
     def lookup(self, key: str) -> Optional[dict]: ...
+
+
+_MISSING_CONTRACT = object()
+
+
+def _declared_contract(adapter: Adapter) -> Optional[object]:
+    """Only an absent descriptor keeps legacy adapters trusted.
+
+    A descriptor that is present but None or invalid is malformed, never
+    silently legacy.
+    """
+    descriptor = getattr(adapter, "contract", _MISSING_CONTRACT)
+    if descriptor is _MISSING_CONTRACT:
+        return None
+    if not valid_contract(descriptor):
+        raise CommandError("Adapter contract descriptor is malformed: "
+                           + type(descriptor).__name__)
+    return descriptor
 
 
 class Runtime:
@@ -392,6 +411,13 @@ class Runtime:
                 self._save(db, work, "WaitExpired", {"count": count})
             return count
 
+    def _accepted_source(self) -> str:
+        source = self.policy.evidence_sources.get("accepted")
+        if not isinstance(source, str) or not source:
+            raise CommandError(
+                "Policy must configure a nonempty accepted evidence source for external effects")
+        return source
+
     def dispatch(self, operation_id: str, adapter: Adapter, fault: Optional[Callable] = None) -> dict:
         """Single coordinator only. Unknown outcomes must be reconciled, never dispatched again."""
         with self._transaction() as db:
@@ -412,6 +438,15 @@ class Runtime:
                 op["reason"] = "AUTHORITY_DENIED" if not blockers else "REQUIREMENT_UNSATISFIED"
                 self._save_op(db, op)
                 self._save(db, work, "DispatchHeld", {"operation_id": op["id"], "reason": op["reason"]})
+                return op
+            self._accepted_source()
+            contract = _declared_contract(adapter)
+            if contract is not None and op["capability"] not in contract.actions:
+                op["dispatch_state"] = "held"
+                op["reason"] = "ADAPTER_ACTION_UNSUPPORTED"
+                self._save_op(db, op)
+                self._save(db, work, "DispatchHeld",
+                           {"operation_id": op["id"], "reason": op["reason"]})
                 return op
             op["status"], op["dispatch_state"] = "dispatched", "in_flight"
             op["attempts"].append({"id": uuid.uuid4().hex, "status": "outcome_unknown"})
@@ -439,6 +474,7 @@ class Runtime:
         op = self.get_operation(operation_id)
         if op["status"] not in ("dispatched", "outcome_unknown"):
             return op
+        self._accepted_source()
         try:
             result = adapter.lookup(op["business_key"])
         except Exception as error:
@@ -464,25 +500,24 @@ class Runtime:
             if op["status"] in ("confirmed_succeeded", "confirmed_failed"):
                 return op
             work = self._work(db, op["work_id"])
-            if (not isinstance(result, dict) or result.get("digest") != op["document_digest"]
-                    or result.get("status") not in ("accepted", "rejected")
-                    or not isinstance(result.get("external_id"), str) or not result["external_id"]):
+            if not receipt_is_valid(result, op["document_digest"]):
                 if (op["status"] == "outcome_unknown" and op.get("reason") == "ADAPTER_RESULT_INVALID"
                         and work["status"] == "needs_attention"):
                     return op  # Idempotent recovery: the quarantine is already durable.
                 op["status"], op["reason"] = "outcome_unknown", "ADAPTER_RESULT_INVALID"
                 work["status"] = "needs_attention"
             else:
+                source = self._accepted_source()
                 op["status"] = "confirmed_succeeded" if result["status"] == "accepted" else "confirmed_failed"
                 op["dispatch_state"] = "finished"
                 op["external_id"] = result["external_id"]
                 op["attempts"][-1]["status"] = op["status"]
                 if result["status"] == "accepted":
-                    proof = {"id": uuid.uuid4().hex, "source": "oa", "event_id": op["id"],
+                    proof = {"id": uuid.uuid4().hex, "source": source, "event_id": op["id"],
                              "kind": "accepted", "status": "verified",
                              "data": {"digest": op["document_digest"], "external_id": result["external_id"]}}
                     db.execute("INSERT INTO evidence VALUES (?,?,?,?,?)",
-                               ("oa", op["id"], work["id"], digest(proof), canonical(proof)))
+                               (source, op["id"], work["id"], digest(proof), canonical(proof)))
                 else:
                     work["status"] = "needs_attention"
             self._save_op(db, op)

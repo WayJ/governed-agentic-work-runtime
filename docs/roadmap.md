@@ -20,6 +20,8 @@ The initial implementation provides this local slice. Publication and CI results
 - Demonstrate a second business domain and one harness integration through the same command protocol.
 - A new contributor can implement an adapter using documentation without modifying lifecycle internals.
 
+The S2 wave provides this as a local, test-gated slice: HMAC-signed evidence intake with per-source keys ([signed evidence](signed-evidence.md)), declared adapter contracts with a reusable conformance mixin ([adapter contract](adapter-contract.md)), and the content-publication domain with its no-credentials harness (`python3 -m work_runtime publish-demo`). "Trustworthy" still owes external review, real adapter experience and key-rotation/revocation semantics — none of which a local prototype can claim.
+
 ## 0.3 — Change and intervention
 
 - Implement cancellation, authority-aware responsibility transfer and compensation.
