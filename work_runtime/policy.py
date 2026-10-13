@@ -117,9 +117,8 @@ class ExpensePolicy:
         add("E04", document["id"], "applicable", known,
             "Amount and applicable limit must be known")
         over = known and document["amount"] > document["limit"]
-        applicable = "unknown" if not known else "applicable" if over else "not_applicable"
-        add("E05", document["id"], applicable, has("approval"),
-            "Over-limit submissions require approval of the current content")
+        add("E05", document["id"], self.approval_applicability(known, over),
+            has("approval"), "Over-limit submissions require approval of the current content")
         add("E06", document["id"], "applicable", has("confirmation"),
             "The requester must confirm the current content")
         add("E08", document["id"], "applicable", has("accepted"),
@@ -133,6 +132,31 @@ class ExpensePolicy:
                 (r["applicability"] in ("unknown", "conflict") or
                  (r["applicability"] == "applicable" and r["fulfillment"] != "satisfied"))]
 
+    def approval_applicability(self, known: bool, over: bool) -> str:
+        return "unknown" if not known else "applicable" if over else "not_applicable"
+
     def operation_key(self, capability: str, work: dict) -> str:
         return digest([self.id, capability, work["document"]["id"],
                        work["document_revision"]])
+
+
+class ExpensePolicyV2(ExpensePolicy):
+    """Illustrative stronger published policy: every known amount needs approval.
+
+    Same family, goal, capability and business-key function as demo-1; only
+    the approval rule is strengthened. This demonstrates explicit same-family
+    policy migration; it is not a real enterprise rule.
+    """
+
+    version = "demo-2"
+
+    def approval_applicability(self, known: bool, over: bool) -> str:
+        return "unknown" if not known else "applicable"
+
+    def validate_evidence(self, work: dict, candidate: dict) -> bool:
+        if candidate["kind"] == "approval":
+            data = candidate["data"]
+            return (set(data) == {"digest", "policy_version"}
+                    and isinstance(data["digest"], str)
+                    and data["policy_version"] == self.version)
+        return super().validate_evidence(work, candidate)
