@@ -35,6 +35,8 @@ Contributor adapter guide and independent guide-only agent rehearsal, static JSO
 | D19 | Parallel disjoint foundations then dependent harness and guide rehearsal | Authoring and adapter own separate files; combined demonstration consumes reviewed interfaces. | 2026-10-13 | [design](../specs/2026-10-13-s4-adoption-design.md) |
 | D20 | Continue sprints autonomously after actual merge/push/CI | User expressly requests continuous overnight advancement; routine choices recorded, only real external blockers escalated. | 2026-10-13 | [opening note](../../../.agents/notes/2026-10-13-S4-open.md) |
 
+| D22 | Ratify static-lint/schema and atomic file commit boundaries | Business scope separated from normative source, mandatory prohibitions allowed, bounded diagnostics, packaged single-source examples, real subprocess proof and no production crash flags. | 2026-10-13 | [ratified design](../specs/2026-10-13-s4-adoption-design.md) |
+
 ## Asset Disposition
 
 | asset | disposition | note | date | evidence |
