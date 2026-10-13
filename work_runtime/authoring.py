@@ -10,6 +10,8 @@ provenance and cannot confer policy authority (see docs/sop-authoring.md).
 import math
 from typing import Any, Dict, List
 
+from .policy import digest as _canonical_digest
+
 MAX_DEPTH = 64
 MAX_INTEGER = 2 ** 53 - 1
 
@@ -627,3 +629,22 @@ def lint_sop(value: Any) -> List[Dict[str, str]]:
     if not found:
         found = _lint_schema(value)
     return _finalize(found)
+
+
+def sop_digest(value: Any) -> str:
+    """Canonical SHA-256 content digest for a lint-clean rule card.
+
+    Raises ``ValueError`` with a bounded message (counts and pointers only,
+    never input values) when the value is not lint-clean. Reuses
+    ``policy.canonical``/``policy.digest`` only after the clean
+    preflight + schema gate: object key order never matters, any content
+    change always does. No JCS or cross-language float canonicalization
+    is claimed.
+    """
+    diagnostics = lint_sop(value)
+    if diagnostics:
+        first = diagnostics[0]
+        raise ValueError("SOP is not lint-clean: %d diagnostic(s); "
+                         "first: %s at %s" % (len(diagnostics), first["code"],
+                                              first["path"] or "<root>"))
+    return _canonical_digest(value)

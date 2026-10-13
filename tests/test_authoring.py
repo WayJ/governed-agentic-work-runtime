@@ -4,7 +4,8 @@ import copy
 import json
 import unittest
 
-from work_runtime.authoring import lint_sop
+from work_runtime.authoring import lint_sop, sop_digest
+from work_runtime.policy import digest as policy_digest
 
 
 def valid_card():
@@ -1241,6 +1242,94 @@ class RuleCycleTests(unittest.TestCase):
         self.assertEqual(result[0]["message"],
                          "rule dependency cycle component: 'C0000' "
                          "(+1199 more members)")
+
+
+
+def reorder_keys(value):
+    """Rebuild with reversed object key insertion order at every level."""
+    if type(value) is dict:
+        return {key: reorder_keys(value[key]) for key in reversed(list(value))}
+    if type(value) is list:
+        return [reorder_keys(item) for item in value]
+    return value
+
+
+class DigestTests(unittest.TestCase):
+    """sop_digest: canonical digest after a clean gate, bounded ValueError else."""
+
+    def test_clean_card_digest_is_sha256_hex(self):
+        digest = sop_digest(valid_card())
+        self.assertEqual(len(digest), 64)
+        self.assertEqual(digest, digest.lower())
+        int(digest, 16)
+
+    def test_digest_reuses_policy_canonical_digest(self):
+        card = valid_card()
+        self.assertEqual(sop_digest(card), policy_digest(card))
+
+    def test_object_key_order_neutrality(self):
+        card = valid_card()
+        self.assertEqual(sop_digest(card), sop_digest(reorder_keys(card)))
+
+    def test_any_mutation_changes_digest(self):
+        base = sop_digest(valid_card())
+        card = valid_card()
+        card["rules"][0]["requirement"] += " now"
+        self.assertNotEqual(sop_digest(card), base)
+        card = valid_card()
+        card["collections"][0]["allow_empty"] = True
+        self.assertNotEqual(sop_digest(card), base)
+        card = valid_card()
+        card["advice"].append("One more tip")
+        self.assertNotEqual(sop_digest(card), base)
+
+    def test_non_clean_input_raises_value_error(self):
+        broken = valid_card()
+        del broken["defaults"]
+        cyclic = {}
+        cyclic["self"] = cyclic
+        deep = 0
+        for _ in range(70):
+            deep = [deep]
+        hostile = [broken, 42, "card", None, cyclic, deep,
+                   float("inf"), {"k": "\ud800"}, {"rules": "x"}]
+        for value in hostile:
+            with self.subTest(value=type(value).__name__):
+                with self.assertRaises(ValueError):
+                    sop_digest(value)
+
+    def test_error_message_is_bounded_and_names_first_diagnostic(self):
+        card = valid_card()
+        del card["defaults"]
+        with self.assertRaises(ValueError) as caught:
+            sop_digest(card)
+        self.assertEqual(str(caught.exception),
+                         "SOP is not lint-clean: 1 diagnostic(s); "
+                         "first: MISSING_FIELD at <root>")
+
+    def test_error_message_uses_pointer_for_non_root(self):
+        card = valid_card()
+        card["rules"][0]["deadline"] = "expense.approve"
+        with self.assertRaises(ValueError) as caught:
+            sop_digest(card)
+        self.assertIn("first: UNKNOWN_REFERENCE at /rules/0/deadline",
+                      str(caught.exception))
+
+    def test_error_message_never_leaks_payload_values(self):
+        card = valid_card()
+        card["policy"]["goal"] = "SECRET-GOAL-TOKEN"
+        del card["advice"]
+        with self.assertRaises(ValueError) as caught:
+            sop_digest(card)
+        self.assertNotIn("SECRET-GOAL-TOKEN", str(caught.exception))
+        self.assertNotIn("Collect invoices", str(caught.exception))
+
+    def test_lint_never_raises_where_digest_raises(self):
+        cyclic = []
+        cyclic.append(cyclic)
+        for value in (cyclic, 42, {"rules": "x"}):
+            with self.subTest(value=type(value).__name__):
+                self.assertIsInstance(lint_sop(value), list)
 
 
 if __name__ == "__main__":
