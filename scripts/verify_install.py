@@ -16,7 +16,10 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
 5. Run `python -m work_runtime demo` outside the checkout and assert both the
    printed result and — independently of the printed text — that the demo's
    fake OA database contains exactly one accepted application.
-6. Run the `work-runtime demo` console entry point outside the checkout and
+6. Run `python -m work_runtime publish-demo` outside the checkout and assert
+   both the printed result and — independently of the printed text — that the
+   demo's publisher database contains exactly one publication.
+7. Run the `work-runtime demo` console entry point outside the checkout and
    assert the same printed result.
 
 Usage: python3 scripts/verify_install.py [--python INTERP] [--repo PATH] [--keep]
@@ -36,6 +39,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEMO_FINAL_LINE = "external applications created: 1"
+PUBLISH_FINAL_LINE = "published artifacts: 1"
 INSPECT_DB = re.compile(r'--db "([^"]+)"')
 # pkg-resources appears as a virtual entry on some Debian-derived pips.
 ALLOWED_PACKAGES = {"pip", "setuptools", "wheel", "pkg-resources", "governed-work-runtime"}
@@ -65,6 +69,15 @@ def count_accepted(oa_db):
     finally:
         db.close()
     return sum(1 for row in rows if row.get("status") == "accepted")
+
+
+def count_publications(publisher_db):
+    """Count published artifacts directly in the demo's publisher database."""
+    db = sqlite3.connect(str(publisher_db))
+    try:
+        return db.execute("SELECT COUNT(*) FROM publications").fetchone()[0]
+    finally:
+        db.close()
 
 
 def require(condition, message):
@@ -129,6 +142,21 @@ def main(argv=None):
                 % (oa_db, accepted))
         print("independent check: fake OA accepted applications = %d" % accepted)
 
+        print("=== module publish-demo outside the checkout ===")
+        module_publish = run([venv_python, "-m", "work_runtime", "publish-demo"],
+                             outside, show=True)
+        require(PUBLISH_FINAL_LINE in module_publish.stdout,
+                "module publish-demo output lacks %r" % PUBLISH_FINAL_LINE)
+        pub_match = INSPECT_DB.search(module_publish.stdout)
+        require(pub_match is not None,
+                "publish-demo printed no inspect --db path to locate its databases")
+        publisher_db = Path(pub_match.group(1)).parent / "publisher.sqlite"
+        publications = count_publications(publisher_db)
+        require(publications == 1,
+                "publisher database %s holds %d publications (expected exactly 1)"
+                % (publisher_db, publications))
+        print("independent check: published artifacts = %d" % publications)
+
         print("=== console demo outside the checkout ===")
         console_demo = run([console, "demo"], outside, show=True)
         require(DEMO_FINAL_LINE in console_demo.stdout,
@@ -137,7 +165,8 @@ def main(argv=None):
         print("=== PASS ===")
         print("fresh venv install; import origin inside the venv; no third-party runtime "
               "dependencies; module and console demos outside the checkout with exactly "
-              "one external application (%.1fs)" % (time.time() - started))
+              "one external application and one published artifact (%.1fs)"
+              % (time.time() - started))
         return 0
     finally:
         if args.keep:
