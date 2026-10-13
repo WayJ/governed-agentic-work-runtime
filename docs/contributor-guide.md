@@ -141,9 +141,116 @@ python3 -m unittest tests.test_audit_adapter -v
 
 The mixin then proves: your declared contract is a valid frozen `AdapterContract`; same-key replay returns the identical receipt with exactly one external effect; the same key with different content raises `ValueError` without a new effect; `lookup` returns the committed receipt and `None` for a missing key. Test your domain's own rules (uniqueness beyond key idempotency, corruption handling, restart) separately, the way [the file adapter's suite](file-adapter.md#verification) does.
 
+**Computing the content digest in your own tests.** Compute `content_digest` exactly the way the runtime does instead of inventing a hash:
+
+```python
+from work_runtime.policy import digest
+
+content_digest = digest(document)
+```
+
+Have the adapter itself recompute the digest from the document it is given and compare before committing (the reference `FilePublisher` does this before any I/O) — an arbitrary caller-supplied digest is never proof of content. The teaching adapter above skips this; the shortcut is listed among its deliberate omissions.
+
+**A fixture-base gotcha.** `AdapterConformanceMixin` defines raising stubs for all four hooks, and the mixin precedes your class in the MRO — so if you factor a shared fixture base class (natural for SQLite-backed domains), its `make_adapter` is shadowed by the mixin's stub unless the concrete test class overrides the hook itself. The example above overrides all four hooks in the concrete class; keep that shape, and do not modify the mixin. An independent guide-only rehearsal hit exactly this and lost a cycle to five conformance errors before overriding `make_adapter` in the concrete class.
+
+**Running tests that live outside `tests/`.** The commands above assume placement under `tests/`. For a module committed elsewhere (for example `examples/rehearsal/`), the invocation matters — each line below is the verified behavior on Python 3.9 for a directory *without* `__init__.py`:
+
+- Direct run works as-is, because the file's own directory is first on `sys.path` (so sibling imports like `import queue_adapter` resolve): `python3 examples/rehearsal/test_queue_adapter.py`
+- Plain discovery also works without `__init__.py` — the start directory is treated as the top level and test modules are imported by top-level name: `python3 -m unittest discover -s examples/rehearsal` (imports of `tests.*` then rely on the repository root being the working directory)
+- The dotted-module form needs a one-line shim in the test file (`sys.path.insert(0, str(Path(__file__).resolve().parent))`) before sibling imports, otherwise `ModuleNotFoundError`; with the shim: `python3 -m unittest examples.rehearsal.test_queue_adapter -v`
+- Discovery against the repository top level requires the start directory to be an *importable package*: `python3 -m unittest discover -s examples/rehearsal -t .` fails with `ImportError: Start directory is not importable` unless `examples/rehearsal/__init__.py` exists (and even then, test modules are imported under their dotted name, so sibling imports still need the shim or package-relative imports)
+
+This is why placement under `tests/` — where the repository's own discovery command just works — is the recommended default.
+
 ### How the Runtime treats your adapter
 
 A declared `contract` is checked at dispatch: an operation whose capability is not in `actions` is held with `ADAPTER_ACTION_UNSUPPORTED` and zero external calls. When your `execute` raises — including a simulated response loss — the attempt is recorded as `outcome_unknown`, and reconciliation calls `lookup` with the original business key. An invalid result from `lookup`/`execute` quarantines the operation (`needs_attention`) rather than guessing. Do not build retry storms into adapters; the single coordinator resolves uncertainty by query.
+
+### Drive one content.publish dispatch (complete positive recipe)
+
+The narrative above tells you how the Runtime treats your adapter; this recipe is the complete, copy-paste path to a *positive* dispatch through the real engine against your adapter — candidate verification, propose, dispatch, completion — using only public interfaces. It is self-contained: nothing needs to be read from engine internals. Save it as a script and run it from the repository root (`python3 recipe.py`); it creates fresh temporary stores, commits exactly one real hash-named artifact through the reference `FilePublisher`, and closes the work `succeeded`.
+
+```python
+import secrets
+import tempfile
+import uuid
+from pathlib import Path
+
+from work_runtime.file_adapter import FilePublisher
+from work_runtime.ingress import SignedEvidenceGateway, sign_evidence
+from work_runtime.policy import digest
+from work_runtime.publishing import PublishingPolicy
+from work_runtime.runtime import Runtime
+
+NOW = 1234567890  # fixed clock keeps the recipe deterministic
+
+grants = {"agent": {"work.manage", "content.publish"},
+          "reviewer": {"evidence.write"}, "author": {"evidence.write"}}
+folder = Path(tempfile.mkdtemp(prefix="publish-recipe-"))
+runtime = Runtime(str(folder / "runtime.sqlite"), PublishingPolicy(), grants)
+reviewer_key, author_key = secrets.token_bytes(32), secrets.token_bytes(32)  # never printed or persisted
+gateway = SignedEvidenceGateway(runtime, {"reviewer": reviewer_key,
+                                          "author": author_key},
+                                clock=lambda: NOW)
+work_id = "article-1"
+
+
+def send(kind, payload=None, command_id=None):
+    version = None if kind in ("create_work", "record_evidence") \
+        else runtime.get_work(work_id)["state_version"]
+    return runtime.command("agent", command_id or uuid.uuid4().hex, work_id,
+                           kind, payload, version)
+
+
+def signed(source, secret, kind, value):
+    return sign_evidence(secret, {
+        "source": source, "command_id": uuid.uuid4().hex, "work_id": work_id,
+        "event_id": uuid.uuid4().hex, "kind": kind,
+        "data": {"digest": value}, "issued_at": NOW})
+
+
+# requires_review=False: C02 (reviewer approval) is not applicable; the
+# author's confirmation (C03) is still required, and C04 needs the adapter
+# receipt before completion. A signing key authenticates a source within
+# this local boundary - it confers no approval authority.
+document = {"id": "ART-1", "title": "Recipe", "body": "One real file.",
+            "requires_review": False}
+send("create_work", {"document": document})
+policy = runtime.policy
+send("bind_contract", {"policy_id": policy.id, "policy_version": policy.version,
+                       "goal": policy.goal})
+send("revise_plan", {"steps": ["draft", "confirm", "publish"],
+                     "open_requirements": [], "replan_when": []})
+
+current = runtime.get_work(work_id)["document_digest"]
+receipt = gateway.record(signed("author", author_key, "confirmation", current))
+assert receipt["evidence_status"] == "pending_verification"
+runtime.verify_pending(work_id)  # candidates become verified here
+
+work = runtime.get_work(work_id)
+intent = send("propose_action", {"capability": "content.publish",
+                                 "document_digest": work["document_digest"],
+                                 "contract_revision": work["contract"]["revision"],
+                                 "plan_revision": work["plan_revision"]})
+assert intent["decision"] == "accepted"
+
+publisher = FilePublisher(str(folder / "publisher"))
+operation = runtime.dispatch(intent["operation_id"], publisher)
+assert operation["status"] == "confirmed_succeeded"
+
+completion = send("request_completion", command_id="complete")
+assert completion["decision"] == "accepted"
+work = runtime.get_work(work_id)
+assert (work["status"], work["outcome"]) == ("closed", "succeeded")
+artifacts = sorted(Path(folder, "publisher").glob("*.json"))
+assert len(artifacts) == 1, artifacts
+assert digest(document) == operation["document_digest"]
+print("recipe ok: one committed artifact", artifacts[0].name)
+```
+
+What the recipe exercises: exact `bind_contract` version fields (`policy_id`/`policy_version`/`goal`) and exact `propose_action` fields; signed evidence stays a **candidate** (`pending_verification`) until `verify_pending` adopts it; dispatch through the declared contract to `confirmed_succeeded`; the dispatch resolution itself writes the `accepted` proof that lets `request_completion` close the work. Swap `FilePublisher` for your own adapter to run the identical path against your effect — the `adoption-demo` (Part C) drives the same shape with `requires_review=True` plus a lost response.
+
+Boundaries, unchanged: the signing keys are fresh random bytes per run and are never printed or persisted — they authenticate evidence sources inside this trusted-local boundary and confer no approval authority; choosing `requires_review=False` only makes the review rule (C02) *not applicable*, the author confirmation (C03) is still enforced, and no linted rule card is involved anywhere; `FilePublisher`'s platform limits (trusted local directory, no power-loss or distributed exactly-once guarantee) apply to the artifact this recipe commits.
 
 ## Part B — author an SOP rule card
 

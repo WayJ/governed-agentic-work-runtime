@@ -197,3 +197,53 @@ The public guide-only rehearsal (sprint Task 6) runs in an isolated branch off
 and does not disturb it. Corrected tip for final integration: this single
 docs-only commit on top of `bfbd29b` (SHA reported in the worker_done
 message; `git log --oneline -1`).
+
+## Addendum 2 — 2026-10-14: contributor-guide improvements from the independent rehearsal (docs-only)
+
+Source: guide-only rehearsal report `2026-10-13-S4-contributor-rehearsal.md`
+(worktree `s4-contributor-rehearsal`, task 84dadab2d8d5; 14 tests reproduced
+from public docs alone) — findings 1–4 addressed in
+`docs/contributor-guide.md` only:
+
+1. **Digest guidance (finding 1):** Part A now documents
+   `from work_runtime.policy import digest` for adapter tests and states that
+   an adapter should recompute the digest from the document it is given and
+   compare before committing — an arbitrary caller-supplied digest is never
+   proof of content (the teaching adapter's omission stays listed).
+2. **Positive content.publish recipe (finding 2):** new Part A subsection
+   "Drive one content.publish dispatch (complete positive recipe)" — a
+   self-contained script using only public `Runtime`/`PublishingPolicy`/
+   `SignedEvidenceGateway`/`sign_evidence`/`FilePublisher`/`policy.digest`,
+   fresh `secrets.token_bytes(32)` keys never printed or persisted, exact
+   bind_contract/propose_action fields, candidate → verify_pending → propose
+   → dispatch → confirmed_succeeded → request_completion → closed/succeeded
+   with exactly one hash-named artifact. Uses `requires_review=False` and
+   explains C02 not-applicable / C03 still enforced / no approval authority;
+   platform limits of FilePublisher restated. **Validated twice in a
+   disposable scratch** (`/tmp/recipe-check`, PYTHONPATH to this checkout):
+   first as drafted, then re-extracted verbatim from the committed guide text
+   (3473 bytes) — both runs: `recipe ok: one committed artifact
+   7f1a0cea6813790e3698f94c9dd5705207e5e33792274a2db124f8dc24b7c897.json`,
+   work closed/succeeded.
+3. **Out-of-tests/ invocation (finding 3):** Part A now documents the four
+   verified behaviors for a directory without `__init__.py` (Python 3.9,
+   pinned in `/tmp/uu-check` before writing): direct run and plain
+   `discover -s examples/rehearsal` work (top-level-name imports);
+   dotted-module needs a one-line sys.path shim for sibling imports
+   (verified failing `ModuleNotFoundError: No module named 'sample_adapter'`
+   without it, OK with it); `discover -s examples/rehearsal -t .` fails
+   `ImportError: Start directory is not importable` without `__init__.py`
+   (and with it, dotted-name imports still need the shim). The guide does
+   NOT claim discovery is impossible without `__init__.py`.
+4. **Mixin stub-shadowing (finding 4):** Part A notes the mixin's raising
+   stubs precede a fixture base in the MRO and the concrete class must
+   override all four hooks (the rehearsal's five-error cycle is cited);
+   do not modify the mixin.
+
+Preserved: agent-rehearsal ≠ external human feedback and teaching-adapter ≠
+reference concurrency/power-loss boundaries (untouched "What we do not
+claim" section, boundaries restated in the recipe); the precise installed
+entry-point coverage from commit 6dd5d30 untouched (Part C sentence
+unchanged). No product, test, rehearsal or master files edited; docs-only
+reversible delta, so no 512-test rerun (docs gate re-run green below; suite
+state 512 OK unchanged from 6dd5d30's base).
