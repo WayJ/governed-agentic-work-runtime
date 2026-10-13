@@ -130,8 +130,8 @@ either direction.
 
 The published example family demonstrates this: `ExpensePolicy`
 (`demo-1`) requires approval only over limit, while
-`work_runtime.policy.ExpamplePolicyV2`... `ExpensePolicyV2` (`demo-2`,
-same id/goal/capability/business key) requires version-bound approval
+`work_runtime.policy.ExpensePolicyV2` (`demo-2`, same
+id/goal/capability/business key) requires version-bound approval
 (`digest` + `policy_version: demo-2`) for **every** known amount.
 Migrating a low-amount Work from `demo-1` to `demo-2` therefore turns a
 previously satisfied submission back into a blocked one until new-shape
