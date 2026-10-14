@@ -849,7 +849,11 @@
       var index = TABS.indexOf(state.activeTab);
       index = (index + (event.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length;
       activateTab(TABS[index]);
-      var tabButton = tablist.querySelector('[data-tab="' + TABS[index] + '"]');
+      /* activateTab rebuilt the detail body, so the tablist in this closure
+         is detached. Focus the newly selected tab in the LIVE document, or
+         activeElement falls back to body. */
+      var tabButton = document.querySelector(
+        '#detail-body .tabs [data-tab="' + TABS[index] + '"]');
       if (tabButton) { tabButton.focus(); }
     });
     body.appendChild(tablist);
@@ -906,6 +910,10 @@
         if (token !== state.refreshEpoch) { return; }
         var serialized = JSON.stringify(payload);
         state.listError = false;
+        /* The very first render must already see loadedOnce: rendering
+           before the flag flips shows the loading state forever on a stable
+           payload (the unchanged-JSON guard below then skips re-renders). */
+        state.loadedOnce = true;
         if (serialized !== state.worksJson) {
           state.works = payload.works || [];
           state.total = Number(payload.total || 0);
@@ -913,7 +921,6 @@
           renderListItems();  /* skipped when unchanged, to keep list focus */
           renderFilterOptions();
         }
-        state.loadedOnce = true;
         clearDisconnected();
       })
       .catch(function (error) {
