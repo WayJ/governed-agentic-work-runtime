@@ -23,6 +23,41 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND = "work_runtime.ui_server"
 BACKEND_PRESENT = importlib.util.find_spec(BACKEND) is not None
 
+# Fresh-interpreter probe for the port gate: exit 0 only when serve_ui exits 2
+# for the invalid port AND work_runtime.ui_server never enters sys.modules —
+# neither when the CLI surface is imported nor while serving is attempted.
+# Distinct nonzero exits name the violated property. A subprocess is required
+# because full-suite discovery imports the backend's own test modules (and with
+# them the backend) before this test runs; an in-process sys.modules check
+# would observe that discovery history, not the CLI's import behavior.
+PORT_GATE_PROBE = """
+import io
+import sys
+from contextlib import redirect_stderr
+
+import work_runtime.cli
+
+if "work_runtime.ui_server" in sys.modules:
+    sys.exit(10)
+
+from work_runtime.ui_demo import serve_ui
+
+if "work_runtime.ui_server" in sys.modules:
+    sys.exit(10)
+
+code = None
+try:
+    with redirect_stderr(io.StringIO()):
+        serve_ui(sys.argv[1], int(sys.argv[2]))
+except SystemExit as error:
+    code = error.code
+
+if "work_runtime.ui_server" in sys.modules:
+    sys.exit(11)
+
+sys.exit(0 if code == 2 else 12)
+"""
+
 
 def first_line(text):
     return text.splitlines()[0] if text.splitlines() else ""
@@ -89,9 +124,25 @@ class StartupValidationTests(unittest.TestCase):
         return message
 
     def test_port_out_of_range_exits_2_before_any_backend_import(self):
+        # In-process: an invalid port is itself a bounded exit-2 startup error.
         for port in (-1, 70000):
             self.assert_startup_error(str(Path(self.parent) / "runtime.sqlite"), port)
-        self.assertNotIn(BACKEND, sys.modules)
+        # Order proof in a fresh interpreter (see PORT_GATE_PROBE): even with
+        # the backend installed, the port gate must exit 2 before any backend
+        # import — an eager or misordered import fails the probe.
+        db = Path(self.parent) / "runtime.sqlite"
+        db.write_bytes(b"")  # an existing file, so only the port can fail
+        for port in (-1, 70000):
+            result = subprocess.run(
+                [sys.executable, "-c", PORT_GATE_PROBE, str(db), str(port)],
+                cwd=str(REPO_ROOT), capture_output=True, text=True)
+            self.assertEqual(
+                result.returncode, 0,
+                "invalid port %r: probe exit %d (10 eager CLI import, "
+                "11 backend imported despite the invalid port, 12 wrong "
+                "exit code); stderr tail: %s"
+                % (port, result.returncode, result.stderr[-400:]))
+            self.assertNotIn("Traceback", result.stderr)
 
     def test_missing_database_exits_2(self):
         missing = str(Path(self.parent) / "nope.sqlite")

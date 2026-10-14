@@ -154,3 +154,65 @@ crash in the status filter, poll-driven list focus loss, silent API-error
 swallowing, stuck loading list on persistent `/api/works` failure, events
 re-render on unchanged poll. Fixes verified by `node --check`, the invariant
 scan and the green suite; DOM-level verification remains integration's.
+
+## Addendum — original-owner test correction (2026-10-14, dispatch task_2b6a49251ada)
+
+Integration's assembled carrier `dd4b00e` (60311fb + fad5e01 + 138d6b4) found
+`Ran 602 tests ... FAILED (failures=5, skipped=1)` with installed real-UI HTTP
+PASS. Owned scope corrected here (base `138d6b4`, production files untouched):
+`tests/test_ui_cli.py` and this report only.
+
+**Root cause (observed in a disposable scratch extracted from `dd4b00e` via
+`git archive`, no checkout mutation):** my
+`test_port_out_of_range_exits_2_before_any_backend_import` ended with an
+in-process `assertNotIn("work_runtime.ui_server", sys.modules)`. Unittest
+discovery imports every test module before running any test, and the backend's
+`tests/test_ui_server.py` imports the backend at module level — so in the
+assembled suite the assertion observed global discovery history, not the CLI's
+import behavior (the test passed alone — `Ran 14 tests ... OK (skipped=1)` —
+and failed only in full discovery). The remaining 4 of the 5 failures are the
+backend owner's `test_static_assets_bounded_404_without_files` subtests
+(`/`, `/app.js`, `/app.css`), whose fixture asserts `web/` does not exist —
+an isolation assumption my shipped assets invalidate in assembled conditions;
+that file is not mine and was preserved unchanged (routed to the coordinator).
+
+**Correction:** the in-process global assertion is replaced by a
+fresh-subprocess probe (`PORT_GATE_PROBE`) that imports the CLI surface, calls
+`serve_ui` with the invalid port against an existing file, and exits 0 only
+when the call exits 2 AND the backend never enters the child's `sys.modules` —
+checked both after the module imports and after the call. Distinct probe exits
+name the violated property (10 eager CLI import, 11 backend imported despite
+the invalid port, 12 wrong exit code). The in-process bounded exit-2 loop is
+kept unchanged; the missing-db startup assertion was not broadened; no CLI
+product code changed.
+
+**Evidence (observed verbatim):**
+
+- RED, old test, assembled discovery:
+  `AssertionError: 'work_runtime.ui_server' unexpectedly found in {...}` —
+  part of `Ran 602 tests ... FAILED (failures=5, skipped=1)`.
+- Mutation RED, corrected test, disposable assembled scratches (destroyed
+  after): eager `import work_runtime.ui_server` at `cli.py` module top →
+  `AssertionError: 10 != 0 : invalid port -1: probe exit 10`; import moved
+  before the port gate in `serve_ui` →
+  `AssertionError: 11 != 0 : invalid port -1: probe exit 11`. Both
+  `FAILED (failures=1)`. The eager-import mutation is also detectable in the
+  isolated checkout (the child's `import work_runtime.cli` raises ImportError
+  → nonzero exit + traceback); the order mutation is only observable with the
+  backend installed, hence demonstrated in the assembled context.
+- GREEN, isolated checkout (backend absent): `tests.test_ui_cli` →
+  `Ran 14 tests ... OK`; full suite → `Ran 539 tests ... OK`.
+- GREEN, assembled scratch with the corrected file: `tests.test_ui_cli` →
+  `Ran 14 tests ... OK (skipped=1)` (the skip is the backend-present guard on
+  `AbsentBackendTests` — skipped is not tested, and it is counted here); full
+  discovery → `Ran 602 tests ... FAILED (failures=4, skipped=1)` where the 4
+  failures are exclusively the backend-owner subtests named above. My test
+  passes in both contexts and in discovery order.
+
+**Counts, exactly:** isolated suite 539 run / 0 failed / 0 skipped; assembled
+suite 602 run / 4 failed (all backend-owner) / 1 skipped (my absent-backend
+guard, correctly inactive with the backend installed). Corrected test commit:
+`33af1ca` (`test(gui): subprocess-isolated port-gate import proof
+(order-independent)`) on `WayJ/s5-browser-interface` after base `138d6b4`,
+followed only by the report-addendum commits carrying this note (branch tip
+at correction time; the exact final hash travels in the dispatch message).
