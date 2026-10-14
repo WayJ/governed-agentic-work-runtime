@@ -20,6 +20,7 @@ class AdapterContract:
     retention: str
     lookup_consistency: str
     uniqueness: Tuple[str, ...]
+    supports_action_context: bool = False
 
     def __post_init__(self):
         _check_invariants(self)
@@ -44,6 +45,8 @@ def _check_invariants(contract: "AdapterContract") -> None:
         raise ValueError("every uniqueness entry must be a nonempty string")
     # An empty uniqueness tuple is valid: it asserts no additional uniqueness
     # promise beyond idempotent replay of the same key.
+    if not isinstance(contract.supports_action_context, bool):
+        raise ValueError("supports_action_context must be a bool")
 
 
 def valid_contract(value: object) -> bool:
