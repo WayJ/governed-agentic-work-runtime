@@ -1,0 +1,35 @@
+# S6 developer website — draft, before implementation
+
+## Intent
+
+User asks for a website like other open-source projects to introduce and showcase the project to developers. Make the value clear in a short visit and offer a verified path from discovery to running a demo and contributing. User continuous authorization permits master to settle routine design choices; existing Orca Claude Code/TDD/integration ownership remains. This draft needs an independent bounded builder check before S6 ready/start/code. S5 actual publication/CI must finish first.
+
+## Site structure and copy
+
+Use project identity Governed Work Runtime (current repository title), with concise English default `/index.html` and a complete Chinese `/zh/index.html`; explicit language links work without JavaScript. Browser language may suggest Chinese, never hide the default entry. Do not copy Cursor wordmarks/names/pricing/download claims or invent a new product identity from an unrelated user file.
+
+Sections in one readable landing page:
+1. Compact navigation: project wordmark, Why, How it works, Demo, Start, Docs, GitHub; keyboard skip-to-content and language switch.
+2. Hero: existing promise “Let agents plan. Make every business action accountable.” Concise explanation of durable work beyond model sessions. Primary Run the demo scrolls to quick start; secondary GitHub links to actual repository. Status local reference prototype/pre-alpha visibly disclosed.
+3. Problem/value: transient sessions and lost external responses; persisted commands/evidence/waits/logical operations; policies decide admission and evidence establishes completion. Avoid overselling autonomous correctness.
+4. Architecture: accessible HTML or repo-native SVG diagram, proposer → version-bound command → policy gate → durable operation → adapter/effect → receipt/evidence. Rejected decisions/blockers and query recovery named plainly; static visual has text equivalent.
+5. Interactive deterministic recovery story: step through actual expense demo stages (blocked E05, durable wait, verified approval, external commit then response lost/process death, restart same-key query, succeeded with one effect). Label prominently as an illustrated sample, not a running Python engine or live agent. Use verified text/fixtures; render data as text and keyboard-operable controls. No fictional thinking/grep actions. Content visible sequentially with JS disabled; JS only enhances progression.
+6. GUI showcase: real screenshot of five-work local ui-demo plus selected uncertainty/cancellation details, responsive images and meaningful alt text, clearly labeled sample. Show exact `python3 -m work_runtime ui-demo` command. Public website does not connect to user's local UI/database.
+7. Quick start: actual git clone/cd/python demo commands, Python>=3.9 and no credentials/runtime deps. Optional publishing/intervention/adoption/ui-demo commands and link guide/RFC/coverage. Copy buttons copy exact visible text and announce success/failure; selectable text remains fallback when clipboard denied/insecure preview/noJS.
+8. Contribution/footer: adapter guide, rule-card guide, issues/contributing/license, actual Apache-2.0 links and honest open roadmap. No invented testimonials/customer logos/download numbers/benchmark/star counts. No signup, telemetry, analytics, tracking or backend API.
+
+## Visual system
+
+Follow actual saved DESIGN.md and main AGENTS UI section (main may be ahead of this planning checkout until sync). Master choices: warmcream canvas#f7f7f4, ink#26251e, scarceorange#f54e00 CTA, whitecards/hairlines/no shadows. CentralCSSvars for colors/4pxspacing/radii/type. Displayweight400, 72pxhero desktop/32pxmobile adaptedforChineselegibility; contentcap~1200px, 80pxsectiondesktop with smaller narrowspacing. 8pxcontrols/12pxcards. Accessible focus and actualcontrast checks override reference's unverified accessibility labels. No licensedCursorGothic bundle; use system sans/Chinesefallback and locallyavailableJetBrainsMono orsystemmonospace, noCDNfonts. Timelinepastels only if meaningful actualbusinessdemo stage mapping is documented; neutralsemantic states otherwise. No fake agent stages.
+
+## Files, technology and deployment
+
+Static HTML/CSS/JS under `website/`: index.html, zh/index.html, assets/styles.css, assets/site.js and assets/gui-*.png/webp; optional assets/architecture.svg. No runtime dependencies/buildframework/npm requirement. Localpreview `python3 -m http.server --directory website` for site only, not productionruntime. Paths relative to work under `/governed-agentic-work-runtime/` and nestedChinese path; assets and same-page anchors must not assume originroot. Do not serve repositoryroot or package siteassets inside work_runtime. Links to docs point to actual GitHub main docs; userbackendUI remains separate.
+
+Publish `website/` via dedicated `.github/workflows/pages.yml` following [official Pages custom workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages) and [official static starter](https://github.com/actions/starter-workflows/blob/main/pages/static.yml). Existing repository is public, has_pages=false and homepage=null at2026-10-14 planning check. Target initialURL `https://wayj.github.io/governed-agentic-work-runtime/` is a planned target, NOT published yet. Integration owns Pages setup via authorizedaccount ifpermitted, workflow/deployment/actualHTTPverification and optionalrepohomepage setting. No customdomain/DNS changes absentuserdomain. If permissionrefused, preservecompletebuild/preview and reportexactneededexternalaction; don'tswitchpaidhosts orclaimdeployment.
+
+## Ownership and proof
+
+Website frontendowner: staticpages/assets/content, targeted behavioral browser regression artifact/ownplan/report. Deliveryowner: scripts/check_site.py with stdlib HTMLParser/link+asset+basepath verification, meaningful unittest for checkerbehavior, Pagesworkflow, docs/website.md/readme siteentry/ownplan/report. Disjoint ownership; docs claims keep actualdeployment pendinguntilverified. All behaviorchanges meaningfulobservedTDD; visualonly screenshot/computedstyleevidence. Independentintegration reviewscopyagainstactualdemos, licenses/assetsprivacy, desktop/narrow390/320/Chinese/noJS/navigation/clipboardfailure/recovery controls/contrast, actualrepository-subpath serving, core603+14 regressions/demos/installUI unchanged. Never use sourcekeyword-onlychecks toclaimvisualbehavior.
+
+Independentacceptall E6DoD beforemainmerge, ordinarypush/actualCI atfinalSHA then actualPagesdeploymentHTTPSroute+asset+language checks and reportedpublicURL. Executeintegration fromseparatecontrolworktree: NEVERdeleteitsowncarrier/session beforeworker_done (S5recoverylesson). S5scopealreadyaccepted remainsunchanged; GUIrestylingtoDESIGN is a separatesubsequenttask, not secretlybundled websiteenginechanges.
