@@ -81,7 +81,15 @@ class _PageScan(HTMLParser):
         if tag in ASSET_ATTRS:
             url = data.get(ASSET_ATTRS[tag])
             if url:
-                self.assets.append((url, line, tag + " " + ASSET_ATTRS[tag]))
+                if tag == "link":
+                    # Only stylesheet/icon links are assets; rel=canonical,
+                    # rel=alternate and similar metadata links may point
+                    # anywhere and are not subpage asset requests.
+                    rel_tokens = set((data.get("rel") or "").lower().split())
+                    if not rel_tokens & {"stylesheet", "icon"}:
+                        url = None
+                if url:
+                    self.assets.append((url, line, tag + " " + ASSET_ATTRS[tag]))
         if tag in SRCSET_TAGS:
             srcset = data.get("srcset")
             if srcset:

@@ -195,6 +195,18 @@ class CheckSiteTests(unittest.TestCase):
         self.assertEqual(len(matches), 3)
         self.assertEqual({m.line for m in matches}, {2, 3, 5})
 
+    def test_non_asset_link_rels_ignored(self):
+        base_site(self.root, index=(
+            '<html lang="en"><head>\n'
+            '<link rel="canonical" href="https://wayj.github.io/governed-agentic-work-runtime/">\n'
+            '<link rel="alternate" hreflang="zh" href="zh/index.html">\n'
+            '<link rel="stylesheet" href="assets/styles.css">\n'
+            '<script src="assets/site.js" defer></script>\n'
+            "</head><body>\n"
+            '<a href="zh/index.html">Chinese</a>\n'
+            "</body></html>\n"))
+        self.assertEqual([f for f in self.scan() if f.kind == "external-asset"], [])
+
     def test_missing_img_alt(self):
         base_site(self.root, index=index_html('<img src="assets/gui.png">\n'))
         matches = [f for f in self.scan() if f.kind == "missing-alt"]
