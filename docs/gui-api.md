@@ -73,10 +73,13 @@ that to startup exit 2. Route whitelist, nothing else:
   `localhost` (case-insensitive) with the actual bound port (an authority
   without a port means the HTTP default 80). Anything else — foreign host,
   wrong port, duplicate, missing — answers `403 BAD_HOST`.
-- **Origin**: optional; when present, exactly one, equal to
-  `http://127.0.0.1:<port>` or `http://localhost:<port>` (default-port-80
-  normalization; scheme must be `http`; no path, userinfo, query or fragment).
-  Foreign, `null`, duplicated or malformed origins answer `403 BAD_ORIGIN`.
+- **Origin**: optional; when present, exactly one, and it must equal the
+  request's **own** local origin — the same alias (`127.0.0.1` or `localhost`)
+  and the same port the validated `Host` names (default-port-80 normalization
+  applies to both sides; scheme must be `http`; no path, userinfo, query or
+  fragment). The *other* loopback alias with the right port is still a
+  different origin: foreign, `null`, duplicated, cross-alias or malformed
+  origins all answer `403 BAD_ORIGIN`.
 - **Targets**: origin-form only. Absolute-form, authority-form and asterisk
   targets and any path outside the whitelist (including percent-encoded
   traversal) answer `404 UNKNOWN_ROUTE`. There is no directory listing and no
