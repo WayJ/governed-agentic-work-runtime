@@ -2,6 +2,7 @@ import argparse
 import json
 
 from .adoption_demo import run_adoption_demo, run_lint_sop
+from .compensation_demo import run_compensation_demo
 from .demo import demo_grants, run_demo, run_worker
 from .intervention_demo import run_intervention_demo
 from .policy import ExpensePolicy, ExpensePolicyV2
@@ -59,6 +60,11 @@ def main(argv=None):
         help="Run the evidence-revocation demonstration (hold, retained "
              "effects, closed-work correction)")
     revocation.add_argument("--directory", help="Parent directory for a fresh demo folder")
+    compensation = sub.add_parser(
+        "compensation-demo",
+        help="Run the expense-compensation demonstration (real crash "
+             "withdrawal, retained history, refusal-not-reversal)")
+    compensation.add_argument("--directory", help="Parent directory for a fresh demo folder")
     lint = sub.add_parser("lint-sop",
                           help="Lint a static SOP rule-card JSON file "
                                "(exit 0 clean / 1 diagnostics / 2 file error)")
@@ -101,6 +107,8 @@ def main(argv=None):
         run_adoption_demo(args.directory)
     elif args.command == "revocation-demo":
         run_revocation_demo(args.directory)
+    elif args.command == "compensation-demo":
+        run_compensation_demo(args.directory)
     elif args.command == "lint-sop":
         raise SystemExit(run_lint_sop(args.path, args.as_json))
     elif args.command == "inspect":

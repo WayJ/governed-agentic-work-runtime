@@ -242,6 +242,24 @@ fields unchanged. The runtime-side binding check, the stored `adapter_result`
 and the `withdrawn` proof kind are specified in
 [runtime-boundaries.md](runtime-boundaries.md).
 
+Caller-side example — the process that dispatches a prepared withdrawal
+must itself hold the compensating capability; the shipped demo worker
+grants deliberately do not (`work_runtime.demo.demo_grants`), so a
+withdrawal-dispatching worker carries its own grants, as the compensation
+demo's crash child does:
+
+```python
+from work_runtime.compensation_demo import compensation_grants, withdrawal
+
+runtime = Runtime(db_path, ExpensePolicy(), compensation_grants())
+proposal = withdrawal(runtime, "expense", forward_operation_id,
+                      command_id="withdraw-once")
+assert proposal["decision"] == "accepted"
+resolved = runtime.dispatch(proposal["operation_id"], FakeOA(oa_path))
+# The opted-in FakeOA receives execute(key, document, digest,
+# action="expense.withdraw", compensates=<immutable link snapshot>).
+```
+
 ## Reusable conformance tests
 
 `tests/adapter_conformance.py` provides `AdapterConformanceMixin`, a plain

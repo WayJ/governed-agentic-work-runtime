@@ -213,10 +213,28 @@ publishing family. Semantics and boundaries:
 | contract field invariants incl. bool-only opt-in | `tests/test_adapter_contract.py` (`AdapterContractTests`) |
 | generic opt-in conformance replay (action from `contract.actions[0]`, skipped without the opt-in) | `tests/adapter_conformance.py` |
 
-The compensation demonstration harness, installed-verification stage and
-README entries are the separate W2 wave; the five AGENTS gates and the
-existing five demos are unchanged by this slice, and the read-only
-inspector renders compensations generically with zero writes (pinned).
+The S10 demo wave (W2) adds the no-credentials `compensation-demo` harness
+(`tests/test_compensation_demo.py`, 21 tests), each scenario on its own
+fresh stores with every count asserted against the scenario's SQLite
+directly: scenario A crashes a real grants-carrying child subprocess
+(exit 73) after the external withdrawal commits and recovers with exactly
+one attempt per effect (exact `compensates` snapshot, separate stable
+business keys recomputed locally, withdrawn-kind proof with the retained
+E08 truth, unchanged receipts/invoices, exact two-id closure ack with the
+compensation disposition); scenario B records the authoritative
+`ORIGINAL_ABSENT` refusal (`confirmed_failed`, single-id ack, zero
+effects, queryable refusing receipt). The shipped `worker` CLI boundary is
+pinned: its demo grants hold no `expense.withdraw`, so routing a
+withdrawal through it holds `AUTHORITY_DENIED` with zero attempts and zero
+effects. The five AGENTS gates, their command list and the existing five
+demos are unchanged — `compensation-demo` is explicit S10 validation, not
+a gate — and the read-only inspector renders compensations generically
+with zero writes (pinned). `scripts/verify_install.py` gains module and
+console `compensation-demo` stages outside the checkout; their independent
+proof recomputes business keys and fingerprints with the standard library
+only and rejects deleted withdrawal rows, wrong linked targets, swapped
+link digests, forged receipts, flipped proof kinds and refusal-store
+effects, each exercised by a named negative test.
 
 ## S9 coverage — accepted-evidence collision prevention and recovery
 

@@ -81,7 +81,11 @@ payloads) keeps `CANCELLATION_ACTIVE` exactly as before. Admission,
 authority, pairing and the immutable link snapshot are specified in
 [runtime-boundaries.md](runtime-boundaries.md#compensation-boundary-s10--expense-family-active-cancellation-window);
 a prepared compensation is never auto-cancelled by dispatch inside the
-window, and it blocks `finalize_cancel` until resolved (below).
+window, and it blocks `finalize_cancel` until resolved (below). The
+no-credentials `compensation-demo` command walks this end to end: a real
+grants-carrying worker crash after the withdrawal effect, one-attempt
+recovery, the retained original history, the exact two-id ack, and a
+separate authoritative `ORIGINAL_ABSENT` refusal scenario.
 
 `finalize_cancel` is the only way to close a cancelled Work, and there is
 no automatic close. It refuses while any operation is unresolved

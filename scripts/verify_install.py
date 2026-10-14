@@ -53,10 +53,25 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     external store holding exactly one accepted effect.
 14. Run the `work-runtime revocation-demo` console entry point outside the
     checkout and apply the same independent store proof.
-15. Assert the packaged GUI web assets ship inside the (non-editable)
+15. Run `python -m work_runtime compensation-demo` outside the checkout and
+    verify it INDEPENDENTLY of the printed text: parse both scenario stores
+    (crash, refusal) directly with locally recomputed business keys
+    (forward key vs the S10 compensation key digest([family, capability,
+    original id])), the immutable original snapshot, the stored
+    adapter_result bound to the original, tagged receipts with the
+    recomputed link digest, exactly one withdrawal row per original,
+    unchanged invoices, accepted/withdrawn counts, the withdrawn-kind proof
+    (never a forward accepted proof) and the retained E08 truth, the exact
+    two-id closure ack with the compensation disposition, and for the
+    refusal scenario the authoritative ORIGINAL_ABSENT rejection with a
+    single-id ack and zero effects; also re-run the demo's printed inspect
+    command verbatim against the installed entry point.
+16. Run the `work-runtime compensation-demo` console entry point outside the
+    checkout and apply the same independent store proof.
+17. Assert the packaged GUI web assets ship inside the (non-editable)
     install — `work_runtime/web/{index.html,app.js,app.css}` resolve inside
     the venv — so the read-only viewer is never served from this checkout.
-16. Installed UI (module AND console): when the read-only backend
+18. Installed UI (module AND console): when the read-only backend
     (`work_runtime.ui_server`) is present in the install, start `ui-demo` as
     a real subprocess outside the checkout, read the printed URL, fetch
     HTML/JS/CSS/summary/works/work/events over real HTTP (five seeded works),
@@ -95,6 +110,10 @@ ADOPTION_FINAL_LINE = "committed file artifacts: 1"
 REVOCATION_FINAL_LINE = ("retained external effects: 2 accepted applications, "
                          "1 published artifact; effects reversed: 0")
 REVOCATION_SCENARIOS = ("hold", "uncertain", "publish")
+COMPENSATION_FINAL_LINE = ("2 scenarios; retained forward effects: 2 accepted "
+                           "applications; withdrawal effects: 1; refused "
+                           "withdrawals: 1; refusal is not reversal")
+COMPENSATION_SCENARIOS = ("crash", "refusal")
 UI_WORK_IDS = {"wait-1", "uncertain-1", "transfer-1", "succeed-1", "cancel-1"}
 PINNED_PUBLISHING_DIGEST = ("56c85d32da9a9eee6330326e2d14ce0661dbc26d"
                             "782b13d0259c3f149e6be000")
@@ -499,7 +518,286 @@ def require_revocation_proof(stdout, source):
     return stores
 
 
-def run_printed_inspect_command(stdout, venv_python, outside, source):
+def require_compensation_operations(runtime_db, source):
+    """(work state, forward, withdrawal) with locally recomputed business keys.
+
+    The forward key is the pre-S10 expense key; the withdrawal key is the S10
+    compensation key digest([policy family, capability, original operation id])
+    — structurally distinct from every forward key and stable across re-admission.
+    """
+    state = require_work_state(runtime_db, "expense", source)
+    require((state["status"], state["outcome"]) == ("closed", "cancelled"),
+            "%s work expense is %s/%s (expected closed/cancelled)"
+            % (source, state["status"], state["outcome"]))
+    operations = [json.loads(row[0]) for row in
+                  db_rows(runtime_db, "SELECT body FROM operations", source=source)]
+    require(len(operations) == 2,
+            "%s store %s holds %d operations (expected exactly 2: forward + "
+            "withdrawal)" % (source, runtime_db, len(operations)))
+    forward = next((op for op in operations
+                    if op.get("capability") == "expense.submit"), None)
+    withdrawal = next((op for op in operations
+                       if op.get("capability") == "expense.withdraw"), None)
+    require(forward is not None and withdrawal is not None,
+            "%s store %s does not hold one forward and one withdrawal operation"
+            % (source, runtime_db))
+    require(forward["business_key"] == local_digest(
+        ["expense-submit", "expense.submit",
+         state["document"]["id"], state["document_revision"]]),
+        "%s forward business key does not equal the recomputed expense "
+        "operation key" % source)
+    require(withdrawal["business_key"] == local_digest(
+        ["expense-submit", "expense.withdraw", forward["id"]]),
+        "%s withdrawal business key does not equal the recomputed compensation "
+        "key digest([family, capability, original id])" % source)
+    return state, forward, withdrawal
+
+
+def require_runtime_proof(runtime_db, accepted_source, event_id, kind,
+                          expected_data, source):
+    """One runtime-written proof row: exact kind/status/data with a fingerprint
+    recomputed locally from the stored body."""
+    rows = db_rows(runtime_db,
+                   "SELECT body,fingerprint FROM evidence WHERE source=? AND event_id=?",
+                   (accepted_source, event_id), source)
+    require(len(rows) == 1,
+            "%s store holds %d proof rows for %s/%s (expected exactly 1)"
+            % (source, len(rows), accepted_source, event_id))
+    body = json.loads(rows[0][0])
+    require((body["kind"], body["status"]) == (kind, "verified"),
+            "%s proof %s/%s is %s/%s (expected %s/verified)"
+            % (source, accepted_source, event_id, body["kind"], body["status"], kind))
+    require(body["data"] == expected_data,
+            "%s proof %s/%s data is %r (expected %r)"
+            % (source, accepted_source, event_id, body["data"], expected_data))
+    require(rows[0][1] == local_digest(body),
+            "%s proof %s/%s fingerprint does not match its stored body"
+            % (source, accepted_source, event_id))
+    return body
+
+
+def require_compensation_crash(store, source):
+    """Crash-scenario store proof: both effects confirmed once, immutable link,
+    stored adapter result bound to the original, receipts/withdrawal/invoice
+    rows, withdrawn-kind proof, retained E08 truth, exact two-id closure."""
+    runtime_db = Path(store)
+    oa_db = runtime_db.parent / "oa.sqlite"
+    require(oa_db.exists(),
+            "%s crash store has no external database at %s" % (source, oa_db))
+    state, forward, withdrawal = require_compensation_operations(runtime_db, source)
+    for operation, prefix, label in ((forward, "OA-", "forward"),
+                                     (withdrawal, "WD-", "withdrawal")):
+        require(operation["status"] == "confirmed_succeeded"
+                and operation["dispatch_state"] == "finished",
+                "%s %s operation is %s/%s (expected confirmed_succeeded/finished)"
+                % (source, label, operation["status"], operation["dispatch_state"]))
+        require(len(operation["attempts"]) == 1
+                and operation["attempts"][0]["status"] == "confirmed_succeeded"
+                and str(operation.get("external_id", "")).startswith(prefix),
+                "%s %s operation does not hold exactly one succeeded attempt "
+                "with a retained %s external id" % (source, label, prefix))
+    require(withdrawal["compensates"] == {
+        "operation_id": forward["id"],
+        "external_id": forward["external_id"],
+        "capability": "expense.submit"},
+        "%s withdrawal compensates link is not the immutable original snapshot "
+        "(operation id, external id, capability)" % source)
+    require(withdrawal["adapter_result"] == {
+        "status": "accepted", "external_id": withdrawal["external_id"],
+        "digest": forward["document_digest"],
+        "original_external_id": forward["external_id"]},
+        "%s withdrawal adapter_result does not bind the original external id "
+        "and the withdrawal id truthfully" % source)
+    # Proofs: the forward accepted proof stays verified; the withdrawal
+    # appended a distinct withdrawn-kind proof — never a forward accepted one.
+    require_runtime_proof(runtime_db, "oa", forward["id"], "accepted",
+                          {"digest": forward["document_digest"],
+                           "external_id": forward["external_id"]}, source)
+    require_runtime_proof(runtime_db, "oa", withdrawal["id"], "withdrawn",
+                          {"digest": withdrawal["document_digest"],
+                           "external_id": withdrawal["external_id"],
+                           "original_external_id": forward["external_id"]}, source)
+    # Current E08 truth: still satisfied by the retained forward acceptance.
+    e08 = [r for r in state["requirements"] if r["rule_id"] == "E08"]
+    require(len(e08) == 1 and e08[0]["fulfillment"] == "satisfied",
+            "%s E08 fulfillment is %r (expected satisfied by the retained "
+            "forward acceptance; the withdrawal appends history, it never "
+            "deletes it)" % (source, e08[0].get("fulfillment") if e08 else None))
+    # External store: two tagged receipts, one withdrawal row per original,
+    # unchanged invoices, counts recomputed from the rows.
+    receipts = db_rows(oa_db, "SELECT key,digest,action,link_digest,result "
+                              "FROM receipts", source=source)
+    require(len(receipts) == 2,
+            "%s crash external store holds %d receipts (expected exactly 2: "
+            "forward + withdrawal)" % (source, len(receipts)))
+    forward_row = next((r for r in receipts if r[0] == forward["business_key"]), None)
+    withdrawal_row = next((r for r in receipts if r[0] == withdrawal["business_key"]), None)
+    require(forward_row is not None and withdrawal_row is not None,
+            "%s crash external store does not hold one receipt per business key"
+            % source)
+    require((forward_row[2] or "expense.submit", forward_row[3])
+            == ("expense.submit", None)
+            and forward_row[1] == forward["document_digest"],
+            "%s forward receipt is not an unlinked expense.submit receipt of "
+            "the original digest" % source)
+    require(withdrawal_row[2] == "expense.withdraw"
+            and withdrawal_row[3] == local_digest(withdrawal["compensates"]),
+            "%s withdrawal receipt is not tagged with the withdraw action and "
+            "the recomputed link digest" % source)
+    require(json.loads(withdrawal_row[4]) == withdrawal["adapter_result"],
+            "%s withdrawal receipt result differs from the stored adapter_result"
+            % source)
+    require(db_rows(oa_db, "SELECT original_external_id,external_id,key,digest "
+                           "FROM withdrawals", source=source)
+            == [(forward["external_id"], withdrawal["external_id"],
+                 withdrawal["business_key"], withdrawal["document_digest"])],
+            "%s crash external store does not hold exactly one withdrawal row "
+            "bound to the original under the withdrawal key" % source)
+    require(db_rows(oa_db, "SELECT invoice_id,external_id FROM invoices",
+                    source=source) == [("INV-001", forward["external_id"])],
+            "%s original invoices changed (the forward effect is never deleted)"
+            % source)
+    forward_accepted = set()
+    for action, stored in db_rows(oa_db, "SELECT action,result FROM receipts",
+                                  source=source):
+        result = json.loads(stored)
+        if (result.get("status") == "accepted"
+                and (action is None or action == "expense.submit")
+                and isinstance(result.get("external_id"), str) and result["external_id"]):
+            forward_accepted.add(result["external_id"])
+    require(forward_accepted == {forward["external_id"]},
+            "%s crash external store accepted forward ids are %s (expected "
+            "exactly the original)" % (source, sorted(forward_accepted)))
+    # Closure: the exact two-id ack and the compensation disposition.
+    completion = state["completion"]
+    acknowledged = {entry["operation_id"]: entry["external_id"]
+                    for entry in completion["acknowledged_operations"]}
+    require(sorted(acknowledged) == sorted([forward["id"], withdrawal["id"]]),
+            "%s closure ack names %s (expected exactly the original and the "
+            "succeeded withdrawal)" % (source, sorted(acknowledged)))
+    require(acknowledged[forward["id"]] == forward["external_id"]
+            and acknowledged[withdrawal["id"]] == withdrawal["external_id"],
+            "%s closure ack external ids do not match the operations" % source)
+    dispositions = {entry["operation_id"]: entry
+                    for entry in completion["operation_dispositions"]}
+    require(set(dispositions[forward["id"]])
+            == {"operation_id", "status", "dispatch_state"},
+            "%s forward disposition is not the ordinary three-field shape"
+            % source)
+    require(set(dispositions[withdrawal["id"]])
+            == {"operation_id", "status", "dispatch_state",
+                "compensates", "adapter_result"},
+            "%s withdrawal disposition does not carry compensates and "
+            "adapter_result" % source)
+    require(dispositions[withdrawal["id"]]["compensates"] == withdrawal["compensates"]
+            and dispositions[withdrawal["id"]]["adapter_result"]
+            == withdrawal["adapter_result"],
+            "%s withdrawal disposition does not restate the link and the "
+            "stored adapter result" % source)
+
+
+def require_compensation_refusal(store, source):
+    """Refusal-scenario store proof: an authoritative stored rejection, not an
+    unknown or a reversal — confirmed_failed withdrawal, single-id ack, the
+    refusing store queryable with zero effects, the original retained."""
+    runtime_db = Path(store)
+    oa_db = runtime_db.parent / "oa.sqlite"
+    absent_db = runtime_db.parent / "absent.sqlite"
+    require(oa_db.exists() and absent_db.exists(),
+            "%s refusal scenario is missing an external database (%s, %s)"
+            % (source, oa_db, absent_db))
+    state, forward, withdrawal = require_compensation_operations(runtime_db, source)
+    require(forward["status"] == "confirmed_succeeded"
+            and forward["dispatch_state"] == "finished",
+            "%s refusal forward operation is %s (expected confirmed_succeeded)"
+            % (source, forward["status"]))
+    require(withdrawal["status"] == "confirmed_failed"
+            and withdrawal["dispatch_state"] == "finished"
+            and len(withdrawal["attempts"]) == 1
+            and withdrawal["attempts"][0]["status"] == "confirmed_failed",
+            "%s refusal withdrawal is not confirmed_failed with exactly one "
+            "failed attempt" % source)
+    require(withdrawal["adapter_result"].get("status") == "rejected"
+            and withdrawal["adapter_result"].get("reason") == "ORIGINAL_ABSENT"
+            and withdrawal["adapter_result"].get("original_external_id")
+            == forward["external_id"],
+            "%s refusal adapter_result is not the stored ORIGINAL_ABSENT "
+            "rejection bound to the original" % source)
+    require_runtime_proof(runtime_db, "oa", forward["id"], "accepted",
+                          {"digest": forward["document_digest"],
+                           "external_id": forward["external_id"]}, source)
+    require(not db_rows(runtime_db,
+                        "SELECT body FROM evidence WHERE source='oa' AND event_id=?",
+                        (withdrawal["id"],), source),
+            "%s refused withdrawal must not insert a withdrawn proof" % source)
+    completion = state["completion"]
+    acknowledged = [entry["operation_id"]
+                    for entry in completion["acknowledged_operations"]]
+    require(acknowledged == [forward["id"]],
+            "%s refusal closure ack is %s (expected exactly the retained "
+            "forward id; a failed withdrawal is excluded)" % (source, acknowledged))
+    disposition = next((entry for entry in completion["operation_dispositions"]
+                        if entry["operation_id"] == withdrawal["id"]), None)
+    require(disposition is not None
+            and disposition["status"] == "confirmed_failed"
+            and disposition["adapter_result"]["reason"] == "ORIGINAL_ABSENT",
+            "%s refusal closure does not keep the refused withdrawal with its "
+            "reason" % source)
+    require(db_rows(oa_db, "SELECT COUNT(*) FROM withdrawals", source=source)[0][0] == 0
+            and count_accepted(oa_db) == 1,
+            "%s refusal original store does not hold exactly one accepted "
+            "application and zero withdrawal effects" % source)
+    absent_receipts = db_rows(absent_db, "SELECT action,link_digest,result "
+                                         "FROM receipts", source=source)
+    require(len(absent_receipts) == 1,
+            "%s refusing store holds %d receipts (expected exactly 1 queryable "
+            "rejection)" % (source, len(absent_receipts)))
+    require(absent_receipts[0][0] == "expense.withdraw"
+            and absent_receipts[0][1] == local_digest(withdrawal["compensates"]),
+            "%s refusing store receipt is not tagged with the action and link "
+            "digest" % source)
+    refusal = json.loads(absent_receipts[0][2])
+    require(refusal.get("status") == "rejected"
+            and refusal.get("reason") == "ORIGINAL_ABSENT"
+            and refusal.get("original_external_id") == forward["external_id"],
+            "%s refusing store receipt is not the ORIGINAL_ABSENT rejection "
+            "bound to the original" % source)
+    require(db_rows(absent_db, "SELECT COUNT(*) FROM withdrawals",
+                    source=source)[0][0] == 0,
+            "%s refusing store must hold zero withdrawal effects" % source)
+
+
+def require_compensation_proof(stdout, source):
+    """Independent module/console compensation-demo proof, never stdout-only.
+
+    Requires the demo's exact final line and exactly two distinct printed
+    scenario stores (crash, refusal in order), then verifies each store
+    directly with locally recomputed keys/fingerprints: business-key
+    derivation, the immutable original snapshot, the stored adapter result
+    binding, tagged receipts and the unique withdrawal row, unchanged
+    invoices, accepted/withdrawn counts, the withdrawn-kind proof, current
+    E08 truth, the exact closure ack and the refusal disposition. Returns the
+    store paths.
+    """
+    require(COMPENSATION_FINAL_LINE in stdout,
+            "%s output lacks %r" % (source, COMPENSATION_FINAL_LINE))
+    stores = INSPECT_DB.findall(stdout)
+    require(len(stores) == 2,
+            "%s printed %d inspect databases (expected exactly 2: crash, "
+            "refusal)" % (source, len(stores)))
+    require(len(set(stores)) == 2,
+            "%s printed duplicate store paths: %s" % (source, stores))
+    names = [Path(store).parent.name for store in stores]
+    require(names == list(COMPENSATION_SCENARIOS),
+            "%s printed scenario directories %s (expected crash, refusal in "
+            "order)" % (source, names))
+    require_compensation_crash(stores[0], source)
+    require_compensation_refusal(stores[1], source)
+    return stores
+
+
+def run_printed_inspect_command(stdout, venv_python, outside, source,
+                                outcome_marker='"outcome": "succeeded"'):
     """Re-run the demo's printed inspect command verbatim (python3 swapped)."""
     command = INSPECT_COMMAND.search(stdout)
     require(command is not None, "%s printed no inspect command" % source)
@@ -507,8 +805,8 @@ def run_printed_inspect_command(stdout, venv_python, outside, source):
     require(words[0] == "python3", "%s inspect command is not python3-based" % source)
     words[0] = str(venv_python)
     result = run(words, outside)
-    require('"outcome": "succeeded"' in result.stdout,
-            "%s installed inspect did not report the succeeded work" % source)
+    require(outcome_marker in result.stdout,
+            "%s installed inspect did not report %s" % (source, outcome_marker))
 
 
 def http_get(url, timeout=10):
@@ -841,6 +1139,23 @@ def main(argv=None):
         console_revocation = run([console, "revocation-demo"], outside, show=True)
         require_revocation_proof(console_revocation.stdout, "console revocation-demo")
 
+        print("=== module compensation-demo outside the checkout ===")
+        module_compensation = run([venv_python, "-m", "work_runtime",
+                                   "compensation-demo"], outside, show=True)
+        require_compensation_proof(module_compensation.stdout,
+                                   "module compensation-demo")
+        run_printed_inspect_command(module_compensation.stdout, venv_python, outside,
+                                    "module compensation-demo",
+                                    outcome_marker='"outcome": "cancelled"')
+        print("independent check: business keys, link binding, receipts/"
+              "withdrawal rows, withdrawn-kind proof, E08 truth and closure "
+              "re-verified from the two scenario databases")
+
+        print("=== console compensation-demo outside the checkout ===")
+        console_compensation = run([console, "compensation-demo"], outside, show=True)
+        require_compensation_proof(console_compensation.stdout,
+                                   "console compensation-demo")
+
         print("=== packaged web assets ship with the install ===")
         for name in ("index.html", "app.js", "app.css"):
             require((package_dir / "web" / name).is_file(),
@@ -858,7 +1173,10 @@ def main(argv=None):
               "committed file artifact per adoption entry point; module and console "
               "revocation-demo stores re-verified (revoked statuses, preserved "
               "fingerprints, stable business keys, one retained effect per store); "
-              "packaged web assets "
+              "module and console compensation-demo stores re-verified (recomputed "
+              "business keys, immutable link and adapter-result binding, tagged "
+              "receipts and one withdrawal row, withdrawn-kind proof with retained "
+              "E08 truth, exact two-id ack, refusal-not-reversal); packaged web assets "
               "shipped%s (%.1fs)"
               % ("; SKIPPED stages: " + ui_skip if ui_skip else "",
                  time.time() - started))
