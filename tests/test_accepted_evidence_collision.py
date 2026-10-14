@@ -9,6 +9,10 @@ the actual accepted external result with an exact conflict snapshot
 instead of failing the acceptance-proof INSERT.
 """
 
+import json
+import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -18,6 +22,7 @@ from work_runtime import CommandError, ExpensePolicy, Runtime
 from work_runtime.adapters import FakeOA
 from work_runtime.demo import (action, demo_grants, document, initialize,
                                prerequisites, send)
+from work_runtime.policy import canonical, digest
 from work_runtime.publishing import FakePublisher, PublishingPolicy
 from work_runtime.publishing_demo import article, publishing_grants
 
@@ -45,6 +50,90 @@ class RenamedAcceptedPolicy(ExpensePolicy):
 
     version = "demo-2"
     evidence_sources = {**ExpensePolicy.evidence_sources, "accepted": "oa2"}
+
+
+def legacy_poison(path, work_id, op_id, *, actor="oa", kind="accepted", data=None,
+                  status="pending_verification", body=None, fingerprint=None):
+    """Insert a pre-fix poisoned evidence row by direct SQL (D40 B-fixture).
+
+    Post-fix the product rejects this intake (OPERATION_ID_RESERVED), so
+    tests construct the legacy store directly with the canonical `_receive`
+    row shape from accepted original inputs: five columns, fingerprint
+    digest([work_id, payload]) and the candidate body. Clearly a legacy
+    fixture — no product bypass exists.
+    """
+    payload = {"event_id": op_id, "kind": kind,
+               "data": data if data is not None else {}}
+    if fingerprint is None:
+        fingerprint = digest([work_id, payload])
+    candidate = {"id": uuid.uuid4().hex, "source": actor, "event_id": op_id,
+                 "kind": kind, "data": payload["data"], "status": status}
+    if body is not None:
+        candidate = body
+    db = sqlite3.connect(path)
+    try:
+        db.execute("INSERT INTO evidence VALUES (?,?,?,?,?)",
+                   (actor, op_id, work_id, fingerprint, canonical(candidate)))
+        db.commit()
+    finally:
+        db.close()
+    return candidate
+
+
+def evidence_row(path, source, event_id):
+    db = sqlite3.connect(path)
+    try:
+        return db.execute(
+            "SELECT source,event_id,work_id,fingerprint,body FROM evidence "
+            "WHERE source=? AND event_id=?", (source, event_id)).fetchone()
+    finally:
+        db.close()
+
+
+def conflict_events(path, work_id):
+    """Parsed AcceptanceProofConflict event bodies for one work, in order."""
+    db = sqlite3.connect(path)
+    try:
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT body FROM events WHERE work_id=? AND "
+            "type='AcceptanceProofConflict' ORDER BY seq", (work_id,))]
+    finally:
+        db.close()
+
+
+def store_snapshot(path):
+    """All six tables' full contents for byte-preservation/rollback asserts."""
+    db = sqlite3.connect(path)
+    try:
+        return {table: sorted(db.execute("SELECT * FROM %s" % table).fetchall())
+                for table in ("works", "commands", "evidence", "operations",
+                              "events", "metadata")}
+    finally:
+        db.close()
+
+
+def rewrite_work(path, work_id, work):
+    """Custom legacy-fixture helper: overwrite one work's stored state."""
+    db = sqlite3.connect(path)
+    try:
+        db.execute("UPDATE works SET state=? WHERE id=?",
+                   (canonical(work), work_id))
+        db.commit()
+    finally:
+        db.close()
+
+
+def crash_worker(runtime_path, oa_path, operation_id):
+    """Real child process death after external acceptance (exit 73)."""
+    return subprocess.run([sys.executable, "-m", "work_runtime", "worker",
+                           "--runtime", runtime_path, "--oa", oa_path,
+                           "--operation", operation_id,
+                           "--crash-after-effect"], check=False)
+
+
+SNAPSHOT_FIELDS = {"source", "event_id", "evidence_id", "evidence_work_id",
+                   "evidence_kind", "evidence_status", "evidence_fingerprint",
+                   "external_id", "document_digest"}
 
 
 class CollisionCase(unittest.TestCase):
@@ -228,6 +317,285 @@ class PublishingReservationTests(PublishingCollisionCase):
         self.assertEqual(reserved["decision"], "rejected")
         self.assertEqual(reserved["code"], "OPERATION_ID_RESERVED")
         self.assertEqual(reserved["blockers"], [op])
+
+
+class LegacyConflictTests(CollisionCase):
+    """Pre-fix poisoned stores resolve to actual truth with a conflict snapshot."""
+
+    def submit_poisoned(self, data=None, *, work_id="demo", status="pending_verification"):
+        """A dispatched poisoned operation plus its legacy conflicting row."""
+        op = self.submit_other()
+        digest_value = self.runtime.get_work(work_id)["document_digest"]
+        candidate = legacy_poison(self.path, work_id, op, data=data,
+                                  status=status)
+        return op, candidate
+
+    def test_legacy_poisoned_store_resolves_with_proof_conflict(self):
+        op, candidate = self.submit_poisoned(
+            data={"digest": self.runtime.get_work("demo")["document_digest"]})
+        before = evidence_row(self.path, "oa", op)
+        rows_before = len(store_snapshot(self.path)["evidence"])
+        resolved = self.runtime.dispatch(op, self.oa)
+        # The external acceptance is real and authoritative (D41): the
+        # operation records it; nothing is parked as unknown.
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        self.assertEqual(resolved["dispatch_state"], "finished")
+        self.assertTrue(resolved["external_id"])
+        self.assertEqual(len(resolved["attempts"]), 1)
+        self.assertEqual(resolved["attempts"][-1]["status"], "confirmed_succeeded")
+        self.assertEqual(self.oa.accepted_count(), 1)
+        # The nine-field additive snapshot separates candidate from result.
+        snapshot = resolved["proof_conflict"]
+        self.assertEqual(set(snapshot), SNAPSHOT_FIELDS)
+        self.assertEqual(snapshot["source"], "oa")
+        self.assertEqual(snapshot["event_id"], op)
+        self.assertEqual(snapshot["evidence_id"], candidate["id"])
+        self.assertEqual(snapshot["evidence_work_id"], "demo")
+        self.assertEqual(snapshot["evidence_kind"], "accepted")
+        self.assertEqual(snapshot["evidence_status"], "pending_verification")
+        self.assertEqual(snapshot["evidence_fingerprint"],
+                         digest(["demo", {"event_id": op, "kind": "accepted",
+                                          "data": candidate["data"]}]))
+        self.assertEqual(snapshot["external_id"], resolved["external_id"])
+        self.assertEqual(snapshot["document_digest"], resolved["document_digest"])
+        self.assertNotEqual(snapshot["document_digest"],
+                            candidate["data"]["digest"])
+        # Attention surfaces on the operation's work; one conflict event
+        # replaces OperationResolved for this resolution.
+        self.assertEqual(self.runtime.get_work("other")["status"],
+                         "needs_attention")
+        events = conflict_events(self.path, "other")
+        self.assertEqual(len(events), 1)
+        body = events[0]
+        self.assertEqual(set(body), SNAPSHOT_FIELDS | {"operation_id",
+                                                       "work_was_closed"})
+        self.assertFalse(body["work_was_closed"])
+        self.assertEqual(body["operation_id"], op)
+        for field in snapshot:
+            self.assertEqual(body[field], snapshot[field])
+        db = sqlite3.connect(self.path)
+        resolved_events = db.execute(
+            "SELECT body FROM events WHERE work_id='other' AND "
+            "type='OperationResolved'").fetchall()
+        db.close()
+        self.assertEqual([e for e in resolved_events
+                          if json.loads(e[0])["operation_id"] == op], [])
+        # The conflicting candidate is untouched and no proof was inserted.
+        self.assertEqual(evidence_row(self.path, "oa", op), before)
+        self.assertEqual(len(store_snapshot(self.path)["evidence"]), rows_before)
+
+    def test_conflict_snapshot_records_row_status_at_resolution(self):
+        digest_value = self.runtime.get_work("demo")["document_digest"]
+        self.grants["root"] = {"work.intervene"}
+        variants = (
+            ("verified", {"digest": digest_value, "external_id": "OA-x"},
+             "verified"),
+            ("invalid", {"digest": digest_value}, "invalid"),
+            ("revoked", {"digest": digest_value, "external_id": "OA-x"},
+             "revoked"),
+        )
+        for index, (label, data, expected) in enumerate(variants):
+            with self.subTest(variant=label):
+                work_id = "variant-%d" % index
+                initialize(self.runtime, work_id,
+                           document(document_id="EXP-V%d" % index,
+                                    invoice_id="INV-V%d" % index))
+                prerequisites(self.runtime, work_id)
+                op = action(self.runtime, work_id)["operation_id"]
+                legacy_poison(self.path, "demo", op, data=data)
+                self.runtime.verify_pending("demo")
+                if label == "revoked":
+                    version = self.runtime.get_work("demo")["state_version"]
+                    receipt = self.runtime.command(
+                        "root", uuid.uuid4().hex, "demo", "revoke_evidence",
+                        {"source": "oa", "event_id": op, "reason": "withdrawn"},
+                        version)
+                    self.assertEqual(receipt["decision"], "accepted")
+                before = evidence_row(self.path, "oa", op)
+                resolved = self.runtime.dispatch(op, self.oa)
+                self.assertEqual(resolved["status"], "confirmed_succeeded")
+                self.assertEqual(resolved["proof_conflict"]["evidence_status"],
+                                 expected)
+                self.assertEqual(evidence_row(self.path, "oa", op), before)
+
+    def test_recover_liveness_after_conflict(self):
+        op = self.submit_other()
+        legacy_poison(self.path, "demo", op,
+                      data={"digest": self.runtime.get_work("demo")["document_digest"]})
+        self.assertEqual(crash_worker(self.path, self.oa_path, op).returncode, 73)
+        initialize(self.runtime, "third",
+                   document(document_id="EXP-003", invoice_id="INV-003"))
+        prerequisites(self.runtime, "third")
+        later = action(self.runtime, "third")["operation_id"]
+        results = self.runtime.recover(self.oa)  # Today: IntegrityError, starvation.
+        by_id = {r["id"]: r for r in results}
+        self.assertEqual(by_id[op]["status"], "confirmed_succeeded")
+        self.assertIn("proof_conflict", by_id[op])
+        self.assertEqual(len(conflict_events(self.path, "other")), 1)
+        self.assertEqual(by_id[later]["status"], "confirmed_succeeded")
+        self.assertEqual(self.oa.accepted_count(), 2)
+
+    def test_conflict_resolution_crash_atomic_exception(self):
+        op = self.submit_other()
+        legacy_poison(self.path, "demo", op,
+                      data={"digest": self.runtime.get_work("demo")["document_digest"]})
+
+        def explode():
+            raise RuntimeError("death between effect and resolution")
+        with self.assertRaises(RuntimeError):
+            self.runtime.dispatch(op, self.oa, fault=explode)
+        # External effect committed; no resolution writes survived.
+        self.assertEqual(self.oa.accepted_count(), 1)
+        self.assertEqual(self.runtime.get_operation(op)["status"], "dispatched")
+        self.assertEqual(conflict_events(self.path, "other"), [])
+        resolved = self.runtime.reconcile(op, self.oa)
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        self.assertIn("proof_conflict", resolved)
+        self.assertEqual(len(conflict_events(self.path, "other")), 1)
+        self.assertEqual(self.oa.accepted_count(), 1)
+
+    def test_conflict_resolution_real_process_death(self):
+        op = self.submit_other()
+        legacy_poison(self.path, "demo", op,
+                      data={"digest": self.runtime.get_work("demo")["document_digest"]})
+        script = (
+            "import os,sys\n"
+            "from work_runtime import Runtime, ExpensePolicy\n"
+            "from work_runtime.adapters import FakeOA\n"
+            "from work_runtime.demo import demo_grants\n"
+            "class Dying(Runtime):\n"
+            "    # Test-owned subclass: real process death inside the\n"
+            "    # conflict-resolution transaction, after the operation write.\n"
+            "    def _save_op(self, db, operation):\n"
+            "        if 'proof_conflict' in operation:\n"
+            "            os._exit(76)\n"
+            "        return Runtime._save_op(self, db, operation)\n"
+            "grants = demo_grants(); grants['oa'] = {'evidence.write'}\n"
+            "Dying(sys.argv[1], ExpensePolicy(), grants).dispatch(\n"
+            "    sys.argv[2], FakeOA(sys.argv[3]))\n"
+        )
+        child = subprocess.run([sys.executable, "-c", script, self.path, op,
+                                self.oa_path], check=False)
+        self.assertEqual(child.returncode, 76)
+        # The whole resolution transaction rolled back with the process.
+        self.assertEqual(self.oa.accepted_count(), 1)
+        op_after = self.runtime.get_operation(op)
+        self.assertEqual(op_after["status"], "dispatched")
+        self.assertNotIn("proof_conflict", op_after)
+        self.assertEqual(conflict_events(self.path, "other"), [])
+        # Recovery redoes the resolution deterministically, exactly once.
+        restarted = Runtime(self.path, ExpensePolicy(), collision_grants())
+        restarted.recover(self.oa)
+        self.assertEqual(self.runtime.get_operation(op)["status"],
+                         "confirmed_succeeded")
+        self.assertEqual(len(conflict_events(self.path, "other")), 1)
+        self.assertEqual(self.oa.accepted_count(), 1)
+
+    def test_accepted_lost_response_conflict_recovery_confirms_once(self):
+        op = self.submit_other()
+        legacy_poison(self.path, "demo", op,
+                      data={"digest": self.runtime.get_work("demo")["document_digest"]})
+        unknown = self.runtime.dispatch(op, FakeOA(self.oa_path,
+                                                    timeout_after_commit=True))
+        self.assertEqual(unknown["status"], "outcome_unknown")
+        self.assertEqual(self.oa.accepted_count(), 1)
+        resolved = self.runtime.reconcile(op, self.oa)
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        self.assertIn("proof_conflict", resolved)
+        self.assertEqual(len(conflict_events(self.path, "other")), 1)
+        self.assertEqual(self.oa.accepted_count(), 1)
+        again = self.runtime.reconcile(op, self.oa)
+        self.assertEqual(again["status"], "confirmed_succeeded")
+        self.assertEqual(len(conflict_events(self.path, "other")), 1)
+
+    def test_closed_work_conflict_preserves_closure(self):
+        op = self.submit_other()
+        legacy_poison(self.path, "demo", op,
+                      data={"digest": self.runtime.get_work("demo")["document_digest"]})
+        self.assertEqual(crash_worker(self.path, self.oa_path, op).returncode, 73)
+        # Custom legacy fixture: public closure paths gate on
+        # OUTCOME_UNRESOLVED, so a closed work with a dispatched operation
+        # only exists in a directly written store.
+        work = self.runtime.get_work("other")
+        work["status"], work["outcome"] = "closed", "succeeded"
+        work["completion"] = {"contract": work["contract"],
+                              "document_digest": work["document_digest"],
+                              "evidence": []}
+        rewrite_work(self.path, "other", work)
+        resolved = self.runtime.reconcile(op, self.oa)
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        after = self.runtime.get_work("other")
+        self.assertEqual(after["status"], "closed")
+        self.assertEqual(after["outcome"], "succeeded")
+        self.assertEqual(after["completion"], work["completion"])
+        events = conflict_events(self.path, "other")
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0]["work_was_closed"])
+
+    def test_malformed_conflict_body_degrades_to_null(self):
+        def body(**overrides):
+            candidate = {"id": "e-%d" % (len(overrides) or 0), "source": "oa",
+                         "event_id": "x", "kind": "accepted", "data": {},
+                         "status": "pending_verification"}
+            candidate.update(overrides)
+            return candidate
+        cases = [
+            ("wrong-type id", body(id=7), (None, "accepted", "pending_verification")),
+            ("missing id", {k: v for k, v in body().items() if k != "id"},
+             (None, "accepted", "pending_verification")),
+            ("none kind", body(kind=None), ("e-1", None, "pending_verification")),
+            ("wrong-type status", body(status=123), ("e-1", "accepted", None)),
+            ("non-object body", ["not", "a", "dict"], (None, None, None)),
+        ]
+        for index, (label, row_body, expected) in enumerate(cases):
+            with self.subTest(variant=label):
+                work_id = "malformed-%d" % index
+                initialize(self.runtime, work_id,
+                           document(document_id="EXP-M%d" % index,
+                                    invoice_id="INV-M%d" % index))
+                prerequisites(self.runtime, work_id)
+                op = action(self.runtime, work_id)["operation_id"]
+                legacy_poison(self.path, "demo", op, body=row_body,
+                              fingerprint="fp-%d" % index)
+                before = evidence_row(self.path, "oa", op)
+                resolved = self.runtime.dispatch(op, self.oa)
+                self.assertEqual(resolved["status"], "confirmed_succeeded")
+                snapshot = resolved["proof_conflict"]
+                self.assertEqual(set(snapshot), SNAPSHOT_FIELDS)
+                self.assertEqual((snapshot["evidence_id"],
+                                  snapshot["evidence_kind"],
+                                  snapshot["evidence_status"]), expected)
+                # SQL columns stay verbatim; the row itself is untouched.
+                self.assertEqual(snapshot["evidence_work_id"], "demo")
+                self.assertEqual(snapshot["evidence_fingerprint"], "fp-%d" % index)
+                self.assertEqual(evidence_row(self.path, "oa", op), before)
+
+
+class PublishingLegacyConflictTests(PublishingCollisionCase):
+    def test_publishing_legacy_conflict_resolves(self):
+        op = self.publish_intent()
+        legacy_poison(self.path, "article-1", op, actor="publisher",
+                      data={"digest": self.runtime.get_work("article-1")["document_digest"]})
+        before = evidence_row(self.path, "publisher", op)
+        resolved = self.runtime.dispatch(op, self.publisher)
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        self.assertEqual(resolved["dispatch_state"], "finished")
+        snapshot = resolved["proof_conflict"]
+        self.assertEqual(set(snapshot), SNAPSHOT_FIELDS)
+        self.assertEqual(snapshot["source"], "publisher")
+        self.assertEqual(snapshot["event_id"], op)
+        self.assertEqual(snapshot["evidence_work_id"], "article-1")
+        self.assertEqual(snapshot["evidence_status"], "pending_verification")
+        self.assertEqual(self.runtime.get_work("article-1")["status"],
+                         "needs_attention")
+        events = conflict_events(self.path, "article-1")
+        self.assertEqual(len(events), 1)
+        body = events[0]
+        self.assertEqual(set(body), SNAPSHOT_FIELDS | {"operation_id",
+                                                       "work_was_closed"})
+        self.assertFalse(body["work_was_closed"])
+        self.assertEqual(evidence_row(self.path, "publisher", op), before)
+        self.assertEqual(self.publisher.published_count(), 1)
 
 
 if __name__ == "__main__":

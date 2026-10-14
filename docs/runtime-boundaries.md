@@ -115,8 +115,11 @@ This check is `receipt_is_valid` in `work_runtime/adapter_contract.py`
 (see [adapter-contract.md](adapter-contract.md)); extra receipt fields remain
 allowed. An accepted result is recorded as verified evidence — kind
 `accepted`, event id = the operation id — under the source configured at
-`policy.evidence_sources["accepted"]` (the expense demo keeps `oa`). That
-configuration fails closed with `CommandError` in `dispatch` (before an
+`policy.evidence_sources["accepted"]` (the expense demo keeps `oa`); when
+that `(source, event_id)` row already exists, the acceptance resolves
+through the collision path instead (see
+[acceptance-proof collision recovery](#acceptance-proof-collision-recovery)).
+That configuration fails closed with `CommandError` in `dispatch` (before an
 attempt or external call), in `reconcile` (before querying) and in `_resolve`
 (before adopting an accepted receipt): a missing, non-string or empty accepted
 source can never become an accepted proof. Terminal and cancelled-operation
@@ -188,6 +191,92 @@ Disclosed consequences:
   content is still `SOURCE_EVENT_CONFLICT`, including rows that predate
   this guard.
 - Signed ingress already excludes kind `accepted` and is untouched.
+
+## Acceptance-proof collision recovery
+
+Prevention cannot heal a store poisoned before the reservation existed: an
+imported candidate already occupies `(accepted_source, operation_id)`, the
+external acceptance is real, and the plain INSERT would fail every
+reconcile/recover of that operation forever. In `_resolve`'s accepted
+branch, one exact primary-key probe (`source` + operation id) runs before
+the proof INSERT, inside the same transaction as every other resolution
+write. On a hit the resolution records the actual accepted external truth
+and an additive conflict snapshot instead of a proof:
+
+- **Operation**: `status="confirmed_succeeded"`, `dispatch_state="finished"`,
+  `external_id` from the validated adapter result, the existing attempt's
+  terminal status — exactly the normal resolution fields — plus one
+  additive `proof_conflict` object with exactly nine fields:
+
+  | field | source |
+  |---|---|
+  | `source`, `event_id` | the collision primary key (accepted source, operation id) |
+  | `evidence_id`, `evidence_kind`, `evidence_status` | the conflicting row's stored body; counted only when a nonempty string, else `null` (missing/wrong-type/non-object bodies degrade; nothing is coerced from candidate data) |
+  | `evidence_work_id`, `evidence_fingerprint` | the conflicting row's SQL columns, verbatim |
+  | `external_id` | the actual validated adapter result |
+  | `document_digest` | the operation's digest — never the candidate's `data.digest` |
+
+- **Work**: `needs_attention` — set only when the work was not closed. A
+  closed work (only constructible as a custom/direct-SQL store: both public
+  closure paths gate on `OUTCOME_UNRESOLVED`) keeps
+  `status`/`outcome`/`completion` unchanged, and the event records
+  `work_was_closed: true`.
+- **Event**: one `AcceptanceProofConflict` with exactly eleven fields (the
+  nine snapshot fields plus `operation_id` and `work_was_closed`), in place
+  of `OperationResolved` for this resolution only. Exactly one work version
+  bump; requirements are recomputed honestly from the actual stored
+  evidence — the acceptance rule stays satisfiable only through a verified
+  proof, which here can only be the conflicting import itself or a later
+  replacement import.
+
+Nothing is deleted, overwritten, converted to `revoked`/`invalid` or
+revived, and no authoritative proof is synthesized: the conflicting
+candidate keeps its identity, raw body, fingerprint and SQL columns
+byte-identical (it remains independently revocable and inspectable through
+the S8 commands if a human decides so), and the operation's
+`proof_conflict` plus the durable event keep the two truths distinguishable
+in public stored truth.
+
+Crash atomicity and idempotence:
+
+- The whole transition is one `_transaction`; an exception or a real
+  process death mid-transaction rolls back operation, work and event
+  together, leaving the operation `dispatched` — the next
+  reconcile/recover redoes it deterministically (the probe is a read; a
+  dispatched operation is never re-executed).
+- After resolution the operation is terminal, so repeated
+  `reconcile`/`recover` performs **no writes to that operation or its
+  conflict event and no adapter call for it** — while `recover` still
+  verifies and expires other records and reaches later operations. The
+  idempotence claim is operation-scoped: whole-store no-write equality does
+  not hold across `recover` cycles because unrelated
+  `EvidenceEvaluated`/`WaitExpired` events may fire.
+- A lost accepted response (adapter timeout after commit) recovers through
+  `reconcile`'s lookup with the same one-shot conflict resolution and one
+  retained external effect.
+
+Completion and cancellation are unchanged (**no new blocker**): a trusted
+accepted source could always satisfy `accepted`-kind requirements by
+importing a shape-valid proof under a fresh event id — the documented
+trusted-local synthetic-acceptance boundary below — so the conflict case
+grants no new capability. `request_completion` still requires the normal
+requirements plus no unresolved operations; `finalize_cancel`
+acknowledgement must still include the conflicted operation's id because
+its confirmed effect is real; a replacement proof is recorded as a new
+event under the currently configured source. A conflict never silently
+revokes or transfers proof authority.
+
+**Trusted-local synthetic-acceptance boundary (explicit).** The accepted
+source is a trusted local principal; any proof it imports that passes the
+policy's shape validation can satisfy `accepted`-kind requirements without
+any external effect. The reservation prevents only the *collision*
+consequence (operation-id aliasing), not the general capability. This is a
+limit of the local trust model, not an authentication claim.
+
+**Out of scope.** A conflicting-row body that is not valid JSON is a
+corrupted store: the parse error propagates, the resolution transaction
+rolls back, and no repair is attempted (malformed-but-valid-JSON bodies
+degrade to `null` snapshot fields as above).
 
 ## Cancellation boundary
 
@@ -379,6 +468,10 @@ Guarantees:
   returns `None` marks the operation `outcome_unknown`/`NO_AUTHORITATIVE_RESULT`
   and the work `needs_attention`; a `lookup` that raises records the failure
   reason. Neither is silently retried as a new external call.
+- **Poisoned stores recover.** An acceptance whose proof identity is
+  already occupied resolves through the collision path above (actual
+  confirmed result plus additive snapshot); `recover` no longer aborts on
+  such an operation and reaches every later operation.
 - **Repeated reconciliation is idempotent.** Re-running `reconcile`/`recover`
   while findings are unchanged performs no writes: no new events, no
   `state_version` bump, no operation mutation (reason transitions are still
@@ -413,6 +506,11 @@ Guarantees:
   a revoked row is permanent (see the evidence revocation boundary above).
 - **`needs_attention` is sticky** until the work closes; reconciliation cannot
   automatically clear it.
+- **Corrupted evidence bodies abort only their own resolution.** Conflict
+  recovery degrades malformed body fields to `null` snapshots, but a
+  conflicting-row body that is not valid JSON is out of scope: the
+  resolution fails and rolls back until the store is repaired; the runtime
+  offers no such repair.
 - **Directly re-`dispatch`ing a `held` intent re-runs the checks** and may
   dispatch if authority and blockers now pass; `recover` never auto-dispatches
   `held` intents — they are re-admitted explicitly through `propose_action`.
@@ -467,3 +565,12 @@ Accepted-evidence collision guarantees are pinned in
 | reservation is source-scoped, not kind-scoped | `test_reservation_is_source_scoped_not_kind_scoped` |
 | union spans loaded versions and follows reconfiguration | `test_registry_union_spans_loaded_versions`, `test_reservation_union_recomputed_per_intake` |
 | publishing family reservation mirror | `test_publishing_operation_id_intake_rejected` |
+| legacy poisoned store resolves with actual result and snapshot | `test_legacy_poisoned_store_resolves_with_proof_conflict` |
+| snapshot records the row's status at resolution | `test_conflict_snapshot_records_row_status_at_resolution` |
+| recover reaches later operations after a conflict | `test_recover_liveness_after_conflict` |
+| conflict resolution is crash-atomic (exception) | `test_conflict_resolution_crash_atomic_exception` |
+| conflict resolution is crash-atomic (real process death) | `test_conflict_resolution_real_process_death` |
+| lost accepted response recovers exactly once | `test_accepted_lost_response_conflict_recovery_confirms_once` |
+| closed work keeps closure under conflict | `test_closed_work_conflict_preserves_closure` |
+| malformed body fields degrade to null snapshots | `test_malformed_conflict_body_degrades_to_null` |
+| publishing family conflict mirror | `test_publishing_legacy_conflict_resolves` |
