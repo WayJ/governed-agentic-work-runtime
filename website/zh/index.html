@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Governed Work Runtime — 让 Agent 自主规划，让每次业务行动都有依据</title>
+<meta name="description" content="面向长期业务工作的持久运行时：Agent 提议行动，规则决定能否执行，证据证明是否完成。本地参考原型，pre-alpha。">
+<link rel="stylesheet" href="../assets/styles.css">
+<script src="../assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主要内容</a>
+
+<header class="site-nav">
+  <div class="container nav-inner">
+    <a class="wordmark" href="#top"><span class="wordmark-mark" aria-hidden="true">&#9670;</span> Governed Work Runtime</a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="#why">为什么</a>
+      <a href="#how">工作原理</a>
+      <a href="#demo">演示</a>
+      <a href="#start">快速开始</a>
+      <a href="https://github.com/WayJ/governed-agentic-work-runtime/tree/main/docs">文档</a>
+      <a href="https://github.com/WayJ/governed-agentic-work-runtime">GitHub</a>
+    </nav>
+    <a class="lang-link" href="../index.html" hreflang="en" lang="en">English</a>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+
+  <section class="hero container" id="top">
+    <h1 class="hero-title">让 Agent 自主规划，让每次业务行动都有依据。</h1>
+    <p class="lede">面向长期业务工作的持久运行时：Agent 提议行动，规则决定能否执行，证据证明是否完成。</p>
+    <p class="status"><span class="badge">Pre-alpha</span> 状态：本地参考原型 &middot; Python 3.9+ &middot; Apache-2.0 &middot; 零运行时依赖</p>
+    <div class="hero-ctas">
+      <a class="btn btn-primary btn-lg" href="#start">运行演示</a>
+      <a class="btn btn-secondary btn-lg" href="https://github.com/WayJ/governed-agentic-work-runtime">在 GitHub 查看</a>
+    </div>
+  </section>
+
+  <section id="why" class="container">
+    <p class="eyebrow">为什么需要 Work 运行时</p>
+    <h2 class="section-title">业务工作比对话活得更久</h2>
+    <p class="section-intro">业务任务可以跨越多次对话：计划会修订，批准可能数天后才到，一次超时的调用可能已经在外部系统创建了真实申请。本项目把必须履行的责任、约束与证据保存在持久的 Work 中。</p>
+    <div class="card-grid">
+      <div class="card">
+        <h3>工作比会话活得更久</h3>
+        <p>计划会变、批准会迟到、超时的调用可能已经产生真实效果。运行时把义务绑定在工作上，而不是绑定在某个计划步骤上。</p>
+      </div>
+      <div class="card">
+        <h3>决策被持久记录</h3>
+        <p>命令、回执、证据、等待与逻辑操作全部持久化。重启后通过原业务键找回受理记录——不重复提交，也不丢外部效果。</p>
+      </div>
+      <div class="card">
+        <h3>规则决定准入，证据证明完成</h3>
+        <p>策略决定提议能否被接纳，核验后的证据决定工作能否被判定完成。Agent 选择策略，运行时守住已接受的规则。</p>
+      </div>
+    </div>
+    <ul class="distinctions">
+      <li><strong>工作 vs 计划</strong> —— 删掉一个计划步骤，不能免除它的审批要求。</li>
+      <li><strong>命令 vs 操作 vs 尝试</strong> —— 响应丢失与重试保留原业务身份。</li>
+      <li><strong>执行 vs 证明</strong> —— 没有匹配证据的完成调用，不能确立业务结果。</li>
+    </ul>
+  </section>
+
+  <section id="how" class="container">
+    <p class="eyebrow">架构</p>
+    <h2 class="section-title">从提议到证明的一条可问责路径</h2>
+    <ol class="arch-flow">
+      <li>
+        <h3>提议者</h3>
+        <p>Agent 提议下一步行动，不直接把工作改成&ldquo;已批准&rdquo;或&ldquo;已完成&rdquo;。</p>
+      </li>
+      <li>
+        <h3>版本绑定命令</h3>
+        <p>命令按内容去重，按绑定的合同修订号校验；回执不可变，事件只追加。</p>
+      </li>
+      <li>
+        <h3>策略门</h3>
+        <p>规则决定接纳或阻断每条提议——例如缺少 E05 特别批准。被拒绝的决定同样被记录，绝不静默丢弃。</p>
+      </li>
+      <li>
+        <h3>持久操作</h3>
+        <p>每个外部效果归属唯一的逻辑操作。等待、过期与不确定结果是显式的持久状态。</p>
+      </li>
+      <li>
+        <h3>适配器 / 效果</h3>
+        <p>外部系统通过声明的 Adapter 接口接入。结果不确定时查询原操作解决——绝不盲目重发。</p>
+      </li>
+      <li>
+        <h3>回执 / 证据</h3>
+        <p>完成需要经过核验的证据：运行时先匹配回执与证据，才记录 SUCCEEDED。</p>
+      </li>
+    </ol>
+    <p class="arch-note">阻断（如缺少批准）、被拒命令与干预都作为持久决策记录。外部提交后响应丢失时，恢复流程按原业务键重新查询原操作——效果恰好找回一次，或升级人工处理，绝不盲目重放。语义详见 <a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/RFC-001-core-semantics.md">RFC-001 核心语义</a> 与 <a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/RFC-003-runtime-protocol.md">RFC-003 运行时协议</a>。</p>
+  </section>
+
+  <section id="demo" class="container">
+    <p class="eyebrow">演示</p>
+    <h2 class="section-title">看它从一次真实崩溃中恢复</h2>
+    <p class="sample-note"><span class="badge">示例</span> <strong>示例演示</strong> —— 以下六步是 <code>python3 -m work_runtime demo</code> 的真实输出记录，不是运行中的 Python 引擎，也不是在线 Agent。</p>
+    <ol id="recovery-stages" class="stages">
+      <li class="stage">
+        <h3>提议被阻断</h3>
+        <p>1. Agent 提议提交 &rarr; 被 E05（缺少特别批准）阻断</p>
+      </li>
+      <li class="stage">
+        <h3>持久等待</h3>
+        <p>2. 工作进入持久等待，Agent 无需持续在线</p>
+      </li>
+      <li class="stage">
+        <h3>批准到达</h3>
+        <p>3. 财务批准当前版本内容 &rarr; 提交意图被接受</p>
+      </li>
+      <li class="stage">
+        <h3>受理后崩溃</h3>
+        <p>4. 模拟 OA 受理后，工作进程在保存响应前直接退出（真实进程崩溃）</p>
+      </li>
+      <li class="stage">
+        <h3>同键恢复</h3>
+        <p>5. 重启 Runtime &rarr; 查询原操作 &rarr; 找回已有 OA 受理记录</p>
+      </li>
+      <li class="stage">
+        <h3>证据完成</h3>
+        <p>6. 证据齐备，验收完成 &rarr; SUCCEEDED；外部申请数量：1</p>
+      </li>
+    </ol>
+    <p class="arch-note">演示会创建全新的临时数据库，启动独立工作进程，并在外部服务提交后故意终止它。末行数字由外部数据库独立核对：受理申请恰好为 1。</p>
+
+    <h3 class="subsection-title">浏览持久历史：本地只读 GUI</h3>
+    <div class="code-block">
+      <pre data-copyable data-label="GUI 演示命令"><code>python3 -m work_runtime ui-demo</code></pre>
+    </div>
+    <p class="arch-note">以下为当前真实界面截图，由 <code>ui-demo</code> 播种的五工作样例（等待、需关注、已转移、成功、已取消）。本公共站点不会连接你的本地界面或数据库。</p>
+    <div class="showcase-grid">
+      <figure class="shot">
+        <img src="../assets/gui-zh-desktop.png" alt="Governed Work 本地界面的中文桌面截图：带定义的指标磁贴与五工作样例列表。" width="1280" height="900" loading="lazy">
+        <figcaption>中文，桌面 —— ui-demo 播种的样例数据。</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="../assets/gui-en-desktop.png" alt="Governed Work 本地界面的英文桌面截图：带定义的指标磁贴与五工作样例列表。" width="1280" height="900" loading="lazy">
+        <figcaption>英文，桌面 —— 同一样例库，一键切换。</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="../assets/gui-zh-390.png" alt="Governed Work 本地界面在 390 像素窄屏下的中文截图。" width="390" height="844" loading="lazy">
+        <figcaption>中文，390px —— 窄屏下查看器保持可用。</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="../assets/gui-en-390.png" alt="Governed Work 本地界面在 390 像素窄屏下的英文截图。" width="390" height="844" loading="lazy">
+        <figcaption>英文，390px —— 全程中英双语标签。</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="start" class="container">
+    <p class="eyebrow">快速开始</p>
+    <h2 class="section-title">三条命令体验真实崩溃恢复</h2>
+    <div class="code-block">
+      <pre data-copyable data-label="快速开始命令"><code>git clone https://github.com/WayJ/governed-agentic-work-runtime.git
+cd governed-agentic-work-runtime
+python3 -m work_runtime demo</code></pre>
+    </div>
+    <p class="start-notes">需要 Python 3.9 或更高版本。无需模型 API Key、无需凭据、无第三方运行依赖。每次演示运行都创建新的临时目录，绝不覆盖之前的结果。</p>
+    <p class="eyebrow subsection-gap">同一检出中的更多演示</p>
+    <ul class="optional-demos">
+      <li><code>python3 -m work_runtime publish-demo</code> <span class="demo-desc">—— 签名证据守住发布关口：HMAC 信封、篡改拒绝、超时后同键恢复。</span></li>
+      <li><code>python3 -m work_runtime intervention-demo</code> <span class="demo-desc">—— 所有权转移、不确定外部效果的取消、显式策略迁移。</span></li>
+      <li><code>python3 -m work_runtime adoption-demo</code> <span class="demo-desc">—— 静态 SOP 规则卡检查，加上经第三个适配器的真实文件发布。</span></li>
+      <li><code>python3 -m work_runtime ui-demo</code> <span class="demo-desc">—— 播种五工作样例库并启动本地只读界面。</span></li>
+    </ul>
+    <ul class="doc-links">
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/README.zh-CN.md">中文 README</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/RFC-001-core-semantics.md">核心语义</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/RFC-003-runtime-protocol.md">运行时协议</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/verification.md">验证覆盖</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/gui.md">GUI 指南</a></li>
+    </ul>
+  </section>
+
+  <section id="contribute" class="container">
+    <p class="eyebrow">参与贡献</p>
+    <h2 class="section-title">扩展它，或挑战它</h2>
+    <div class="card-grid contribute-cards">
+      <div class="card">
+        <h3>编写适配器</h3>
+        <p>通过公开契约接入第三个外部系统。</p>
+        <ul>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/adapter-contract.md">适配器契约</a></li>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/file-adapter.md">文件适配器实战</a></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>编写规则卡</h3>
+        <p>把业务策略写成 SOP 规则卡——静态检查，永不执行。</p>
+        <ul>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/sop-authoring.md">规则卡编写指南</a></li>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/contributor-guide.md">贡献者指南</a></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>挑战保证</h3>
+        <p>用可复现的反例挑战已声明的保证，是最有价值的贡献。</p>
+        <ul>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/issues">问题追踪</a></li>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/roadmap.md">开放路线图</a></li>
+        </ul>
+      </div>
+    </div>
+    <ul class="doc-links">
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/CONTRIBUTING.md">贡献指南</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/LICENSE">Apache-2.0 许可证</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/verification.md">当前已验证范围</a></li>
+    </ul>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-inner">
+    <div>
+      <p class="wordmark footer-brand"><span class="wordmark-mark" aria-hidden="true">&#9670;</span> Governed Work Runtime</p>
+      <p class="footer-note">本地参考原型，pre-alpha。本站为纯静态站点：不连接后端，不跟踪，无统计。</p>
+    </div>
+    <ul class="footer-links">
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/tree/main/docs">文档</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/issues">问题</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/CONTRIBUTING.md">贡献</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/LICENSE">许可证</a></li>
+      <li><a href="../index.html" hreflang="en" lang="en">English</a></li>
+    </ul>
+  </div>
+</footer>
+
+</body>
+</html>

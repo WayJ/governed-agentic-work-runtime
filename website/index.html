@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Governed Work Runtime — let agents plan; make every business action accountable</title>
+<meta name="description" content="A durable runtime for work that must survive agent sessions and prove its results. Agents propose actions; policies gate execution; evidence establishes completion. Local reference prototype, pre-alpha.">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-nav">
+  <div class="container nav-inner">
+    <a class="wordmark" href="#top"><span class="wordmark-mark" aria-hidden="true">&#9670;</span> Governed Work Runtime</a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#why">Why</a>
+      <a href="#how">How it works</a>
+      <a href="#demo">Demo</a>
+      <a href="#start">Start</a>
+      <a href="https://github.com/WayJ/governed-agentic-work-runtime/tree/main/docs">Docs</a>
+      <a href="https://github.com/WayJ/governed-agentic-work-runtime">GitHub</a>
+    </nav>
+    <a class="lang-link" href="zh/index.html" hreflang="zh" lang="zh">&#20013;&#25991;</a>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+
+  <section class="hero container" id="top">
+    <h1 class="hero-title">Let agents plan. Make every business action accountable.</h1>
+    <p class="lede">A small, durable runtime for work that must survive agent sessions and prove its results. Agents propose actions; policies gate execution; evidence establishes completion.</p>
+    <p class="status"><span class="badge">Pre-alpha</span> Status: local reference prototype &middot; Python 3.9+ &middot; Apache-2.0 &middot; zero runtime dependencies</p>
+    <div class="hero-ctas">
+      <a class="btn btn-primary btn-lg" href="#start">Run the demo</a>
+      <a class="btn btn-secondary btn-lg" href="https://github.com/WayJ/governed-agentic-work-runtime">View on GitHub</a>
+    </div>
+  </section>
+
+  <section id="why" class="container">
+    <p class="eyebrow">Why a work runtime</p>
+    <h2 class="section-title">Business work outlives the chat session</h2>
+    <p class="section-intro">A business task can outlive its conversation. Its plan can change, approval can arrive days later, and a timed-out API request may already have created a real application. This project keeps the responsibility, constraints and evidence in a persistent Work.</p>
+    <div class="card-grid">
+      <div class="card">
+        <h3>Work outlives the session</h3>
+        <p>Plans get revised, approvals arrive days later, and a timed-out call may already have created a real effect. The runtime keeps the obligation attached to the work, not to the plan step.</p>
+      </div>
+      <div class="card">
+        <h3>Decisions are durable</h3>
+        <p>Commands, receipts, evidence, waits and logical operations are persisted. After a restart the same business key recovers its receipt — without resubmitting or losing the external effect.</p>
+      </div>
+      <div class="card">
+        <h3>Policies admit, evidence completes</h3>
+        <p>Policies decide whether a proposed action is admitted; verified evidence decides whether work is complete. The agent picks the strategy — the runtime holds the accepted rules around its actions.</p>
+      </div>
+    </div>
+    <ul class="distinctions">
+      <li><strong>Work vs. plan</strong> — removing a step cannot remove the requirement for approval.</li>
+      <li><strong>Command vs. operation vs. attempt</strong> — lost responses and retries retain the original business identity.</li>
+      <li><strong>Execution vs. proof</strong> — a completed tool call cannot establish a business result without matching evidence.</li>
+    </ul>
+  </section>
+
+  <section id="how" class="container">
+    <p class="eyebrow">Architecture</p>
+    <h2 class="section-title">One accountable path from proposal to proof</h2>
+    <ol class="arch-flow">
+      <li>
+        <h3>Proposer</h3>
+        <p>The agent proposes the next action. It never flips a work to &ldquo;approved&rdquo; or &ldquo;done&rdquo; itself.</p>
+      </li>
+      <li>
+        <h3>Version-bound command</h3>
+        <p>Commands are deduplicated and checked against the bound contract revision; receipts are immutable and append-only.</p>
+      </li>
+      <li>
+        <h3>Policy gate</h3>
+        <p>Rules admit or block each proposal — for example E05, a missing special approval. Rejected decisions are recorded, never silently dropped.</p>
+      </li>
+      <li>
+        <h3>Durable operation</h3>
+        <p>Every external effect belongs to one logical operation. Waits, expiry and uncertain outcomes are explicit durable state.</p>
+      </li>
+      <li>
+        <h3>Adapter / effect</h3>
+        <p>External systems run behind a declared Adapter interface. Uncertainty is resolved by querying the original operation — never by a blind resubmit.</p>
+      </li>
+      <li>
+        <h3>Receipt / evidence</h3>
+        <p>Completion requires verified evidence: the runtime matches receipts and evidence before it records SUCCEEDED.</p>
+      </li>
+    </ol>
+    <p class="arch-note">Blockers (such as a missing approval), rejected commands and interventions are recorded as durable decisions. When a response is lost after an external commit, recovery re-queries the original operation by its business key — the effect is recovered exactly once, or escalated to a human, never replayed blind. Semantics: <a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/RFC-001-core-semantics.md">RFC-001 core semantics</a> &middot; <a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/RFC-003-runtime-protocol.md">RFC-003 runtime protocol</a>.</p>
+  </section>
+
+  <section id="demo" class="container">
+    <p class="eyebrow">Demo</p>
+    <h2 class="section-title">Watch it recover from a real crash</h2>
+    <p class="sample-note"><span class="badge">Sample</span> <strong>Illustrated sample</strong> — the six stages below are the recorded output of <code>python3 -m work_runtime demo</code>, not a running Python engine or a live agent.</p>
+    <ol id="recovery-stages" class="stages">
+      <li class="stage">
+        <h3>Proposal blocked</h3>
+        <p>1. Agent proposes submission &rarr; BLOCKED by E05 (approval missing)</p>
+      </li>
+      <li class="stage">
+        <h3>Durable wait</h3>
+        <p>2. Work waits durably; no model session needs to stay alive</p>
+      </li>
+      <li class="stage">
+        <h3>Approval arrives</h3>
+        <p>3. Finance approves current content &rarr; submission intent accepted</p>
+      </li>
+      <li class="stage">
+        <h3>Crash after acceptance</h3>
+        <p>4. OA accepts &rarr; worker exits before saving the response (real process crash)</p>
+      </li>
+      <li class="stage">
+        <h3>Same-key recovery</h3>
+        <p>5. Restart &rarr; query original operation &rarr; existing OA receipt recovered</p>
+      </li>
+      <li class="stage">
+        <h3>Evidence-backed completion</h3>
+        <p>6. Evidence-backed completion &rarr; SUCCEEDED; external applications created: 1</p>
+      </li>
+    </ol>
+    <p class="arch-note">The demo creates fresh temporary databases, starts a separate worker, and deliberately terminates it after the external service has committed. The final line is asserted against the external database: exactly one application exists.</p>
+
+    <h3 class="subsection-title">Browse the durable history: a local read-only GUI</h3>
+    <div class="code-block">
+      <pre data-copyable data-label="GUI demo command"><code>python3 -m work_runtime ui-demo</code></pre>
+    </div>
+    <p class="arch-note">Screenshots of the actual current interface, seeded by <code>ui-demo</code> with its five-work sample (waiting, needs-attention, transferred, succeeded, cancelled). This public site never connects to your local UI or database.</p>
+    <div class="showcase-grid">
+      <figure class="shot">
+        <img src="assets/gui-en-desktop.png" alt="English desktop screenshot of the Governed Work local GUI: metric tiles with definitions and the five-work sample list." width="1280" height="900" loading="lazy">
+        <figcaption>English, desktop — sample data seeded by ui-demo.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="assets/gui-zh-desktop.png" alt="Chinese desktop screenshot of the Governed Work local GUI: metric tiles with definitions and the five-work sample list." width="1280" height="900" loading="lazy">
+        <figcaption>Chinese, desktop — the same sample store, one toggle away.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="assets/gui-en-390.png" alt="English narrow-screen screenshot of the Governed Work local GUI at 390 pixels wide." width="390" height="844" loading="lazy">
+        <figcaption>English, 390px — the viewer stays usable on a narrow screen.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="assets/gui-zh-390.png" alt="Chinese narrow-screen screenshot of the Governed Work local GUI at 390 pixels wide." width="390" height="844" loading="lazy">
+        <figcaption>Chinese, 390px — bilingual labels throughout.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="start" class="container">
+    <p class="eyebrow">Quick start</p>
+    <h2 class="section-title">Three commands to a real crash recovery</h2>
+    <div class="code-block">
+      <pre data-copyable data-label="Quick start commands"><code>git clone https://github.com/WayJ/governed-agentic-work-runtime.git
+cd governed-agentic-work-runtime
+python3 -m work_runtime demo</code></pre>
+    </div>
+    <p class="start-notes">Requires Python 3.9 or newer. No model API key, no credentials, no third-party runtime dependencies. Every demo run creates a new temporary directory and never overwrites previous runs.</p>
+    <p class="eyebrow subsection-gap">More demos in the same checkout</p>
+    <ul class="optional-demos">
+      <li><code>python3 -m work_runtime publish-demo</code> <span class="demo-desc">— signed evidence gates a publication: HMAC envelopes, tamper rejection, same-key recovery after a timeout.</span></li>
+      <li><code>python3 -m work_runtime intervention-demo</code> <span class="demo-desc">— ownership transfer, cancellation with an uncertain external effect, explicit policy migration.</span></li>
+      <li><code>python3 -m work_runtime adoption-demo</code> <span class="demo-desc">— static SOP rule-card linting plus a real file publication through the third adapter.</span></li>
+      <li><code>python3 -m work_runtime ui-demo</code> <span class="demo-desc">— seeds the five-work sample store and serves the local read-only GUI.</span></li>
+    </ul>
+    <ul class="doc-links">
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/README.md">README</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/RFC-001-core-semantics.md">Core semantics</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/RFC-003-runtime-protocol.md">Runtime protocol</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/verification.md">Verification coverage</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/gui.md">GUI guide</a></li>
+    </ul>
+  </section>
+
+  <section id="contribute" class="container">
+    <p class="eyebrow">Contribute</p>
+    <h2 class="section-title">Extend it, or challenge it</h2>
+    <div class="card-grid contribute-cards">
+      <div class="card">
+        <h3>Write an adapter</h3>
+        <p>Connect a third external system through the public contract.</p>
+        <ul>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/adapter-contract.md">Adapter contract</a></li>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/file-adapter.md">File adapter walkthrough</a></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Author a rule card</h3>
+        <p>Describe your business policy as a SOP rule card — statically linted, never executed.</p>
+        <ul>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/sop-authoring.md">Rule-card authoring guide</a></li>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/contributor-guide.md">Contributor guide</a></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Challenge a guarantee</h3>
+        <p>Reproducible failures against a stated guarantee are the most useful contributions.</p>
+        <ul>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/issues">Issue tracker</a></li>
+          <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/roadmap.md">Open roadmap</a></li>
+        </ul>
+      </div>
+    </div>
+    <ul class="doc-links">
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/CONTRIBUTING.md">Contributing</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/LICENSE">Apache-2.0 license</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/docs/verification.md">What is verified today</a></li>
+    </ul>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-inner">
+    <div>
+      <p class="wordmark footer-brand"><span class="wordmark-mark" aria-hidden="true">&#9670;</span> Governed Work Runtime</p>
+      <p class="footer-note">A local reference prototype, pre-alpha. This site is static: no backend connection, no tracking, no analytics.</p>
+    </div>
+    <ul class="footer-links">
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/tree/main/docs">Docs</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/issues">Issues</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/CONTRIBUTING.md">Contributing</a></li>
+      <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/LICENSE">License</a></li>
+      <li><a href="zh/index.html" hreflang="zh" lang="zh">&#20013;&#25991;</a></li>
+    </ul>
+  </div>
+</footer>
+
+</body>
+</html>
