@@ -216,3 +216,73 @@ guard, correctly inactive with the backend installed). Corrected test commit:
 (order-independent)`) on `WayJ/s5-browser-interface` after base `138d6b4`,
 followed only by the report-addendum commits carrying this note (branch tip
 at correction time; the exact final hash travels in the dispatch message).
+
+## Addendum 3 — browser bugfix: first-load list render and tab-arrow focus (2026-10-14, dispatch task_5dbcb17c2e91)
+
+Integration independently reproduced two defects on the assembled carrier
+(`WayJ/sprint-s5-gui` tip `44de1d9`, real Chrome). Both were verified against
+my source before fixing, reproduced RED in actual browsers, fixed minimally in
+`work_runtime/web/app.js` only, and proven GREEN — owned scope: `app.js`, the
+regression artifact `.agents/notes/2026-10-14-S5-browser-regression.py`,
+screenshot evidence under `.agents/notes/assets/`, and this addendum
+(base `e14798f`).
+
+**Defect 1 — permanent false Loading on first load.** The `/api/works`
+handler rendered the list *before* setting `state.loadedOnce = true`;
+`renderListItems` therefore took its loading branch on the first response, and
+the unchanged-payload guard (poll-focus stability) then skipped every later
+render — a populated store showed "Loading works…" forever, and an empty store
+never showed its empty message. Fix: set `loadedOnce` before the first render
+(4 lines moved; the worksJson guard, epoch guards and error paths unchanged).
+
+**Defect 2 — tab Arrow keys drop focus.** `activateTab` rebuilds the detail
+body, detaching the old tablist; the keydown handler then queried that stale
+closure and focused a detached node (a no-op), so `document.activeElement`
+fell back to `body`. Fix: focus the newly selected tab via the live document
+(`#detail-body .tabs [data-tab=…]`; tab ids are the fixed TABS constants).
+Roving tabindex and the selected panel are unchanged.
+
+**RED evidence (old build, actual browsers, zero interaction):** Orca
+embedded browser (page efd755da) after `networkidle`: populated store →
+`{"items":0,"status":"正在加载工作…"}` — unchanged after >1 poll cycle; empty
+store → the same loading text instead of the empty message. Arrow check:
+list forced to render via the search filter, work selected, first tab
+focused, `ArrowRight` dispatched → `{"active":"BODY","connected":true,
+"selectedTab":"requirements"}` — the tab switched but focus fell to body.
+Independent engine: headless Google Chrome `--dump-dom
+--virtual-time-budget=12000` (first load plus polls) → 0 items and
+"正在加载工作…" on both stores. Screenshots: `assets/red1-first-load-stuck-loading.png`,
+`assets/red2-empty-store-stuck-loading.png`, `assets/red3-arrow-focus-lost-body.png`.
+
+**GREEN evidence (fixed build):** Orca browser first load, no interaction →
+populated `{"items":5,"status":"共 5 项工作中的 5 项"}`; empty →
+`{"items":0,"status":"此存储中还没有工作。"}`; after `ArrowRight` →
+`{"active":"requirements","connected":true,"selected":"requirements"}`.
+Screenshots: `assets/green1-first-load-five-works.png`,
+`assets/green2-empty-store-message.png`, `assets/green3-arrow-focus-live-tab.png`.
+
+**Regression artifact** (stdlib-only CDP driver for real headless Chrome,
+trusted `Input.dispatchKeyEvent`, `Emulation.setDeviceMetricsOverride` for
+desktop 1280×900 and narrow 390×844; no new runtime dependencies — Chrome and
+the standard library only, dependency verified present before use):
+against the fixed build → `browser regression: 14 checks, 0 failed`
+(first-load 5 items + status at both viewports, empty message at both,
+four alternating ArrowRight/ArrowLeft presses each keeping focus on the live
+selected tab at both viewports). Against the old build restored in the
+scratch → `browser regression: 8 checks, 6 failed` (permanent loading at both
+viewports, empty-store loading, tabs unreachable without interaction) — the
+artifact detects the defect class it guards.
+
+**Tooling notes, honestly:** Orca's embedded browser could not deliver real
+keypresses in this environment (`keypress` reported ok but no key reached the
+focused element — verified with a focused-input probe) and no CDP client
+library exists on this machine; per the dispatch, the existing headless
+Google Chrome binary was verified present and driven through a stdlib-only
+CDP client (the artifact). The one synthetic `KeyboardEvent` dispatch (Orca
+eval) used for defect 2's RED drove the real handler and observed the real
+DOM focus outcome; all GREEN arrow assertions use trusted CDP key events.
+Pending vs actual, exactly: actual-browser checks above are done; still
+pending from prior addenda — assembled HTTP install verification in CI and
+any broader browser acceptance (integration owns both). Core gates at the
+corrected tip: node --check clean, `Ran 539 tests ... OK`, docs gate
+`0 broken`; no production Python file touched.
