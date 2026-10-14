@@ -18,7 +18,8 @@ from typing import Callable, Dict, NamedTuple, Optional, Tuple
 from .policy import canonical
 
 SIGNED_FIELDS = ("command_id", "data", "event_id", "issued_at", "kind", "source", "work_id")
-ENVELOPE_FIELDS = frozenset(SIGNED_FIELDS) | {"signature"}
+OPTIONAL_KEY_FIELD = "key_id"
+ENVELOPE_FIELDS = frozenset(SIGNED_FIELDS) | {OPTIONAL_KEY_FIELD, "signature"}
 MIN_SECRET_BYTES = 32
 # Runtime writes accepted-receipt evidence itself during dispatch resolution;
 # signed ingress never supplies that kind (design decision M1).
@@ -69,8 +70,9 @@ def _json_native(value):
 def _message_problem(message):
     if not isinstance(message, dict):
         return "message must be a dict"
-    if set(message) != set(SIGNED_FIELDS):
-        return "message requires exactly the signed fields"
+    present = set(message)
+    if not set(SIGNED_FIELDS) <= present or present - set(SIGNED_FIELDS) - {OPTIONAL_KEY_FIELD}:
+        return "message requires exactly the signed fields, optionally key_id"
     if type(message["issued_at"]) is not int:
         return "issued_at must be an integer epoch second, not bool"
     if not isinstance(message["data"], dict) or not _json_native(message["data"]):
@@ -78,6 +80,10 @@ def _message_problem(message):
     for field in _IDENTITY_FIELDS:
         if not isinstance(message[field], str) or not message[field]:
             return field + " must be a nonempty string"
+    if OPTIONAL_KEY_FIELD in message:
+        key_id = message[OPTIONAL_KEY_FIELD]
+        if not isinstance(key_id, str) or not key_id:
+            return "key_id must be a nonempty string"
     return None
 
 
@@ -167,9 +173,15 @@ def _open_envelope(envelope):
     ``record`` guarantee the gateway authenticates and forwards the same
     bytes even if the caller passed a mutable or lying mapping.
     """
-    if not isinstance(envelope, dict) or set(envelope) != set(ENVELOPE_FIELDS):
+    if not isinstance(envelope, dict):
+        return None, None, "envelope requires exactly the signed fields plus signature"
+    present = set(envelope)
+    required = set(ENVELOPE_FIELDS) - {OPTIONAL_KEY_FIELD}
+    if not required <= present or not present <= set(ENVELOPE_FIELDS):
         return None, None, "envelope requires exactly the signed fields plus signature"
     message = {field: envelope[field] for field in SIGNED_FIELDS}
+    if OPTIONAL_KEY_FIELD in present:
+        message[OPTIONAL_KEY_FIELD] = envelope[OPTIONAL_KEY_FIELD]
     signature = envelope["signature"]
     problem = _message_problem(message)
     if problem is None:
@@ -188,6 +200,9 @@ class SignedEvidenceGateway:
     invoked, so intake failures persist nothing; authenticated business
     rejections keep normal Runtime receipt semantics. Configure one distinct
     random secret of at least 32 bytes per source — there is no default key.
+    A source may instead be configured as a keyring (a list/tuple of
+    ``SourceKey`` entries); see the keyring section of docs/signed-evidence.md
+    for selection and rotation semantics.
     """
 
     def __init__(self, runtime, keys: Dict[str, object], max_age: int = 300,
@@ -225,6 +240,30 @@ class SignedEvidenceGateway:
         self.max_age = max_age
         self.clock = clock
 
+    def _select_key(self, source, key_id):
+        """Resolve the single verification key for one candidate (D49/D51).
+
+        Returns ``(secret, entry)`` — ``entry`` is the ``SourceKey`` for
+        keyring sources (carrying its validity window for the post-HMAC
+        checks) or ``None`` for legacy bytes sources; ``(None, None)`` when
+        the source or the cited selector is unknown. No try-all-keys and no
+        fallback: a keyring source without ``key_id`` selects its ``current``
+        entry only, and a legacy bytes source rejects ``key_id`` envelopes.
+        """
+        ring = self.keyrings.get(source)
+        if ring is not None:
+            for entry in ring:
+                if key_id is None:
+                    if entry.current:
+                        return entry.secret, entry
+                elif entry.key_id == key_id:
+                    return entry.secret, entry
+            return None, None
+        secret = self.keys.get(source)
+        if secret is None or key_id is not None:
+            return None, None
+        return secret, None
+
     def record(self, envelope: dict) -> dict:
         """Authenticate one envelope and record its evidence; never raises on bad input."""
         try:
@@ -236,7 +275,8 @@ class SignedEvidenceGateway:
             problem = "envelope cannot be canonically encoded as UTF-8"
         if problem is not None:
             return _reject(CODE_ENVELOPE_INVALID)
-        secret = self.keys.get(message["source"])
+        secret, _entry = self._select_key(message["source"],
+                                          message.get(OPTIONAL_KEY_FIELD))
         if secret is None:
             return _reject(CODE_AUTHENTICATION_FAILED)
         if not hmac.compare_digest(_signature(secret, encoded), signature):

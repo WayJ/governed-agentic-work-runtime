@@ -319,6 +319,29 @@ is the D49–D53 section of the
   `test_configuration_is_copied_at_construction`,
   `test_legacy_bytes_validation_is_unchanged_beside_rings`
   (all in `tests/test_key_rotation.py`, class `KeyringConfigTests`).
+- **Authenticated key selection (D49/D51)**: optional `key_id` inside the
+  signed canonical bytes (selector swap breaks the signature — no unsigned
+  downgrade), unknown `key_id` and wrong-secret-with-known-`key_id` rejected
+  with zero writes, `key_id` envelopes against legacy `bytes` sources
+  rejected, legacy-format envelopes authenticating against the `current`
+  entry only (non-current key never silently serves the legacy path),
+  current-entry happy path accepted, record-level immunity to caller
+  dict/list mutation after construction, cross-material impersonation across
+  sources rejected, signer round-trip of the optional field with
+  signature dependence, and non-str/empty `key_id` rejected by both the
+  signer (`ValueError`) and the gateway shape check
+  (`EVIDENCE_ENVELOPE_INVALID`). Named: `test_key_id_envelope_accepted_against_keyring`,
+  `test_key_id_is_signed_content_and_tampering_fails`, `test_unknown_key_id_rejected`,
+  `test_wrong_secret_with_known_key_id_rejected`,
+  `test_key_id_envelope_against_legacy_bytes_source_rejected`,
+  `test_legacy_envelope_authenticates_against_current_entry_only`,
+  `test_legacy_envelope_current_entry_happy_path_accepted`,
+  `test_ring_configuration_mutations_cannot_reach_verification`,
+  `test_cross_material_cannot_impersonate_across_sources`
+  (`KeySelectionTests`); `test_envelope_carries_optional_key_id_and_signature_depends_on_it`,
+  `test_signer_rejects_bad_key_id_values`,
+  `test_gateway_rejects_bad_key_id_shape_as_envelope_invalid`
+  (`SignerKeyFieldTests`).
 
 ## RFC-001 acceptance behaviors (R1–R7)
 

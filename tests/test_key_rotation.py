@@ -9,6 +9,7 @@ never printed); the known-answer vector is a published fixed value, not a
 credential.
 """
 
+import json
 import secrets
 import sqlite3
 import tempfile
@@ -173,6 +174,188 @@ class KeyringConfigTests(unittest.TestCase):
                          {"finance": self.finance, "ledger": self.finance}):
             with self.assertRaises(ValueError):
                 SignedEvidenceGateway(self.runtime, bad_keys, clock=lambda: self.now)
+
+
+class KeySelectionTests(unittest.TestCase):
+    """Optional signed key_id selection, current-only legacy path, HMAC (D49/D51)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.now = 2000000000
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.runtime = Runtime(self.path, ExpensePolicy(), demo_grants())
+        initialize(self.runtime)
+        self.k1 = SourceKey("ring-2026-08", key(), current=True)
+        self.k2 = SourceKey("ring-2026-10", key())
+        self.ledger = key()
+        self.gateway = SignedEvidenceGateway(
+            self.runtime, {"finance": [self.k1, self.k2], "ledger": self.ledger},
+            clock=lambda: self.now)
+
+    def message(self, **overrides):
+        base = {"source": "finance", "command_id": "cmd-1", "work_id": "demo",
+                "event_id": "evt-1", "kind": "approval",
+                "data": {"digest": self.runtime.get_work("demo")["document_digest"]},
+                "issued_at": self.now}
+        base.update(overrides)
+        return base
+
+    def signed(self, secret=None, key_id=False, **overrides):
+        # key_id=False omits the optional field entirely.
+        message = self.message(**overrides)
+        if key_id is not False:
+            message["key_id"] = key_id
+        return sign_evidence(self.k1.secret if secret is None else secret, message)
+
+    def table_counts(self):
+        with sqlite3.connect(self.path) as db:
+            return {t: db.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
+                    for t in ("works", "commands", "evidence", "operations", "events", "metadata")}
+
+    def evidence_bodies(self):
+        with sqlite3.connect(self.path) as db:
+            return [json.loads(r[0]) for r in db.execute("SELECT body FROM evidence")]
+
+    def test_key_id_envelope_accepted_against_keyring(self):
+        for entry in (self.k1, self.k2):
+            envelope = self.signed(secret=entry.secret, key_id=entry.key_id,
+                                   command_id="cmd-" + entry.key_id,
+                                   event_id="evt-" + entry.key_id)
+            receipt = self.gateway.record(envelope)
+            self.assertEqual(receipt["decision"], "accepted", entry.key_id)
+        body = self.evidence_bodies()[0]
+        self.assertEqual(set(body), {"id", "source", "event_id", "kind", "data", "status"})
+        rendered = json.dumps(body) + json.dumps(receipt)
+        for field in ("key_id", "signature", "issued_at"):
+            self.assertNotIn(field, rendered)
+
+    def test_key_id_is_signed_content_and_tampering_fails(self):
+        before = self.table_counts()
+        envelope = self.signed(secret=self.k2.secret, key_id=self.k2.key_id)
+        envelope["key_id"] = self.k1.key_id  # selector swap without re-signing
+        self.assertEqual(self.gateway.record(envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(self.table_counts(), before)
+
+    def test_unknown_key_id_rejected(self):
+        before = self.table_counts()
+        envelope = self.signed(secret=self.k2.secret, key_id="ring-2027-01")
+        self.assertEqual(self.gateway.record(envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(self.table_counts(), before)
+
+    def test_wrong_secret_with_known_key_id_rejected(self):
+        before = self.table_counts()
+        envelope = self.signed(secret=self.k2.secret, key_id=self.k1.key_id)
+        self.assertEqual(self.gateway.record(envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(self.table_counts(), before)
+
+    def test_key_id_envelope_against_legacy_bytes_source_rejected(self):
+        before = self.table_counts()
+        envelope = self.signed(secret=self.ledger, key_id=self.k1.key_id,
+                               source="ledger")
+        self.assertEqual(self.gateway.record(envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(self.table_counts(), before)
+
+    def test_legacy_envelope_authenticates_against_current_entry_only(self):
+        before = self.table_counts()
+        envelope = self.signed(secret=self.k2.secret)  # k2 is listed but not current
+        self.assertEqual(self.gateway.record(envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(self.table_counts(), before)
+
+    def test_legacy_envelope_current_entry_happy_path_accepted(self):
+        receipt = self.gateway.record(self.signed())
+        self.assertEqual(receipt["decision"], "accepted")
+        self.assertEqual(receipt["evidence_status"], "pending_verification")
+
+    def test_ring_configuration_mutations_cannot_reach_verification(self):
+        caller_ring = [self.k1, self.k2]
+        keys = {"finance": caller_ring}
+        gateway = SignedEvidenceGateway(self.runtime, keys, clock=lambda: self.now)
+        k3 = SourceKey("ring-2026-12", key(), current=True)
+        caller_ring.append(k3)
+        keys["finance"] = [k3]
+        before = self.table_counts()
+        for envelope in (self.signed(secret=k3.secret, key_id=k3.key_id),
+                         self.signed(secret=k3.secret)):
+            self.assertEqual(gateway.record(envelope),
+                             {"decision": "rejected",
+                              "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        receipt = gateway.record(self.signed())
+        self.assertEqual(receipt["decision"], "accepted")
+        after = self.table_counts()
+        self.assertEqual(after["commands"], before["commands"] + 1)
+        self.assertEqual(after["evidence"], before["evidence"] + 1)
+
+    def test_cross_material_cannot_impersonate_across_sources(self):
+        before = self.table_counts()
+        ring_forged = self.signed(secret=self.k1.secret, source="ledger")
+        legacy_forged = self.signed(secret=self.ledger, key_id=self.k1.key_id,
+                                    source="ledger")
+        for envelope in (ring_forged, legacy_forged):
+            self.assertEqual(self.gateway.record(envelope),
+                             {"decision": "rejected",
+                              "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(self.table_counts(), before)
+
+
+class SignerKeyFieldTests(unittest.TestCase):
+    """sign_evidence accepts and signs the optional key_id field (D49 §4.10)."""
+
+    def setUp(self):
+        self.secret = key()
+
+    def message(self, **overrides):
+        base = {"source": "finance", "command_id": "cmd-1", "work_id": "demo",
+                "event_id": "evt-1", "kind": "approval",
+                "data": {"digest": "0" * 64}, "issued_at": 2000000000}
+        base.update(overrides)
+        return base
+
+    def test_envelope_carries_optional_key_id_and_signature_depends_on_it(self):
+        plain = sign_evidence(self.secret, self.message())
+        self.assertEqual(set(plain), set(SIGNED_FIELDS) | {"signature"})
+        with_id = sign_evidence(self.secret, self.message(key_id="ring-2026-10"))
+        self.assertEqual(set(with_id), set(SIGNED_FIELDS) | {"key_id", "signature"})
+        self.assertNotEqual(plain["signature"], with_id["signature"])
+
+    def test_signer_rejects_bad_key_id_values(self):
+        for bad in ("", 7, None, True, b"ring-2026-10"):
+            with self.assertRaises(ValueError):
+                sign_evidence(self.secret, self.message(key_id=bad))
+        both = self.message(key_id="ring-2026-10")
+        both["nonce"] = "x"
+        with self.assertRaises(ValueError):
+            sign_evidence(self.secret, both)
+
+    def test_gateway_rejects_bad_key_id_shape_as_envelope_invalid(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        path = str(Path(temp.name) / "runtime.sqlite")
+        runtime = Runtime(path, ExpensePolicy(), demo_grants())
+        initialize(runtime)
+        gateway = SignedEvidenceGateway(
+            runtime, {"finance": [SourceKey("ring-2026-08", key(), current=True)]},
+            clock=lambda: 2000000000)
+
+        def counts():
+            with sqlite3.connect(path) as db:
+                return {t: db.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
+                        for t in ("works", "commands", "evidence", "operations",
+                                  "events", "metadata")}
+
+        before = counts()
+        for bad in (7, "", None, True):
+            envelope = sign_evidence(self.secret, self.message())
+            envelope["key_id"] = bad
+            self.assertEqual(gateway.record(envelope),
+                             {"decision": "rejected",
+                              "code": "EVIDENCE_ENVELOPE_INVALID"}, bad)
+        self.assertEqual(counts(), before)
 
 
 if __name__ == "__main__":

@@ -40,11 +40,17 @@ canonicalization failure.
 | `kind` | nonempty str | evidence kind owned by the source in policy |
 | `data` | JSON-native object | finite values, string keys, no tuple/set/coercions |
 | `issued_at` | int (not bool) | epoch seconds |
+| `key_id` | nonempty str (optional) | authenticated keyring selector (S11); never persisted |
 | `signature` | 64 lowercase hex | HMAC-SHA256 of the canonical message UTF-8 |
 
 Canonical form is sorted-key compact JSON (`policy.canonical`, `allow_nan=False`).
-The signature covers exactly the seven signed fields; `signature` itself is
-never signed. There is no actor/alias field.
+The signature covers exactly the seven signed fields, plus `key_id` when the
+optional selector is present — an envelope carries either exactly the seven
+legacy fields or those seven plus `key_id`, nothing else. `signature` itself is
+never signed, and there is no actor/alias field. `SIGNED_FIELDS` (the legacy
+seven-field tuple) and the published known-answer vector are unchanged; old
+gateways reject 8-field envelopes as `EVIDENCE_ENVELOPE_INVALID`, so a signer
+targeting one omits `key_id`.
 
 Reference cycles and pathologically deep nesting are invalid input on both
 surfaces: the signer raises `ValueError` (local misuse contract) and the
@@ -61,23 +67,32 @@ checks, in order:
    integer (non-bool) `issued_at`, well-formed signature string. Canonicalization
    or UTF-8 encoding failures are caught and treated the same way.
    → `EVIDENCE_ENVELOPE_INVALID`
-2. **Known source** — the `source` must have a configured key.
+2. **Known source** — the `source` must have a configured key or keyring.
    → `EVIDENCE_AUTHENTICATION_FAILED`
-3. **Signature** — HMAC-SHA256 over the canonical UTF-8 snapshot, compared
-   with `hmac.compare_digest`. Tampering with any signed field fails here.
+3. **Key selection** (deterministic, no try-all, no fallback) — an envelope
+   citing `key_id` selects that entry in the source's keyring (an absent
+   entry is rejected, indistinguishable from an attacker's key); a keyring
+   envelope without `key_id` selects the ring's **`current` entry only** —
+   the migration bridge that keeps legacy-format signers working and
+   guarantees a retired key is never silently accepted on the legacy path; a
+   legacy `bytes` source has one key and rejects `key_id` envelopes.
    → `EVIDENCE_AUTHENTICATION_FAILED`
-4. **Freshness** — `abs(now - issued_at) <= max_age`, covering future skew.
+4. **Signature** — HMAC-SHA256 over the canonical UTF-8 snapshot (including
+   `key_id` when present), compared with `hmac.compare_digest`. Tampering
+   with any signed field — including swapping the selector — fails here.
+   → `EVIDENCE_AUTHENTICATION_FAILED`
+5. **Freshness** — `abs(now - issued_at) <= max_age`, covering future skew.
    → `EVIDENCE_EXPIRED`
-5. **Reserved kind** — `kind == "accepted"` is reserved for Runtime-written
+6. **Reserved kind** — `kind == "accepted"` is reserved for Runtime-written
    adapter receipts; signed ingress refuses it even for an authorized,
    key-configured source. → `EVIDENCE_KIND_UNSUPPORTED`
-6. Only then `runtime.command(actor=source, kind="record_evidence", ...)`
+7. Only then `runtime.command(actor=source, kind="record_evidence", ...)`
    with the business payload `{event_id, kind, data}` taken from the same
-   detached JSON snapshot whose bytes were authenticated. The signature and
-   timestamp are authentication-envelope data and are never persisted in the
-   business payload.
+   detached JSON snapshot whose bytes were authenticated. The signature,
+   timestamp and `key_id` are authentication-envelope data and are never
+   persisted in the business payload or part of any evidence fingerprint.
 
-Rejection receipts for steps 1–5 are exactly `{"decision": "rejected",
+Rejection receipts for steps 1–6 are exactly `{"decision": "rejected",
 "code": ...}` and leave **all** Runtime tables unchanged: no command, evidence,
 event or work rows are written for unauthenticated input. Authenticated
 business rejections are different and follow normal Runtime semantics — a
@@ -129,9 +144,9 @@ secret material distinct across the whole configuration. The ring is
 normalized to an immutable per-source tuple copied at construction: mutating
 the caller's dict or list afterwards changes nothing, and rotation means
 constructing a new gateway from new configuration — there is no in-process
-rotation surface. Verification-key selection and validity-window semantics for
-keyring sources are specified under [Gateway checks](#gateway-checks-and-receipts)
-and land with the S11 selector and clock work on this branch.
+rotation surface. Verification-key selection for keyring sources is specified
+under [Gateway checks](#gateway-checks-and-receipts); key validity windows are
+evaluated on the gateway clock and land with the S11 clock work on this branch.
 
 ## Limitations
 
