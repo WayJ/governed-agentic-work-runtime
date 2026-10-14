@@ -1,0 +1,3 @@
+# User instruction: pause after S6 — 2026-10-14
+
+User explicitly says: “s6 完成后先暂停，后面的等我通知”. This supersedes earlier continuous-mode authorization for work AFTER S6. Finish S6 independent acceptance, main merge/non-force push, final-SHA CI, actual Pages deployment/public URL verification and release report. Then master pauses; no S7/future sprint, new feature development, future roadmap work or worker dispatch until an explicit user resume instruction. Do not stop or interrupt the active S6 release merely because of this instruction. Settled workers report once and idle; preserve existing user previews and worktrees, complete required ownership accounting. Include this instruction in the release handover and final status.
