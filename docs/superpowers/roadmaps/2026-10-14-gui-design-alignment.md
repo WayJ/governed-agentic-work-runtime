@@ -27,7 +27,7 @@ evidence: ../../../.agents/notes/2026-10-14-resume-after-S6.md
 
 | sprint | state | note |
 |---|---|---|
-| S7 | ready | 2026-10-14 after resumed goal and verified S6 publication; Strategic ready: S6 merged7b7e434/published7931cc6; no active sprints; builder01d149e has no material questions; design ratification before code. DoD covers this scope. [Design](../specs/2026-10-14-s7-gui-design-alignment-design.md). |
+| S7 | started | 2026-10-14 after resumed goal and verified S6 publication; Strategic ready: S6 merged7b7e434/published7931cc6; no active sprints; builder01d149e has no material questions; design ratification before code. DoD covers this scope. Materialized2026-10-14 [S7](../sprints/2026-10-14-S7-plan.md), WIP1; no early/deferred dependency. [Design](../specs/2026-10-14-s7-gui-design-alignment-design.md). |
 
 ## Decisions (ADR)
 
