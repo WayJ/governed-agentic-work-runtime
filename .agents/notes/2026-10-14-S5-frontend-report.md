@@ -211,5 +211,8 @@ product code changed.
 
 **Counts, exactly:** isolated suite 539 run / 0 failed / 0 skipped; assembled
 suite 602 run / 4 failed (all backend-owner) / 1 skipped (my absent-backend
-guard, correctly inactive with the backend installed). Corrected tip:
-`<filled at commit>`.
+guard, correctly inactive with the backend installed). Corrected test commit:
+`33af1ca` (`test(gui): subprocess-isolated port-gate import proof
+(order-independent)`) on `WayJ/s5-browser-interface` after base `138d6b4`,
+followed only by the report-addendum commits carrying this note (branch tip
+at correction time; the exact final hash travels in the dispatch message).
