@@ -149,8 +149,8 @@ class _UiHandler(BaseHTTPRequestHandler):
             return self._fail("UNKNOWN_ROUTE", 404)
         path, _, query = target.partition("?")
         try:
-            self._check_host()
-            self._check_origin()
+            request_host = self._check_host()
+            self._check_origin(request_host)
             if path in _STATIC_ROUTES:
                 if query:
                     raise GuiReaderError("BAD_QUERY",
@@ -189,7 +189,10 @@ class _UiHandler(BaseHTTPRequestHandler):
     # -- helpers ----------------------------------------------------------
 
     def _check_host(self):
-        """Exactly one Host, a loopback authority naming the actual port."""
+        """Exactly one Host, a loopback authority naming the actual port.
+
+        Returns the normalized (host, port) the request itself names.
+        """
         values = self.headers.get_all("Host")
         if values is None or len(values) != 1:
             raise GuiReaderError("BAD_HOST", "exactly one Host header is required")
@@ -197,9 +200,15 @@ class _UiHandler(BaseHTTPRequestHandler):
         actual = self.server.server_address[1]
         if host not in _LOCAL_HOSTS or port != actual:
             raise GuiReaderError("BAD_HOST", "Host must name this local server")
+        return host, port
 
-    def _check_origin(self):
-        """Origin is optional, but when present it must be this origin."""
+    def _check_origin(self, request_host):
+        """Origin is optional, but when present it must be this request's origin.
+
+        The Origin's normalized host and port must equal the validated
+        request Host authority itself — the other loopback alias is a
+        different origin, not an accepted equivalent.
+        """
         values = self.headers.get_all("Origin")
         if not values:
             return
@@ -212,8 +221,7 @@ class _UiHandler(BaseHTTPRequestHandler):
         if any(character in authority for character in "/@?#"):
             raise GuiReaderError("BAD_ORIGIN", "Origin must be this local origin")
         host, port = _split_authority(authority)
-        actual = self.server.server_address[1]
-        if host not in _LOCAL_HOSTS or port != actual:
+        if (host, port) != request_host:
             raise GuiReaderError("BAD_ORIGIN", "Origin must be this local origin")
 
     @staticmethod

@@ -269,12 +269,16 @@ class BoundaryTests(UiServerFixture):
                 self.assertEqual(self.error_code(body), "BAD_HOST")
 
     def test_origin_accepted_when_matching(self):
-        for origin in ("http://127.0.0.1:%d" % self.port,
-                       "http://localhost:%d" % self.port):
-            with self.subTest(origin=origin):
+        # Same-alias pairs: the Origin equals the request's own Host origin.
+        pairs = (
+            ("Host: 127.0.0.1:%d" % self.port, "http://127.0.0.1:%d" % self.port),
+            ("Host: localhost:%d" % self.port, "http://localhost:%d" % self.port),
+        )
+        for host_header, origin in pairs:
+            with self.subTest(host=host_header, origin=origin):
                 status, _, body = self.raw_request(
-                    "GET", "/api/summary", [self.correct_host(), "Origin: " + origin])
-                self.assertEqual(status, 200)
+                    "GET", "/api/summary", [host_header, "Origin: " + origin])
+                self.assertEqual(status, 200, (host_header, origin))
 
     def test_origin_rejected(self):
         cases = (
@@ -292,6 +296,21 @@ class BoundaryTests(UiServerFixture):
                 status, _, body = self.raw_request(
                     "GET", "/api/summary", [self.correct_host(), "Origin: " + origin])
                 self.assertEqual(status, 403, origin)
+                self.assertEqual(self.error_code(body), "BAD_ORIGIN")
+
+    def test_origin_cross_alias_rejected(self):
+        # D25: Origin must match the request's own local origin (its Host
+        # authority). The other loopback alias is a different origin, even
+        # with the right port — both cross-alias pairs are 403.
+        pairs = (
+            ("Host: 127.0.0.1:%d" % self.port, "http://localhost:%d" % self.port),
+            ("Host: localhost:%d" % self.port, "http://127.0.0.1:%d" % self.port),
+        )
+        for host_header, origin in pairs:
+            with self.subTest(host=host_header, origin=origin):
+                status, _, body = self.raw_request(
+                    "GET", "/api/summary", [host_header, "Origin: " + origin])
+                self.assertEqual(status, 403, (host_header, origin))
                 self.assertEqual(self.error_code(body), "BAD_ORIGIN")
 
     def test_duplicate_origin_rejected(self):
