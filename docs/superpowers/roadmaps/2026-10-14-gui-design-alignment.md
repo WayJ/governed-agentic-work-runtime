@@ -27,13 +27,15 @@ evidence: ../../../.agents/notes/2026-10-14-resume-after-S6.md
 
 | sprint | state | note |
 |---|---|---|
-| S7 | planned | 2026-10-14 after resumed goal and verified S6 publication; design-only builder check precedes strategic ready/materialization. [Design](../specs/2026-10-14-s7-gui-design-alignment-design.md). |
+| S7 | ready | 2026-10-14 after resumed goal and verified S6 publication; Strategic ready: S6 merged7b7e434/published7931cc6; no active sprints; builder01d149e has no material questions; design ratification before code. DoD covers this scope. [Design](../specs/2026-10-14-s7-gui-design-alignment-design.md). |
 
 ## Decisions (ADR)
 
 | id | decision | rationale | date | evidence |
 |---|---|---|---|---|
 | D30 | Apply user DESIGN prospectively to existing GUI before next runtime expansion | Existing blue/gray viewer predates reference; preserve business data and local read-only boundary with browser evidence. No retroactive S5 compliance claim. | 2026-10-14 | [Design](../specs/2026-10-14-s7-gui-design-alignment-design.md) |
+
+| D31 | Ratify CSS-first builder defaults and full real-browser evidence matrix | Actual CSS/DTO/packaging review and contrast math support scoped implementation; independent rendered checks remain mandatory. | 2026-10-14 | [Builder](../../../.agents/notes/2026-10-14-S7-design-review.md) |
 
 ## Asset Disposition
 

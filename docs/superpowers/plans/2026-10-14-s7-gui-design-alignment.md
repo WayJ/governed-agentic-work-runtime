@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python>=3.9 standard library/unittest, vanilla HTML/CSS/JavaScript, SQLite, actual Chrome CDP; zero runtime dependencies and no frontend build.
 
-**Spec:** [S7 design](../specs/2026-10-14-s7-gui-design-alignment-design.md); read [AGENTS.md](../../../AGENTS.md), [DESIGN.md](../../../DESIGN.md), [GUI API](../../gui-api.md), RFC-003 and assigned sprint before coding. Draft pending independent builder check and sprint materialization; no product implementation yet.
+**Spec:** [S7 design](../specs/2026-10-14-s7-gui-design-alignment-design.md); read [AGENTS.md](../../../AGENTS.md), [DESIGN.md](../../../DESIGN.md), [GUI API](../../gui-api.md), RFC-003 and assigned sprint before coding. Builder01d149e ratified before implementation; execute after S7 materialization.
 
 ## Global Constraints
 
