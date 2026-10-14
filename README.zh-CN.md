@@ -4,7 +4,7 @@
 
 面向长期业务工作的持久运行时：Agent 提议行动，规则决定能否执行，证据证明是否完成。
 
-[English](README.md) · [核心语义](docs/RFC-001-core-semantics.md) · [交互协议](docs/RFC-003-runtime-protocol.md) · [验证覆盖](docs/verification.md) · [贡献指南](CONTRIBUTING.md)
+[English](README.md) · [网站](docs/website.md) · [核心语义](docs/RFC-001-core-semantics.md) · [交互协议](docs/RFC-003-runtime-protocol.md) · [验证覆盖](docs/verification.md) · [贡献指南](CONTRIBUTING.md)
 
 当前是本地参考原型，使用 Python 3.9+ 和标准库，Apache-2.0 许可证，无第三方运行依赖。报销与内容发布两个业务域及其 OA/发布服务适配器均为演示，不需要模型 API Key。
 
@@ -107,8 +107,11 @@ python3 -m work_runtime publish-demo                 # 演示门禁：签名证�
 python3 -m work_runtime intervention-demo            # 演示门禁：转移、取消、迁移
 python3 -m work_runtime adoption-demo                # 演示门禁：规则卡检查 + 文件适配器采用
 python3 -m compileall -q work_runtime tests scripts  # 语法门禁
+python3 scripts/check_site.py                        # 站点门禁：开发者网站结构检查
 python3 scripts/verify_install.py                    # 全新虚拟环境安装，并在仓库外运行模块与控制台入口演示
 ```
+
+前八条命令是仓库门禁。站点门禁对 `website/` 下组装完成的中英双语开发者网站做结构检查（本地预览、发布与边界见[网站指南](docs/website.md)）；该门禁需要网站页面组装完成后才能通过，也不证明浏览器行为。
 
 `scripts/verify_install.py` 在临时目录创建全新虚拟环境并真实安装本包：断言导入来自该环境而非当前检出、未安装任何第三方依赖，并在仓库外以模块入口运行全部四个演示（`demo`、干预与采用演示另经控制台入口复验；`publish-demo` 没有控制台阶段），最终独立核对模拟 OA 数据库受理申请数量为 1、发布数据库产物数量为 1、三个干预场景库各自恰好 1 条受理申请；对采用演示的模块与控制台双入口，各自独立枚举发布目录（恰好 1 个哈希命名产物文件）并仅用标准库重新解析校验摘要、回执、业务键与工作结果，不信任任何打印文本；同时确认随包 SOP 规则卡与 GUI 静态资源确实进入安装、已安装的 `lint-sop` 能复现固定的内容摘要；当安装中包含只读 UI 后端模块时，另以真实子进程在仓库外驱动已安装的 `ui-demo`/`ui` 入口做真实 HTTP 校验（资源逐字节一致、五工作数据、存储表不变、干净中断退出），否则打印明确的 SKIPPED 行。安装阶段需要 pip 索引访问以获取构建后端。
 

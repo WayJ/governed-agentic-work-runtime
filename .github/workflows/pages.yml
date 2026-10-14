@@ -1,0 +1,64 @@
+# Deploy the developer website (website/) to GitHub Pages.
+#
+# Official custom-workflow shape per docs.github.com "Using custom workflows
+# with GitHub Pages" and actions/starter-workflows pages/static.yml. Action
+# releases verified against primary sources on 2026-10-14:
+#   actions/checkout@v6              (latest v6.0.0; docs example tag)
+#   actions/configure-pages@v6       (latest v6.0.0; docs example shows v5)
+#   actions/upload-pages-artifact@v5 (latest v5.0.0; docs example v4, starter v3)
+#   actions/deploy-pages@v5          (latest v5.0.1; starter v5, docs example v4)
+#
+# FIRST PUBLICATION REQUIRES a one-time repository-admin action that this
+# workflow cannot perform: Settings -> Pages -> Source "GitHub Actions"
+# (or POST /repos/WayJ/governed-agentic-work-runtime/pages with
+# build_type=workflow). Until that enable is done and a live deployment is
+# verified, https://wayj.github.io/governed-agentic-work-runtime/ is a
+# PLANNED target URL, not a published one. Integration owns enabling,
+# deploying and verifying publication after acceptance; development workers
+# never push or deploy.
+name: Deploy website to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['website/**', 'scripts/check_site.py', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+# Least privilege overall; the deploy job adds the Pages/OIDC grants it needs.
+permissions:
+  contents: read
+
+# One deployment at a time; never cancel an in-flight production deployment.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v6
+      - name: Site structure gate
+        run: python3 scripts/check_site.py
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: website
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

@@ -37,9 +37,11 @@ The coordinator owns roadmap, dispatch, supervision and acceptance decisions. De
 - tests: python3 -m unittest discover -s tests -v
 - demo: python3 -m work_runtime demo
 - syntax: python3 -m compileall -q work_runtime tests scripts
+- site: python3 scripts/check_site.py
 ### doc_sync_map
 | change | owes |
 |---|---|
 | work_runtime/runtime.py | docs/runtime-boundaries.md |
 | work_runtime/adapters.py | docs/runtime-boundaries.md |
 | scripts/check_docs.py | CONTRIBUTING.md |
+| scripts/check_site.py | docs/website.md |
