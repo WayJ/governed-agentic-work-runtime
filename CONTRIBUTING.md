@@ -16,7 +16,7 @@ python3 -m unittest discover -s tests -v
 python3 scripts/check_docs.py
 ```
 
-The package has zero runtime dependencies. Optional development installation: `python3 -m pip install -e .`. To verify the packaged result the way CI does, run `python3 scripts/verify_install.py` (installs into a fresh virtual environment and runs all four demos through the module entry point outside the checkout — `demo`, `intervention-demo` and `adoption-demo` additionally through the `work-runtime` console entry point; there is no console `publish-demo` stage — counting every external effect against its own database and independently parsing the committed file artifact; needs pip index access for the build backend).
+The package has zero runtime dependencies. Optional development installation: `python3 -m pip install -e .`. To verify the packaged result the way CI does, run `python3 scripts/verify_install.py` (installs into a fresh virtual environment and runs all four demos through the module entry point outside the checkout — `demo`, `intervention-demo` and `adoption-demo` additionally through the `work-runtime` console entry point; there is no console `publish-demo` stage — counting every external effect against its own database and independently parsing the committed file artifact; it also requires the packaged SOP cards and GUI web assets to ship inside the install, and drives the installed `ui-demo`/`ui` entry points over real HTTP only when the read-only backend module is part of the install — otherwise that stage prints an explicit SKIPPED line and the final summary discloses it; needs pip index access for the build backend).
 
 ## Project structure
 
@@ -35,6 +35,8 @@ The package has zero runtime dependencies. Optional development installation: `p
 | `work_runtime/demo.py` | Deterministic proposer and real worker crash demonstration |
 | `work_runtime/publishing_demo.py` | Signed-evidence publication demonstration |
 | `work_runtime/intervention_demo.py` | Ownership-transfer, cancellation and policy-migration demonstration |
+| `work_runtime/ui_demo.py` | Five-work real-command sample seed and the lazy `ui`/`ui-demo` serve loop |
+| `work_runtime/web/` | Offline bilingual GUI assets (HTML/CSS/JS, shipped as package data) |
 | `tests/test_runtime.py` | Invariants, failure injection and subprocess recovery |
 | `tests/adapter_conformance.py` | Reusable adapter conformance mixin over disposable fixtures |
 | `tests/test_authoring.py` | Rule-card lint and digest tests (14 diagnostic codes, graph boundary) |
@@ -42,6 +44,8 @@ The package has zero runtime dependencies. Optional development installation: `p
 | `tests/test_adoption_demo.py` | lint-sop CLI/loader tests and the adoption demo harness tests |
 | `tests/test_publishing.py` | Publication policy, adapter, runtime flow, demo and CLI tests |
 | `tests/test_intervention_demo.py` | Intervention demo harness, `inspect --policy-versions` and CLI tests |
+| `tests/test_ui_demo.py` | Sample-seed shape/realism/hygiene tests over stored SQLite truth |
+| `tests/test_ui_cli.py` | `ui`/`ui-demo` CLI lazy-import, startup-error and serve-lifecycle tests |
 | `scripts/check_docs.py` | Local Markdown link checker — the documentation contracts gate; ignores fenced examples, inline code, reference definitions inside fences and external URLs |
 | `scripts/verify_install.py` | Fresh-venv install and outside-checkout demo verification |
 | `tests/test_docs.py` | Link checker behavior and repository documentation contracts |
@@ -51,6 +55,7 @@ The package has zero runtime dependencies. Optional development installation: `p
 | `docs/contributor-guide.md` | Step-by-step adapter and SOP authoring tutorial (public interfaces only) |
 | `docs/sop-authoring.md` | Rule-card schema, diagnostic codes and digest semantics |
 | `docs/file-adapter.md` | File adapter contract, artifact shape and platform boundaries |
+| `docs/gui.md` | Local read-only GUI guide: commands, fixture, tile definitions, limits |
 | `docs/verification.md` | Honest protocol coverage matrix and deferred scope |
 
 ## Propose a change
