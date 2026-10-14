@@ -1,0 +1,736 @@
+{
+ "phase": "before",
+ "checks": [
+  {
+   "name": "first load renders 5 works without interaction",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "first load settles past loading",
+   "ok": true,
+   "observed": "'共 5 项工作中的 5 项'"
+  },
+  {
+   "name": "keyboard: ArrowDown x2 + Enter selects the focused work",
+   "ok": true,
+   "observed": "first='cancel-1' second='transfer-1' detail='transfer-1'"
+  },
+  {
+   "name": "list ArrowDown moves focus to the next work item",
+   "ok": true,
+   "observed": "'cancel-1' -> 'succeed-1'"
+  },
+  {
+   "name": "tab ArrowRight/Left keep focus on live selected tab",
+   "ok": true,
+   "observed": "4 trusted key presses at 1440"
+  },
+  {
+   "name": "\"/\" focuses the search box",
+   "ok": true,
+   "observed": "'work-search'"
+  },
+  {
+   "name": "typing filters the list to 1 work",
+   "ok": true,
+   "observed": "{\"items\": 1, \"status\": \"共 5 项工作中的 1 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "clearing the filter restores 5 works",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "status filter keyboard select filters the list",
+   "ok": true,
+   "observed": "focus=True mechanism=letter w jump chosen='waiting' items=1"
+  },
+  {
+   "name": "status filter back to all restores 5 works",
+   "ok": true,
+   "observed": "chosen='' state={\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "language toggle flips the interface language",
+   "ok": true,
+   "observed": "lang 'zh'->'en' footer '↑/↓ 列表 · 回车选中 · ←/→ 切换页签 · / 搜索'->'↑/↓ list · Enter select · ←/→ tabs · / search'"
+  },
+  {
+   "name": "language toggle flips back",
+   "ok": true,
+   "observed": "'zh'"
+  },
+  {
+   "name": "manual refresh keeps the list rendered",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "pause shows the paused chip and resume label",
+   "ok": true,
+   "observed": "{\"chip\": true, \"text\": \"恢复轮询\"}"
+  },
+  {
+   "name": "resume hides the paused chip",
+   "ok": true,
+   "observed": "hidden class present after resume click"
+  },
+  {
+   "name": "390 first load renders 5 works",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "390 tab arrows keep tab focus",
+   "ok": true,
+   "observed": "trusted ArrowRight/Left at 390"
+  },
+  {
+   "name": "320 first load renders 5 works",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "320 tab arrows keep tab focus",
+   "ok": true,
+   "observed": "trusted ArrowRight/Left at 320"
+  },
+  {
+   "name": "matrix captures 30 pngs",
+   "ok": true,
+   "observed": "30 files"
+  },
+  {
+   "name": "hostile stored goal renders as inert text",
+   "ok": true,
+   "observed": "'<img src=x onerror=\"window.__xssEvil=1\"> 目标<script>window.__xssEvil=2</script>'"
+  },
+  {
+   "name": "huge state_version renders exactly",
+   "ok": true,
+   "observed": "'9007199254740993'"
+  },
+  {
+   "name": "hostile event body renders as inert text",
+   "ok": true,
+   "observed": "'{\"note\": \"<script>window.__xssEvil=2</script>\", \"huge\": 123456789012345678901234567890}'"
+  },
+  {
+   "name": "huge event version renders exactly",
+   "ok": true,
+   "observed": "'序号 1 · 版本 9007199254740993'"
+  },
+  {
+   "name": "hostile evidence data renders as inert text",
+   "ok": true,
+   "observed": "True"
+  },
+  {
+   "name": "no hostile markup executed (window clean)",
+   "ok": true,
+   "observed": "window.__xssEvil=None"
+  },
+  {
+   "name": "empty store settles to 0 works with the empty message",
+   "ok": true,
+   "observed": "{\"items\": 0, \"status\": \"此存储中还没有工作。\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "loading state visible under emulated latency",
+   "ok": true,
+   "observed": "'正在加载工作…'"
+  },
+  {
+   "name": "deleted work shows the gone message with retry",
+   "ok": true,
+   "observed": "poll picked up the external delete"
+  },
+  {
+   "name": "server kill shows the disconnected banner",
+   "ok": true,
+   "observed": "'与本地 UI 服务的连接已断开。页面会持续重试，请检查 ui 进程。'"
+  },
+  {
+   "name": "pause/resume control stays usable while disconnected",
+   "ok": true,
+   "observed": "'暂停轮询' -> '恢复轮询'"
+  },
+  {
+   "name": "demo store six tables identical after all reads/interactions",
+   "ok": true,
+   "observed": "9172a996482c... -> 9172a996482c..."
+  },
+  {
+   "name": "empty store six tables identical after all reads/interactions",
+   "ok": true,
+   "observed": "e49d9a31170f... -> e49d9a31170f..."
+  },
+  {
+   "name": "xss store six tables identical after all reads/interactions",
+   "ok": true,
+   "observed": "69d4be1862e5... -> 69d4be1862e5..."
+  }
+ ],
+ "measurements": {
+  "tab arrow step 0": {
+   "active": "requirements",
+   "connected": true,
+   "selected": "requirements"
+  },
+  "tab arrow step 1": {
+   "active": "evidence",
+   "connected": true,
+   "selected": "evidence"
+  },
+  "tab arrow step 2": {
+   "active": "requirements",
+   "connected": true,
+   "selected": "requirements"
+  },
+  "tab arrow step 3": {
+   "active": "evidence",
+   "connected": true,
+   "selected": "evidence"
+  },
+  "focus outline": {
+   "tab": "operations",
+   "style": "solid",
+   "width": "2px",
+   "color": "rgb(36, 86, 198)",
+   "offset": "1px",
+   "connected": true
+  },
+  "zh letter-spacing": {
+   "title": "normal",
+   "tile": "normal"
+  },
+  "visual/1440-en": {
+   "tokens": {
+    "--color-canvas": "",
+    "--color-canvas-soft": "",
+    "--color-surface-card": "",
+    "--color-surface-strong": "",
+    "--color-hairline": "",
+    "--color-hairline-strong": "",
+    "--color-ink": "",
+    "--color-body": "",
+    "--color-accent": "",
+    "--color-accent-active": "",
+    "--color-on-ink": "",
+    "--color-success": "",
+    "--color-success-soft": "",
+    "--color-warn": "",
+    "--color-warn-soft": "",
+    "--color-error": "",
+    "--color-error-soft": "",
+    "--color-neutral-soft": "",
+    "--radius-control": "",
+    "--radius-card": "",
+    "--radius-chip": "",
+    "--space-xxs": "",
+    "--space-xs": "",
+    "--space-sm": "",
+    "--space-base": "",
+    "--space-md": "",
+    "--space-lg": "",
+    "--font-sans": "",
+    "--font-mono": "",
+    "--content-max": "",
+    "--tracking-display-md": "",
+    "--tracking-display-sm": ""
+   },
+   "body": {
+    "backgroundColor": "rgb(245, 247, 250)",
+    "color": "rgb(28, 36, 51)",
+    "fontFamily": "-apple-system, \"system-ui\", \"Segoe UI\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif",
+    "fontSize": "15px",
+    "overflowX": "hidden"
+   },
+   "htmlOverflowX": "hidden",
+   "card": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "8px",
+    "borderTopWidth": "1px",
+    "borderTopColor": "rgb(223, 228, 236)",
+    "boxShadow": "none"
+   },
+   "detailCard": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "10px",
+    "borderTopColor": "rgb(223, 228, 236)",
+    "boxShadow": "none"
+   },
+   "button": {
+    "borderRadius": "6px",
+    "backgroundColor": "rgb(255, 255, 255)",
+    "color": "rgb(28, 36, 51)"
+   },
+   "input": {
+    "borderRadius": "6px"
+   },
+   "chip": {
+    "borderRadius": "10px",
+    "backgroundColor": "rgb(238, 241, 246)",
+    "color": "rgb(90, 100, 116)"
+   },
+   "tileValue": {
+    "fontSize": "24px",
+    "fontWeight": "650",
+    "letterSpacing": "normal"
+   },
+   "detailTitle": {
+    "fontSize": "19px",
+    "fontWeight": "650",
+    "letterSpacing": "normal",
+    "fontFamily": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+   },
+   "label": {
+    "fontSize": "17.55px",
+    "fontWeight": "700"
+   },
+   "mono": {
+    "fontFamily": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    "fontSize": "12.5px"
+   },
+   "raw": null,
+   "tabSelected": {
+    "backgroundColor": "rgb(36, 86, 198)",
+    "color": "rgb(255, 255, 255)"
+   },
+   "workSelected": {
+    "borderTopColor": "rgb(36, 86, 198)",
+    "backgroundColor": "rgb(232, 238, 251)"
+   },
+   "layout": {
+    "gridTemplateColumns": "360px 1032px",
+    "maxWidth": "none"
+   },
+   "note": {
+    "color": "rgb(90, 100, 116)",
+    "backgroundColor": "rgb(238, 241, 246)"
+   },
+   "tileDesc": {
+    "color": "rgb(90, 100, 116)"
+   },
+   "fieldsDt": {
+    "color": "rgb(90, 100, 116)"
+   },
+   "tableTh": {
+    "color": "rgb(90, 100, 116)",
+    "backgroundColor": "rgb(238, 241, 246)"
+   },
+   "geometry": {
+    "refresh": {
+     "height": 35,
+     "width": 56
+    },
+    "langToggle": {
+     "height": 35,
+     "width": 46
+    },
+    "search": {
+     "height": 37,
+     "width": 181
+    },
+    "statusFilter": {
+     "height": 37,
+     "width": 171
+    },
+    "tab": {
+     "height": 30,
+     "width": 57
+    },
+    "workItem": {
+     "height": 57,
+     "width": 356
+    },
+    "summary": null
+   },
+   "fonts": {
+    "jetbrains": true,
+    "pingfang": true
+   },
+   "page": {
+    "scrollWidth": 1440,
+    "clientWidth": 1440
+   }
+  },
+  "contrast tile description on white card": {
+   "fg": "rgb(90, 100, 116)",
+   "bg": "rgba(0, 0, 0, 0)",
+   "ratio": 5.983261772332735
+  },
+  "contrast note text on neutral surface": {
+   "fg": "rgb(90, 100, 116)",
+   "bg": "rgb(238, 241, 246)",
+   "ratio": 5.284733492877721
+  },
+  "contrast field label on white card": {
+   "fg": "rgb(90, 100, 116)",
+   "bg": "rgba(0, 0, 0, 0)",
+   "ratio": 5.983261772332735
+  },
+  "contrast waiting warn chip": {
+   "fg": "rgb(154, 91, 0)",
+   "bg": "rgb(253, 240, 221)",
+   "ratio": 4.827528781839164
+  },
+  "contrast table header on neutral surface": {
+   "fg": "rgb(90, 100, 116)",
+   "bg": "rgb(238, 241, 246)",
+   "ratio": 5.284733492877721
+  },
+  "contrast needs_attention error chip": {
+   "fg": "rgb(179, 38, 30)",
+   "bg": "rgb(251, 233, 231)",
+   "ratio": 5.575100830576307
+  },
+  "contrast succeeded success chip": {
+   "fg": "rgb(28, 124, 60)",
+   "bg": "rgb(229, 244, 234)",
+   "ratio": 4.617667395341886
+  },
+  "contrast selected tab text on ink": {
+   "fg": "rgb(255, 255, 255)",
+   "bg": "rgb(36, 86, 198)",
+   "ratio": 6.518555950969078
+  },
+  "contrast primary control text on ink": {
+   "fg": "rgb(28, 36, 51)",
+   "bg": "rgb(255, 255, 255)",
+   "ratio": 15.560983844151707
+  },
+  "contrast selected work item text": {
+   "fg": "rgb(28, 36, 51)",
+   "bg": "rgb(232, 238, 251)",
+   "ratio": 13.377986926860236
+  },
+  "contrast body text on canvas": {
+   "fg": "rgb(28, 36, 51)",
+   "bg": "rgb(245, 247, 250)",
+   "ratio": 14.49929993684187
+  },
+  "contrast rejected decision chip": {
+   "fg": "rgb(179, 38, 30)",
+   "bg": "rgb(251, 233, 231)",
+   "ratio": 5.575100830576307
+  },
+  "contrast base chip (unknown/extra classes neutral)": "element missing",
+  "contrast cancellation banner error text": {
+   "fg": "rgb(179, 38, 30)",
+   "bg": "rgb(251, 233, 231)",
+   "ratio": 5.575100830576307
+  },
+  "raw disclosure summary target": {
+   "height": 19
+  },
+  "visual/390-en": {
+   "tokens": {
+    "--color-canvas": "",
+    "--color-canvas-soft": "",
+    "--color-surface-card": "",
+    "--color-surface-strong": "",
+    "--color-hairline": "",
+    "--color-hairline-strong": "",
+    "--color-ink": "",
+    "--color-body": "",
+    "--color-accent": "",
+    "--color-accent-active": "",
+    "--color-on-ink": "",
+    "--color-success": "",
+    "--color-success-soft": "",
+    "--color-warn": "",
+    "--color-warn-soft": "",
+    "--color-error": "",
+    "--color-error-soft": "",
+    "--color-neutral-soft": "",
+    "--radius-control": "",
+    "--radius-card": "",
+    "--radius-chip": "",
+    "--space-xxs": "",
+    "--space-xs": "",
+    "--space-sm": "",
+    "--space-base": "",
+    "--space-md": "",
+    "--space-lg": "",
+    "--font-sans": "",
+    "--font-mono": "",
+    "--content-max": "",
+    "--tracking-display-md": "",
+    "--tracking-display-sm": ""
+   },
+   "body": {
+    "backgroundColor": "rgb(245, 247, 250)",
+    "color": "rgb(28, 36, 51)",
+    "fontFamily": "-apple-system, \"system-ui\", \"Segoe UI\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif",
+    "fontSize": "15px",
+    "overflowX": "hidden"
+   },
+   "htmlOverflowX": "hidden",
+   "card": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "8px",
+    "borderTopWidth": "1px",
+    "borderTopColor": "rgb(223, 228, 236)",
+    "boxShadow": "none"
+   },
+   "detailCard": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "10px",
+    "borderTopColor": "rgb(223, 228, 236)",
+    "boxShadow": "none"
+   },
+   "button": {
+    "borderRadius": "6px",
+    "backgroundColor": "rgb(255, 255, 255)",
+    "color": "rgb(28, 36, 51)"
+   },
+   "input": {
+    "borderRadius": "6px"
+   },
+   "chip": {
+    "borderRadius": "10px",
+    "backgroundColor": "rgb(238, 241, 246)",
+    "color": "rgb(90, 100, 116)"
+   },
+   "tileValue": {
+    "fontSize": "24px",
+    "fontWeight": "650",
+    "letterSpacing": "normal"
+   },
+   "detailTitle": {
+    "fontSize": "19px",
+    "fontWeight": "650",
+    "letterSpacing": "normal",
+    "fontFamily": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+   },
+   "label": {
+    "fontSize": "17.55px",
+    "fontWeight": "700"
+   },
+   "mono": {
+    "fontFamily": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    "fontSize": "12.5px"
+   },
+   "raw": null,
+   "tabSelected": {
+    "backgroundColor": "rgb(36, 86, 198)",
+    "color": "rgb(255, 255, 255)"
+   },
+   "workSelected": {
+    "borderTopColor": "rgb(36, 86, 198)",
+    "backgroundColor": "rgb(232, 238, 251)"
+   },
+   "layout": {
+    "gridTemplateColumns": "358px",
+    "maxWidth": "none"
+   },
+   "note": {
+    "color": "rgb(90, 100, 116)",
+    "backgroundColor": "rgb(238, 241, 246)"
+   },
+   "tileDesc": {
+    "color": "rgb(90, 100, 116)"
+   },
+   "fieldsDt": {
+    "color": "rgb(90, 100, 116)"
+   },
+   "tableTh": {
+    "color": "rgb(90, 100, 116)",
+    "backgroundColor": "rgb(238, 241, 246)"
+   },
+   "geometry": {
+    "refresh": {
+     "height": 35,
+     "width": 56
+    },
+    "langToggle": {
+     "height": 35,
+     "width": 46
+    },
+    "search": {
+     "height": 37,
+     "width": 179
+    },
+    "statusFilter": {
+     "height": 37,
+     "width": 171
+    },
+    "tab": {
+     "height": 30,
+     "width": 57
+    },
+    "workItem": {
+     "height": 57,
+     "width": 354
+    },
+    "summary": null
+   },
+   "fonts": {
+    "jetbrains": true,
+    "pingfang": true
+   },
+   "page": {
+    "scrollWidth": 390,
+    "clientWidth": 390
+   }
+  },
+  "visual/320-en": {
+   "tokens": {
+    "--color-canvas": "",
+    "--color-canvas-soft": "",
+    "--color-surface-card": "",
+    "--color-surface-strong": "",
+    "--color-hairline": "",
+    "--color-hairline-strong": "",
+    "--color-ink": "",
+    "--color-body": "",
+    "--color-accent": "",
+    "--color-accent-active": "",
+    "--color-on-ink": "",
+    "--color-success": "",
+    "--color-success-soft": "",
+    "--color-warn": "",
+    "--color-warn-soft": "",
+    "--color-error": "",
+    "--color-error-soft": "",
+    "--color-neutral-soft": "",
+    "--radius-control": "",
+    "--radius-card": "",
+    "--radius-chip": "",
+    "--space-xxs": "",
+    "--space-xs": "",
+    "--space-sm": "",
+    "--space-base": "",
+    "--space-md": "",
+    "--space-lg": "",
+    "--font-sans": "",
+    "--font-mono": "",
+    "--content-max": "",
+    "--tracking-display-md": "",
+    "--tracking-display-sm": ""
+   },
+   "body": {
+    "backgroundColor": "rgb(245, 247, 250)",
+    "color": "rgb(28, 36, 51)",
+    "fontFamily": "-apple-system, \"system-ui\", \"Segoe UI\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif",
+    "fontSize": "15px",
+    "overflowX": "hidden"
+   },
+   "htmlOverflowX": "hidden",
+   "card": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "8px",
+    "borderTopWidth": "1px",
+    "borderTopColor": "rgb(223, 228, 236)",
+    "boxShadow": "none"
+   },
+   "detailCard": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "10px",
+    "borderTopColor": "rgb(223, 228, 236)",
+    "boxShadow": "none"
+   },
+   "button": {
+    "borderRadius": "6px",
+    "backgroundColor": "rgb(255, 255, 255)",
+    "color": "rgb(28, 36, 51)"
+   },
+   "input": {
+    "borderRadius": "6px"
+   },
+   "chip": {
+    "borderRadius": "10px",
+    "backgroundColor": "rgb(238, 241, 246)",
+    "color": "rgb(90, 100, 116)"
+   },
+   "tileValue": {
+    "fontSize": "24px",
+    "fontWeight": "650",
+    "letterSpacing": "normal"
+   },
+   "detailTitle": {
+    "fontSize": "19px",
+    "fontWeight": "650",
+    "letterSpacing": "normal",
+    "fontFamily": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+   },
+   "label": {
+    "fontSize": "17.55px",
+    "fontWeight": "700"
+   },
+   "mono": {
+    "fontFamily": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    "fontSize": "12.5px"
+   },
+   "raw": null,
+   "tabSelected": {
+    "backgroundColor": "rgb(36, 86, 198)",
+    "color": "rgb(255, 255, 255)"
+   },
+   "workSelected": {
+    "borderTopColor": "rgb(36, 86, 198)",
+    "backgroundColor": "rgb(232, 238, 251)"
+   },
+   "layout": {
+    "gridTemplateColumns": "288px",
+    "maxWidth": "none"
+   },
+   "note": {
+    "color": "rgb(90, 100, 116)",
+    "backgroundColor": "rgb(238, 241, 246)"
+   },
+   "tileDesc": {
+    "color": "rgb(90, 100, 116)"
+   },
+   "fieldsDt": {
+    "color": "rgb(90, 100, 116)"
+   },
+   "tableTh": {
+    "color": "rgb(90, 100, 116)",
+    "backgroundColor": "rgb(238, 241, 246)"
+   },
+   "geometry": {
+    "refresh": {
+     "height": 35,
+     "width": 56
+    },
+    "langToggle": {
+     "height": 35,
+     "width": 46
+    },
+    "search": {
+     "height": 37,
+     "width": 109
+    },
+    "statusFilter": {
+     "height": 37,
+     "width": 171
+    },
+    "tab": {
+     "height": 30,
+     "width": 57
+    },
+    "workItem": {
+     "height": 57,
+     "width": 284
+    },
+    "summary": null
+   },
+   "fonts": {
+    "jetbrains": true,
+    "pingfang": true
+   },
+   "page": {
+    "scrollWidth": 320,
+    "clientWidth": 320
+   }
+  },
+  "contrast disconnected banner error text": {
+   "fg": "rgb(179, 38, 30)",
+   "bg": "rgb(251, 233, 231)",
+   "ratio": 5.575100830576307
+  }
+ }
+}
