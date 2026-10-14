@@ -235,8 +235,10 @@ The rebind itself is one transaction. The target contract replaces the
 binding with `revision = old + 1`; every previously `verified` proof is
 revalidated under the target — its kind's configured source must match
 the proof's source **and** the target's verifier must accept it, else the
-proof becomes `invalid` (there is no revoked status; previously invalid
-proofs stay invalid, nothing resurrects); `pending_verification` proofs
+proof becomes `invalid` (previously invalid proofs stay invalid, nothing
+resurrects); `revoked` proofs stay revoked — migration records a
+revoked→revoked disposition and never revives them (see the evidence
+revocation boundary below); `pending_verification` proofs
 stay pending, and `verify_pending` applies the same source check before
 target validation so an old-source pending proof can never reappear as
 verified after a migration. Prepared intents are cancelled with reason
@@ -251,6 +253,53 @@ Business-key stability across same-family versions is the policy author's
 obligation (the demo policies keep one key function), which is what lets
 a cancelled intent re-admit under the same operation identity after
 migration.
+
+## Evidence revocation boundary
+
+`revoke_evidence` (payload exactly `source`, `event_id`, `reason` —
+nonempty strings; version-bound like every kind except
+`create_work`/`record_evidence`) durably withdraws a proof's current
+validity. Full command reference, authority model, codes, receipt/event
+fields and replacement semantics:
+[evidence-revocation.md](evidence-revocation.md).
+
+- It is routed beside `record_evidence`, before the closed-work guard, so
+  it is accepted on closed works, unbound works and during an active
+  cancellation intent. Authority is a `work.intervene` administrator or the
+  currently configured source for the stored proof kind holding
+  `evidence.revoke`; unknown-proof commands pass only a conservative
+  preliminary check (admin, or `evidence.revoke` plus current-source
+  membership) before any lookup, so decision codes never leak evidence
+  existence to unauthorized callers.
+- The effect is one transaction: the proof body's `status` becomes
+  `"revoked"` (rows are never deleted; `id`/`source`/`event_id`/`kind`/
+  `data` and the source-event fingerprint column are preserved),
+  requirements are recomputed, `state_version` bumps once and one
+  `EvidenceRevoked` event records the actual requirement/wait dispositions.
+  An exception or a real process death mid-transaction rolls back every
+  table together (pinned by snapshot-equality tests).
+- Replay reauthorization follows the shared rule: stored receipts —
+  accepted or rejected — replay only while current authority holds, else a
+  fresh unpersisted `AUTHORITY_DENIED`; the stored receipt is immutable.
+- A revoked proof stops satisfying policy rules by construction (both demo
+  policies select `status == "verified"`), `verify_pending` and policy
+  migration skip it, and restart/recovery never revives it. A **new**
+  `record_evidence` command resending the same source event returns the
+  existing `evidence_id` plus the candidate's current `evidence_status`
+  (additive field; original stored command receipts stay verbatim);
+  changed content is still `SOURCE_EVENT_CONFLICT`.
+- Closed works keep `status`/`outcome`/`completion` byte-identical — no
+  implicit reopen or `needs_attention`; correction is visible only in the
+  recomputed requirements, the revoked status and the event. Prepared
+  intents are not mutated eagerly: the next `dispatch`/`recover` holds with
+  `REQUIREMENT_UNSATISFIED` (zero attempts, zero external calls), and
+  in-flight/confirmed operations retain their effects — revocation is not
+  compensation and never re-executes a confirmed operation.
+- Since the S8 D-1 fix, `_evaluate`'s unbound branch no longer overwrites
+  a finalized `closed` status: an unbound work cancelled and finalized
+  stays closed under late verification and recovery. The fix guards new
+  transitions only — pre-existing persisted erroneous snapshots are not
+  rewritten retroactively (recorded limit).
 
 ## Recovery contract
 
@@ -304,7 +353,8 @@ Guarantees:
   constraints.
 - **Evidence receipts are immutable.** Re-submitting the same source event id
   with different content is `SOURCE_EVENT_CONFLICT`; an `invalid` candidate is
-  never overwritten by a corrected re-submission under the same event id.
+  never overwritten by a corrected re-submission under the same event id, and
+  a revoked row is permanent (see the evidence revocation boundary above).
 - **`needs_attention` is sticky** until the work closes; reconciliation cannot
   automatically clear it.
 - **Directly re-`dispatch`ing a `held` intent re-runs the checks** and may
@@ -345,3 +395,8 @@ calls, malformed descriptors, policy-owned accepted source, conformance
 replay/uniqueness behavior) are pinned in `tests/test_adapter_contract.py`,
 which adopts the reusable mixin in `tests/adapter_conformance.py`; the exact
 test-name table lives in [adapter-contract.md](adapter-contract.md).
+
+Evidence-revocation guarantees (authority/codes/atomicity, replay
+reauthorization, permanence, closed-work correction, crash rollback, both
+policy families) are pinned in `tests/test_evidence_revocation.py`; the
+test-name table lives in [evidence-revocation.md](evidence-revocation.md).

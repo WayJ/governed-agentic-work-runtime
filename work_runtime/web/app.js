@@ -56,6 +56,10 @@
       "cancel.banner": "Cancellation requested by {actor}: {reason}",
       "cancel.ack": "Closed cancelled — the acknowledged external effect is retained, not reversed:",
       "cancel.ackNone": "Closed cancelled — no external effect had been confirmed.",
+      "revoke.title": "Revoked evidence on a closed work",
+      "revoke.body": "The historical closure and its outcome stay exactly as recorded — this correction does not reopen or rewrite them. The revoked evidence only changes its current status: it no longer counts as valid proof for current requirements.",
+      "revoke.cited": "The completion record cites {count} now-revoked evidence id(s):",
+      "revoke.records": "Stored records:",
       "req.note": "These are the CURRENT contract requirements. Persisted command decisions (Decisions tab) may carry older blockers recorded at their time.",
       "req.id": "requirement", "req.rule": "rule", "req.subject": "subject",
       "req.applicability": "applicability", "req.fulfillment": "fulfillment",
@@ -129,6 +133,10 @@
       "cancel.banner": "{actor} 申请取消：{reason}",
       "cancel.ack": "已关闭并取消 —— 已确认的外部效果被如实记录保留，并未被撤销：",
       "cancel.ackNone": "已关闭并取消 —— 没有已确认的外部效果。",
+      "revoke.title": "已关闭工作上的被撤销证据",
+      "revoke.body": "历史关闭及其结果保持原记录不变 —— 本次更正不会重新打开或改写它们。被撤销的证据仅改变其当前状态：不再作为当前要求的有效证明。",
+      "revoke.cited": "完成记录引用了 {count} 个现已撤销的证据编号：",
+      "revoke.records": "存储记录：",
       "req.note": "这里是当前契约的要求。决策页中的历史决策可能带有其决策当时记录的旧阻碍项。",
       "req.id": "要求", "req.rule": "规则", "req.subject": "主体",
       "req.applicability": "适用性", "req.fulfillment": "满足情况",
@@ -590,6 +598,43 @@
     return banner;
   }
 
+  /* D37 closed-work correction notice. Derived ONLY from the structured
+     revoked_evidence / completion_revoked_evidence_ids DTO fields; the exact
+     completion text stays in completion_raw (Documents tab) and is never
+     parsed here. Shown for closed works only; the citation count appears
+     only when the API actually derived cited revoked ids — cancellation
+     completions acknowledge operations and never fabricate citations. */
+  function renderRevokedNotice(payload) {
+    var work = payload.work;
+    var revoked = payload.revoked_evidence;
+    if (!work || work.status !== "closed"
+        || !Array.isArray(revoked) || !revoked.length) {
+      return null;
+    }
+    var box = el("div", "revoked-notice");
+    box.appendChild(el("div", "revoked-notice-title", t("revoke.title")));
+    box.appendChild(el("div", "revoked-notice-body", t("revoke.body")));
+    var cited = payload.completion_revoked_evidence_ids;
+    if (Array.isArray(cited) && cited.length) {
+      var line = el("div", "revoked-notice-cited",
+                    t("revoke.cited", { count: cited.length }));
+      cited.forEach(function (id) {
+        line.appendChild(el("div", "mono", String(id)));
+      });
+      box.appendChild(line);
+    }
+    var actions = el("div", "revoked-notice-actions");
+    actions.appendChild(el("span", "revoked-notice-hint", t("revoke.records")));
+    ["evidence", "events"].forEach(function (tabId) {
+      var button = el("button", "revoked-notice-link", t("tab." + tabId));
+      button.type = "button";
+      button.addEventListener("click", function () { activateTab(tabId); });
+      actions.appendChild(button);
+    });
+    box.appendChild(actions);
+    return box;
+  }
+
   function renderRequirements(work) {
     var panel = el("div");
     panel.appendChild(el("p", "note", t("req.note")));
@@ -829,6 +874,9 @@
 
     var banner = renderCancellationBanner(work, payload.operations);
     if (banner) { body.appendChild(banner); }
+
+    var revokedNotice = renderRevokedNotice(payload);
+    if (revokedNotice) { body.appendChild(revokedNotice); }
 
     var tablist = el("div", "tabs");
     tablist.setAttribute("role", "tablist");

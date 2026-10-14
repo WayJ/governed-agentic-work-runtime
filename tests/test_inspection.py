@@ -308,10 +308,12 @@ class WorkDetailTests(InspectorFixture):
         evidence = detail["evidence"]
         self.assertEqual(len(evidence), 5)
         accepted = [e for e in evidence if e["kind"] == "accepted"][0]
-        self.assertEqual(set(accepted), {"source", "event_id", "kind", "status",
-                                         "body_raw", "data_raw"})
+        self.assertEqual(set(accepted), {"id", "source", "event_id", "kind",
+                                         "status", "body_raw", "data_raw"})
         self.assertEqual(accepted["source"], "oa")
         self.assertEqual(accepted["status"], "verified")
+        self.assertEqual(accepted["id"],
+                         json.loads(accepted["body_raw"])["id"])
         evidence_columns = {(row[0], row[1]): row[2] for row in
                             self.raw_columns("evidence", ["source", "event_id", "body"],
                                              "source, event_id")}

@@ -7,6 +7,7 @@ from .intervention_demo import run_intervention_demo
 from .policy import ExpensePolicy, ExpensePolicyV2
 from .publishing import PublishingPolicy
 from .publishing_demo import publishing_grants, run_demo as run_publish_demo
+from .revocation_demo import run_revocation_demo
 from .runtime import Runtime
 
 SUPPORTED_EXPENSE_VERSIONS = ("demo-1", "demo-2")
@@ -53,6 +54,11 @@ def main(argv=None):
         "adoption-demo",
         help="Run the SOP lint plus file-adapter adoption demonstration")
     adoption.add_argument("--directory", help="Parent directory for a fresh demo folder")
+    revocation = sub.add_parser(
+        "revocation-demo",
+        help="Run the evidence-revocation demonstration (hold, retained "
+             "effects, closed-work correction)")
+    revocation.add_argument("--directory", help="Parent directory for a fresh demo folder")
     lint = sub.add_parser("lint-sop",
                           help="Lint a static SOP rule-card JSON file "
                                "(exit 0 clean / 1 diagnostics / 2 file error)")
@@ -93,6 +99,8 @@ def main(argv=None):
         run_intervention_demo(args.directory)
     elif args.command == "adoption-demo":
         run_adoption_demo(args.directory)
+    elif args.command == "revocation-demo":
+        run_revocation_demo(args.directory)
     elif args.command == "lint-sop":
         raise SystemExit(run_lint_sop(args.path, args.as_json))
     elif args.command == "inspect":

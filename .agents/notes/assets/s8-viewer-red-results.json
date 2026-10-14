@@ -1,0 +1,54 @@
+{
+ "phase": "red",
+ "checks": [
+  {
+   "name": "red: five seeded works settle in the list",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "red: /api/work carries revoked_evidence + cited ids",
+   "ok": true,
+   "observed": "{\"revoked\": 1, \"cited\": [\"3ab07830d04f42e48f483789d5927116\"]}"
+  },
+  {
+   "name": "red: notice missing on succeed-closed (absent before the fix)",
+   "ok": true,
+   "observed": "present=False"
+  },
+  {
+   "name": "red: notice missing on cancel-closed (absent before the fix)",
+   "ok": true,
+   "observed": "present=False"
+  },
+  {
+   "name": "red: notice missing on unbound-closed (absent before the fix)",
+   "ok": true,
+   "observed": "present=False"
+  },
+  {
+   "name": "red: notice missing on open-revoked (absent before the fix)",
+   "ok": true,
+   "observed": "present=False"
+  },
+  {
+   "name": "red: notice missing on clean-closed (absent before the fix)",
+   "ok": true,
+   "observed": "present=False"
+  },
+  {
+   "name": "red: all six store tables byte-identical after the session",
+   "ok": true,
+   "observed": "06ddf687d35c… vs 06ddf687d35c…"
+  }
+ ],
+ "measurements": {
+  "red: revoked chip renders on the neutral base": {
+   "className": "chip chip-st-revoked",
+   "background": "rgb(236, 234, 228)",
+   "color": "rgb(38, 37, 30)"
+  }
+ },
+ "ok": true,
+ "store": "/var/folders/1s/bdlcfsrx5s304d3w201q4djc0000gn/T/s8-viewer-stores-mwe5zs5w/runtime.sqlite"
+}

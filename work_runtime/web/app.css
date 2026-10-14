@@ -232,7 +232,8 @@ button:hover { border-color: var(--color-ink); }
 .chip-st-verified { background: var(--color-success-soft); color: var(--color-success); }
 .chip-st-waiting, .chip-st-pending_verification, .chip-st-dispatched { background: var(--color-warn-soft); color: var(--color-warn); }
 .chip-st-needs_attention, .chip-st-outcome_unknown, .chip-st-cancelled,
-.chip-st-rejected, .chip-st-invalid, .chip-st-failed { background: var(--color-error-soft); color: var(--color-error); }
+.chip-st-rejected, .chip-st-invalid, .chip-st-failed, .chip-st-revoked {
+  background: var(--color-error-soft); color: var(--color-error); }
 .chip-decision-accepted { background: var(--color-success-soft); color: var(--color-success); }
 .chip-decision-rejected { background: var(--color-error-soft); color: var(--color-error); }
 
@@ -271,6 +272,32 @@ button:hover { border-color: var(--color-ink); }
   overflow-wrap: anywhere;
 }
 .cancel-banner .cancel-ack { color: var(--color-ink); font-size: 13.5px; margin-top: 4px; }
+
+/* D37 closed-work revoked-evidence notice: deliberately NEUTRAL (cream-soft
+   surface, hairline border, no status color) — it corrects current proof
+   status without dramatizing an unchanged historical closure. Meaning is
+   carried by the text itself, never by color alone. */
+.revoked-notice {
+  margin: var(--space-sm) 0 0;
+  padding: var(--space-xs) 14px;
+  border-radius: var(--radius-card);
+  background: var(--color-canvas-soft);
+  border: 1px solid var(--color-hairline-strong);
+  color: var(--color-body);
+  overflow-wrap: anywhere;
+}
+.revoked-notice-title { color: var(--color-ink); font-size: 14px; font-weight: 600; }
+.revoked-notice-body { font-size: 13.5px; margin-top: 4px; }
+.revoked-notice-cited { font-size: 13.5px; margin-top: 4px; color: var(--color-ink); }
+.revoked-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: 6px;
+}
+.revoked-notice-hint { font-size: 13px; color: var(--color-body); }
+.revoked-notice-link { padding: var(--space-xxs) 14px; font-size: 14px; }
 
 /* Tabs */
 .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 10px;

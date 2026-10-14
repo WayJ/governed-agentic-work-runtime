@@ -108,6 +108,48 @@ The fourth demonstration is the adoption path a new contributor takes. The stati
 
 The final count is asserted against the actual publisher directory (exactly one `[0-9a-f]{64}.json` file), and the printed `inspect` command and artifact path work verbatim. `lint-sop` exits 0 clean / 1 diagnostics / 2 file errors (duplicate object keys, non-finite literals, invalid UTF-8, malformed JSON, unreadable or >1 MiB files are all exit 2 and never echo file contents); `--json` prints the exact static-only result envelope. Linting is structural review only — no textual predicate is executed and no publication authority is conferred. To extend the runtime yourself — a third-party-style adapter through the public conformance tests, or a reviewed rule card — see the [contributor guide](docs/contributor-guide.md).
 
+## Revoke evidence without erasing history
+
+```bash
+python3 -m work_runtime revocation-demo
+```
+
+The fifth demonstration exercises evidence revocation on the same Runtime in both policy families, each scenario against its own fresh stores. A verified approval is revoked through the version-bound `revoke_evidence` command with payload exactly `{source, event_id, reason}`; the prepared intent is then held at dispatch with zero external calls, and a replacement approval under a new event id re-admits the same operation on the same business key. A second scenario revolves proofs around an uncertain external effect: the already-committed application is retained exactly once — recovered by reconciling the original business key, never resent, never re-executed after confirmation, and completion stays blocked while the proofs are revoked. The third closes a publication and then revokes its acceptance: the historical completion stays byte-identical, the current requirement turns pending again, and the `EvidenceRevoked` event records `work_was_closed` and `completion_cites_evidence`.
+
+```text
+Scenario A — revoked approval holds dispatch; replacement readmits (own store: hold/)
+1. Verified finance approval → agent proposes submission → intent prepared
+2. Finance (current approval source, evidence.revoke) revokes {source, event_id, reason} → accepted, evidence_status "revoked", prior verified; E05 pending
+3. Re-propose → rejected REQUIREMENT_UNSATISFIED (E05: a revoked proof no longer authorizes admission)
+4. Dispatch the prepared intent → held REQUIREMENT_UNSATISFIED, zero attempts, zero external calls
+5. Replay the same revoke command → stored receipt verbatim; still exactly one EvidenceRevoked event
+6. Resend the SAME source event under a NEW command → same evidence id, evidence_status "revoked" — no new row, no revival
+7. REPLACEMENT approval (new event id) → E05 satisfied → SAME operation id readmitted → dispatch → confirmed_succeeded
+   accepted applications in this store: 1; effects reversed: 0
+
+Scenario B — revoked proofs around an uncertain external effect (own store: uncertain/)
+1. Verified finance approval → agent proposes submission → intent prepared
+2. Dispatch → OA accepted, response lost after commit → outcome_unknown (the effect exists)
+3. Reconcile the ORIGINAL business key → confirmed_succeeded, external id recovered, nothing resent; the uncertain effect is retained exactly once
+4. work.intervene administrator revokes the confirmed acceptance → E08 pending
+5. Re-propose → SAME operation returned already confirmed_succeeded — a confirmed effect never re-executes to regenerate a revoked proof
+6. Finance revokes the approval → E05 pending (current authority withdrawn after the fact)
+7. request_completion → rejected REQUIREMENT_UNSATISFIED (E05 revoked approval, E08 revoked acceptance); accepted applications in this store: 1; effects reversed: 0
+
+Scenario C — publishing: hold, readmission, closed-work correction (own store: publish/)
+1. Verified reviewer approval and author confirmation → publication intent prepared
+2. Reviewer (current approval source, evidence.revoke) revokes the approval → C02 pending
+3. Dispatch → held REQUIREMENT_UNSATISFIED, zero attempts, zero published artifacts
+4. REPLACEMENT approval (new event id) → C02 satisfied → SAME operation id readmitted → published artifacts: 1
+5. Evidence-backed completion → SUCCEEDED; the completion cites the verified acceptance
+6. Administrator revokes the acceptance on the CLOSED work → outcome and completion stay byte-identical; C04 pending; EvidenceRevoked records work_was_closed and completion_cites_evidence
+7. Resend the revoked approval event under a NEW command → evidence_status "revoked", same evidence id; published artifacts in this store: 1; effects reversed: 0
+
+3 scenarios; retained external effects: 2 accepted applications, 1 published artifact; effects reversed: 0
+```
+
+Every count is asserted against the scenario's own external database. Revocation withdraws current validity only: it never edits receipts, closure snapshots or external effects, and it is not compensation — `effects reversed: 0` is a counted fact, not a slogan. The revoking principals are the work's currently configured evidence source holding the `evidence.revoke` grant, or a `work.intervene` administrator — trusted local grants, not authentication; revocation does not fence an in-flight external call. See [evidence revocation](docs/evidence-revocation.md).
+
 ## Browse it: a local read-only GUI
 
 ```bash
@@ -157,10 +199,11 @@ Three distinctions shape the implementation:
 - An explicit per-runtime policy registry: works stay pinned to their bound version, restarts fail closed until that version is loaded, and migration revalidates every piece of evidence under the target policy before binding changes.
 - Static SOP rule-card linting with deterministic diagnostics and exact content digests (`lint-sop`, packaged example cards shipped inside the package) — structural review only, never executable authority.
 - A third, real-filesystem adapter (`FilePublisher`): one immutable hash-named JSON artifact per idempotency key, committed atomically, queryable after restart — plus the no-credentials adoption harness above.
+- Explicit evidence revocation: a version-bound `revoke_evidence` command (`{source, event_id, reason}`) permanently withdraws a proof's current validity — revoked proofs never verify, migrate or revive on restart, and resends report the current status — while receipts, closure snapshots and accepted external effects stay immutable: held intents make zero external calls, replacement proofs re-admit the same operation, and revoking a closed work's acceptance preserves the historical completion byte-for-byte.
 - An offline read-only operations GUI (`ui`/`ui-demo`): bilingual light interface over durable records — tiles, searchable list, requirements/evidence/operations/decisions/events/documents detail, exact stored JSON as text — with a real-command five-work sample seed and packaged assets.
 - A replaceable `Policy` interface and an `Adapter` interface for execution and lookup.
 
-The core API is a trusted, in-process library. Application code supplies source identities and grants; these names do **not** authenticate remote callers — owners and `work.intervene` administrators are trusted local principals, not authenticated identities. The signed ingress authenticates evidence sources within a configured shared-key boundary — it is not transport security, tenant authorization, or proof of business truth. One policy family owns each runtime database; works may pin different versions of that family through an explicitly loaded registry, and the two demo domains use separate databases on the same Runtime class. The coordinator is local, and the prototype does not implement distributed worker leases, policy publishing, evidence revocation, compensation (effect reversal) execution, or multi-tenant authorization: cancelling a work acknowledges its external effects, it does not undo them. Unsupported lifecycle commands are rejected explicitly. Full RFC coverage is tracked in [verification](docs/verification.md).
+The core API is a trusted, in-process library. Application code supplies source identities and grants; these names do **not** authenticate remote callers — owners and `work.intervene` administrators are trusted local principals, not authenticated identities. The signed ingress authenticates evidence sources within a configured shared-key boundary — it is not transport security, tenant authorization, or proof of business truth. One policy family owns each runtime database; works may pin different versions of that family through an explicitly loaded registry, and the two demo domains use separate databases on the same Runtime class. The coordinator is local, and the prototype does not implement distributed worker leases, policy publishing, compensation (effect reversal) execution, or multi-tenant authorization: cancelling a work or revoking evidence preserves its external effects, it never undoes them. Unsupported lifecycle commands are rejected explicitly. Full RFC coverage is tracked in [verification](docs/verification.md).
 
 ## Use the local API
 
@@ -195,12 +238,13 @@ python3 -m work_runtime demo                         # demo gate: real crash rec
 python3 -m work_runtime publish-demo                 # demo gate: signed-evidence publication
 python3 -m work_runtime intervention-demo            # demo gate: transfer, cancel, migrate
 python3 -m work_runtime adoption-demo                # demo gate: lint + file-adapter adoption
+python3 -m work_runtime revocation-demo              # demo gate: evidence revocation, both families
 python3 -m compileall -q work_runtime tests scripts  # syntax gate
 python3 scripts/check_site.py                        # site gate: developer website structure
 python3 scripts/verify_install.py                    # fresh venv, install, demos outside the checkout
 ```
 
-The first eight commands are the repository's gates. The site gate structurally checks the bilingual developer website assembled under `website/` (preview, publishing and scope in [the website guide](docs/website.md)); it needs those pages assembled to pass and says nothing about browser behavior. `scripts/verify_install.py` goes further: it builds the package into a brand-new virtual environment, asserts the import comes from that venv rather than the checkout, checks that no third-party dependency was installed, and runs the demos with the working directory outside the repository — counting exactly one external application in the fake OA database, exactly one publication in the publisher database, exactly one accepted application per intervention store, and, for both the module and console entry points of `adoption-demo`, independently enumerating and parsing exactly one committed hash-named file artifact (digest, receipt, business key and work outcome re-verified with the standard library only) rather than trusting the printed output. It also confirms the packaged SOP cards and GUI web assets ship inside the install and the installed `lint-sop` reproduces the pinned digest; when the read-only UI backend module is present in the install it additionally drives the installed `ui-demo`/`ui` entry points as real subprocesses over real HTTP (asset byte-equality, the five seeded works, store tables unchanged, clean interrupt) and otherwise prints an explicit SKIPPED line. The install stage needs pip index access for the build backend.
+The first nine commands are the repository's gates. The site gate structurally checks the bilingual developer website assembled under `website/` (preview, publishing and scope in [the website guide](docs/website.md)); it needs those pages assembled to pass and says nothing about browser behavior. `scripts/verify_install.py` goes further: it builds the package into a brand-new virtual environment, asserts the import comes from that venv rather than the checkout, checks that no third-party dependency was installed, and runs the demos with the working directory outside the repository — counting exactly one external application in the fake OA database, exactly one publication in the publisher database, exactly one accepted application per intervention store, and, for both the module and console entry points of `adoption-demo`, independently enumerating and parsing exactly one committed hash-named file artifact (digest, receipt, business key and work outcome re-verified with the standard library only) rather than trusting the printed output. For both entry points of `revocation-demo` it additionally re-verifies the three scenario stores directly: revoked/verified evidence statuses, preserved source-event fingerprints, the stable business key of the single readmitted operation, the closed work's completion still citing the revoked acceptance, and exactly one retained external effect per store. It also confirms the packaged SOP cards and GUI web assets ship inside the install and the installed `lint-sop` reproduces the pinned digest; when the read-only UI backend module is present in the install it additionally drives the installed `ui-demo`/`ui` entry points as real subprocesses over real HTTP (asset byte-equality, the five seeded works, store tables unchanged, clean interrupt) and otherwise prints an explicit SKIPPED line. The install stage needs pip index access for the build backend.
 
 Tests exercise actual subprocess death after external acceptance and during evidence adoption, concurrent duplicate commands, stale approvals, cross-work uniqueness, wait expiry and missing query results. See [the verification report](docs/verification.md) for implemented and deferred protocol cases: 14 of the 15 protocol acceptance cases are covered by named tests, and P13 (distributed worker leases) is explicitly deferred.
 
@@ -213,6 +257,6 @@ work-runtime demo
 
 ## Where this is going
 
-The integration-boundary milestone now has a local slice: HMAC-authenticated evidence intake, declared adapter capabilities with conformance tests, and a second-domain harness through the same command protocol. What remains before calling it trustworthy is external review and real adapter experience. The intervention milestone likewise has a local slice — cancellation with exact effect acknowledgement, authority-aware ownership transfer, and explicit same-family policy migration — while compensation execution, evidence revocation and distributed fencing stay open. The authoring-and-adoption milestone has its local slice too: static rule-card linting, a real filesystem adapter and the [contributor guide](docs/contributor-guide.md) — while rule-card publication authority, semantic compilation and collected external author feedback remain open. Later milestones address distributed execution based on measured needs.
+The integration-boundary milestone now has a local slice: HMAC-authenticated evidence intake, declared adapter capabilities with conformance tests, and a second-domain harness through the same command protocol. What remains before calling it trustworthy is external review and real adapter experience. The intervention milestone likewise has a local slice — cancellation with exact effect acknowledgement, authority-aware ownership transfer, and explicit same-family policy migration — and the evidence-revocation milestone now has its local slice too: the durable `revoke_evidence` command with permanent revoked status, held then re-admitted intents, retained external effects and closed-work correction (see [evidence revocation](docs/evidence-revocation.md)), while compensation execution, external fencing of in-flight calls and distributed guarantees stay open. The authoring-and-adoption milestone has its local slice too: static rule-card linting, a real filesystem adapter and the [contributor guide](docs/contributor-guide.md) — while rule-card publication authority, semantic compilation and collected external author feedback remain open. Later milestones address distributed execution based on measured needs.
 
 The [roadmap](docs/roadmap.md) uses observable acceptance criteria. Contributions that challenge a guarantee with a reproducible failure are especially useful. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [protocol cases](docs/RFC-003-runtime-protocol.md).
