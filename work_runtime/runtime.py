@@ -89,6 +89,16 @@ def _validated_registry(policy: Policy, policies: Optional[Dict[str, Policy]]) -
     return registry
 
 
+def _body_str(body, field: str) -> Optional[str]:
+    """A stored candidate body field counts only as a nonempty string.
+
+    Missing fields, wrong types and non-object bodies degrade to None in
+    conflict snapshots (D40); nothing is coerced from candidate data.
+    """
+    value = body.get(field) if isinstance(body, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
 class Runtime:
     def __init__(self, path: str, policy: Policy, grants: Dict[str, set],
                  *, policies: Optional[Dict[str, Policy]] = None):
@@ -654,6 +664,23 @@ class Runtime:
         self._save(db, work, "OperationPrepared", {"operation_id": operation["id"]})
         return self._accepted(work, operation_id=operation["id"], operation_status_at_decision="prepared")
 
+    def _reserved_accepted_sources(self) -> set:
+        """Accepted sources of every loaded policy version, per intake.
+
+        Recomputed on every record_evidence so trusted-local registry and
+        policy reconfiguration travel with configuration; no default
+        fallback and no policy-object immutability is assumed. Any stored
+        operation id is reserved for every source in this union, across
+        works and proof kinds, because _resolve inserts accepted proofs
+        only under a loaded policy's accepted source.
+        """
+        reserved = set()
+        for policy in self.policies.values():
+            source = policy.evidence_sources.get("accepted")
+            if isinstance(source, str) and source:
+                reserved.add(source)
+        return reserved
+
     def _receive(self, db, actor, work, payload):
         required = {"event_id", "kind", "data"}
         if set(payload) != required or not isinstance(payload["data"], dict):
@@ -674,6 +701,16 @@ class Runtime:
             # original command's stored receipt stays verbatim.
             return self._accepted(work, evidence_id=json.loads(old[1])["id"],
                                   evidence_status=json.loads(old[1])["status"])
+        # Operation-id reservation (D39): after unchanged authority and the
+        # old-row dedup/conflict branch, an accepted source of any loaded
+        # policy version can never import an event id that aliases a stored
+        # operation — the later acceptance-proof INSERT would collide. The
+        # over-block on another version's accepted source is intended.
+        if (actor in self._reserved_accepted_sources()
+                and db.execute("SELECT 1 FROM operations WHERE id=?",
+                               (event_id,)).fetchone()):
+            return self._reject("OPERATION_ID_RESERVED",
+                                work["state_version"], [event_id])
         candidate = {"id": uuid.uuid4().hex, "source": actor, "event_id": event_id,
                      "kind": kind, "data": payload["data"], "status": "pending_verification"}
         db.execute("INSERT INTO evidence VALUES (?,?,?,?,?)",
@@ -808,6 +845,41 @@ class Runtime:
                 "Policy must configure a nonempty accepted evidence source for external effects")
         return source
 
+    def _proof_conflict(self, db, work, op, source, result) -> Optional[dict]:
+        """Adopt an accepted external result, snapshotting any collision.
+
+        Without a colliding row this inserts the runtime-owned accepted
+        proof and returns None. When an existing candidate already occupies
+        the acceptance-proof identity (source, operation id) — any kind,
+        status or work — it returns the nine-field D40 snapshot instead and
+        never touches the conflicting row: the real external acceptance is
+        recorded on the operation, the candidate keeps its identity.
+        """
+        row = db.execute("SELECT work_id,fingerprint,body FROM evidence "
+                         "WHERE source=? AND event_id=?",
+                         (source, op["id"])).fetchone()
+        if row is None:
+            proof = {"id": uuid.uuid4().hex, "source": source, "event_id": op["id"],
+                     "kind": "accepted", "status": "verified",
+                     "data": {"digest": op["document_digest"],
+                              "external_id": result["external_id"]}}
+            db.execute("INSERT INTO evidence VALUES (?,?,?,?,?)",
+                       (source, op["id"], work["id"], digest(proof), canonical(proof)))
+            return None
+        # Invalid JSON here is a corrupted store; repair is out of scope
+        # and the parse error rolls the resolution transaction back.
+        body = json.loads(row["body"])
+        if work["status"] != "closed":
+            work["status"] = "needs_attention"
+        return {"source": source, "event_id": op["id"],
+                "evidence_id": _body_str(body, "id"),
+                "evidence_work_id": row["work_id"],
+                "evidence_kind": _body_str(body, "kind"),
+                "evidence_status": _body_str(body, "status"),
+                "evidence_fingerprint": row["fingerprint"],
+                "external_id": result["external_id"],
+                "document_digest": op["document_digest"]}
+
     def dispatch(self, operation_id: str, adapter: Adapter, fault: Optional[Callable] = None) -> dict:
         """Single coordinator only. Unknown outcomes must be reconciled, never dispatched again."""
         with self._transaction() as db:
@@ -901,6 +973,7 @@ class Runtime:
             if op["status"] in ("confirmed_succeeded", "confirmed_failed"):
                 return op
             work = self._work(db, op["work_id"])
+            conflict = None
             if not receipt_is_valid(result, op["document_digest"]):
                 if (op["status"] == "outcome_unknown" and op.get("reason") == "ADAPTER_RESULT_INVALID"
                         and work["status"] == "needs_attention"):
@@ -914,15 +987,22 @@ class Runtime:
                 op["external_id"] = result["external_id"]
                 op["attempts"][-1]["status"] = op["status"]
                 if result["status"] == "accepted":
-                    proof = {"id": uuid.uuid4().hex, "source": source, "event_id": op["id"],
-                             "kind": "accepted", "status": "verified",
-                             "data": {"digest": op["document_digest"], "external_id": result["external_id"]}}
-                    db.execute("INSERT INTO evidence VALUES (?,?,?,?,?)",
-                               (source, op["id"], work["id"], digest(proof), canonical(proof)))
+                    conflict = self._proof_conflict(db, work, op, source, result)
+                    if conflict is not None:
+                        op["proof_conflict"] = conflict
                 else:
                     work["status"] = "needs_attention"
             self._save_op(db, op)
-            self._save(db, work, "OperationResolved", {"operation_id": op["id"], "status": op["status"]})
+            if conflict is None:
+                self._save(db, work, "OperationResolved",
+                           {"operation_id": op["id"], "status": op["status"]})
+            else:
+                # The conflict event replaces OperationResolved for this
+                # resolution only; the collision snapshot plus operation id
+                # and the closed-work fact make it self-describing.
+                self._save(db, work, "AcceptanceProofConflict",
+                           {**conflict, "operation_id": op["id"],
+                            "work_was_closed": work["status"] == "closed"})
             return op
 
     def recover(self, adapter: Adapter, now: Optional[int] = None) -> list:

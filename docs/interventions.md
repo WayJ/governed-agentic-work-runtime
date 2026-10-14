@@ -160,7 +160,11 @@ protocol: `AUTHORITY_DENIED`, `WORK_NOT_ACTIONABLE`, `OUTCOME_UNRESOLVED`,
 - No compensation or reversal execution; acknowledgement records effects,
   it does not undo them. Revocation withdraws current validity only —
   see [evidence-revocation.md](evidence-revocation.md) for its boundaries
-  (no external fencing, no retroactive history edits, TD-1 deferred).
+  (no external fencing, no retroactive history edits; the accepted-source
+  operation-id collision is prevented at intake and existing poisoned
+  stores recover through the conflict boundary in
+  [runtime-boundaries.md](runtime-boundaries.md), with TD-1 repayment
+  tracked in the tech debt tracker).
 - One coordinator, local process, no distributed leases or fencing; an
   in-flight external call cannot be revoked.
 - One policy family per database; cross-domain registries are rejected.

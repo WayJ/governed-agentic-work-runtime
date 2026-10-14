@@ -18,9 +18,12 @@ all historical receipts remain traceable. Revocation changes **current
 validity**; it never edits history and never compensates an external effect.
 
 Out of scope (unchanged): external fencing of an in-flight call (the residual
-race of RFC-001 §5.2 stands), compensation/reversal execution, distributed
-exactly-once claims, and the privileged accepted-source event-id collision
-recorded as TD-1 in the [tech debt tracker](tech-debt-tracker.md).
+race of RFC-001 §5.2 stands), compensation/reversal execution, and
+distributed exactly-once claims. The privileged accepted-source event-id
+collision is no longer deferred: intake reservation rejects new operation-id
+imports and existing poisoned stores recover through the acceptance-proof
+conflict boundary ([runtime boundaries](runtime-boundaries.md)); TD-1
+repayment stays tracked in the [tech debt tracker](tech-debt-tracker.md).
 
 ## Command
 
