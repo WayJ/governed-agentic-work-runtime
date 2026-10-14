@@ -121,6 +121,8 @@ class ReadOnlyInspector:
             row = db.execute(
                 "SELECT value FROM metadata WHERE key='schema_version'").fetchone()
         except sqlite3.OperationalError as error:
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                raise _operational_error(error) from error
             # An existing SQLite file without the metadata table is a store
             # this reader does not understand.
             raise GuiReaderError("UNSUPPORTED_SCHEMA",
@@ -142,6 +144,9 @@ class ReadOnlyInspector:
     @staticmethod
     def _work_envelope(state: dict) -> dict:
         contract = state.get("contract")
+        if contract is not None and not isinstance(contract, dict):
+            raise GuiReaderError("INVALID_STORE",
+                                 "stored contract is not an object")
         return {
             "id": state.get("id"),
             "status": state.get("status"),
@@ -161,6 +166,9 @@ class ReadOnlyInspector:
         with self._read_connection() as db:
             row = db.execute(
                 "SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+            if row is None or row[0] != "1":
+                raise GuiReaderError("UNSUPPORTED_SCHEMA",
+                                     "unsupported store schema version")
             counts = {"attempts": 0}
             for table in ("works", "events", "operations", "evidence", "commands"):
                 counts[table] = db.execute(

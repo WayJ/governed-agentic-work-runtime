@@ -630,5 +630,42 @@ class FailureModeTests(InspectorFixture):
         self.assertEqual(inspector.work_detail("demo")["work"]["id"], "demo")
 
 
+class ReviewFixTests(InspectorFixture):
+    """Regression tests from the whole-branch self-review."""
+
+    def test_summary_does_not_fabricate_schema_version(self):
+        inspector = ReadOnlyInspector(self.store().path and self.path)
+        db = self.read()
+        db.execute("DELETE FROM metadata WHERE key='schema_version'")
+        db.commit()
+        with self.assertRaises(GuiReaderError) as caught:
+            inspector.summary()
+        self.assertEqual(caught.exception.code, "UNSUPPORTED_SCHEMA")
+
+    def test_constructor_under_exclusive_lock_is_db_busy(self):
+        self.store()
+        writer = sqlite3.connect(self.path)
+        writer.execute("PRAGMA journal_mode=DELETE")
+        writer.execute("BEGIN EXCLUSIVE")
+        try:
+            with self.assertRaises(GuiReaderError) as caught:
+                ReadOnlyInspector(self.path)
+            self.assertEqual(caught.exception.code, "DB_BUSY")
+        finally:
+            writer.rollback()
+            writer.close()
+
+    def test_nondict_contract_raises_invalid_store(self):
+        self.store()
+        state = json.loads(self.raw_columns("works", ["state"], "id")[0][0])
+        state["contract"] = "expense-submit"
+        db = self.read()
+        db.execute("UPDATE works SET state=?", (canonical(state),))
+        db.commit()
+        with self.assertRaises(GuiReaderError) as caught:
+            ReadOnlyInspector(self.path).list_works()
+        self.assertEqual(caught.exception.code, "INVALID_STORE")
+
+
 if __name__ == "__main__":
     unittest.main()
