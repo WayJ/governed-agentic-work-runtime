@@ -142,8 +142,14 @@ local UI/database.
 
 ## Pending — not done by this owner, honestly
 
-- **`scripts/check_site.py` site checker does not exist yet** (delivery
-  owner, other session). I could not run it; no checker pass is claimed.
+- **Site checker**: at report time the master notified the delivery owner had
+  settled `scripts/check_site.py` (ddbbde3) and authorized a read-only run
+  against my tree. Executed:
+  `python3 <delivery-checkout>/scripts/check_site.py --root <my>/website`
+  (delivery checkout at fb60c14, checker from ddbbde3) →
+  **`checked 2 pages, 0 findings`, exit 0**. The CI site gate itself is still
+  integration-owned; the isolated delivery tree has no website assets, so the
+  assembled-site gate run belongs to integration.
 - Pages workflow/deployment/public URL: integration-owned; nothing enabled or claimed.
 - Independent integration acceptance of all six S6 scenarios: pending.
 - GUI restyle to DESIGN.md is a separate later task (screenshots show the
