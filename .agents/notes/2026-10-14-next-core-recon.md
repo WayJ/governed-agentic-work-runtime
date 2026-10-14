@@ -1,0 +1,21 @@
+# Next core delivery reconnaissance — 2026-10-14
+
+## Scope and evidence
+
+Strategic reconnaissance while S7 GUI developer is live; no new epic/sprint allocation, WIP remains S7 only, no behavior change. Public roadmap0.3 still owes evidence revocation and actual compensation;0.4 owes measured concurrency/fencing and immutable SOP publication/real author feedback. No star-count guarantee or narrower completion definition. Next useful core candidate is evidence revocation, with design and independent builder check required before implementation.
+
+Read current main7931cc6 actual Runtime and RFC001§4.2/§5, RFC003, runtime-boundaries and verification. RFC001 explicitly permits current satisfied→pending when evidence revoked while preserving historical evaluation. Existing proof evaluation in policy.py/publishing.py selects status==verified; no revoked state. Runtime._receive persists candidate fingerprint and source-event dedup; verify_pending atomically adopts only pending candidates under currently configured source. Command() requires state version except create_work/record_evidence, rejects closed-work mutations before _apply, stores request fingerprint/receipt, and _replay_denial rechecks current capabilities for supported command classes. _save increments version/re-evaluates and appends durable event; _evaluate triggers waits but does not reverse previously triggered waits. _propose/dispatch prepared-intent checks and reconciliation must remain coordinated with accepted external effects. Completion captures verified evidence IDs; cancellation acknowledges exact confirmed effect IDs, never reverses them.
+
+## Requirements for the next design
+
+- Explicit revoke command/principal/capability policy, current authority checked on initial and replay admission, stale versions and command/source/event identity conflicts handled atomically. Existing signed evidence intake authenticates source/integrity, not truth; local principal names remain trusted local identities, never tenant authentication.
+- Scope evidence IDs to Work and actual supported source/kind. Preserve candidate content, source-event fingerprint, historical verification/event/receipts; irrevocable denial of the same candidate must not be bypassed by verify_pending/restart/policy migration/dedup replay. Specify fresh replacement proof semantics rather than silently reactivate revoked proof.
+- Re-evaluate current requirements and completion admission when previously sufficient proof disappears; distinguish which blockers apply to actions vs overall goal. Specify waiting/triggered/cancelled/timed-out wait disposition without resurrecting cancelled waits or inventing automatic resets.
+- Invalidate or hold never-dispatched prepared intents consistently, with dispatch-time revalidation; in-flight/externally accepted operations must retain keys/attempts/results and reconcile. Revocation cannot erase an actual external effect or fence an already-running call; compensation remains separate tracked operations.
+- Explicit closed-work semantics: original completion and historical decision must remain inspectable. Choose auditable post-closure correction handling before modifying command routing; do not implicitly reopen, erase closure or assert original external success disappeared.
+- Meaningful RED/GREEN across expense and publishing policies, duplicate/replay/revoked-authority, staleversion, replacementproof, migration, restart/crash rollback, waits, prepared/inflight/confirmed effects and real process death. Verify actual external counts/results and SQL/event history; success-only tests insufficient.
+- Documentation synchronization for runtime.py/adapters.py→runtime-boundaries, inspect/GUI exact data and new statuses as actual stored truth; no new write endpoints. Existing622 tests and demos/install must remain, independent integration owns release.
+
+## Handover
+
+These are design inputs, not approved command signatures or claimed implementation. Master must read the actual post-S7 baseline before writing the next core epic/spec. External author feedback cannot be fabricated by another agent rehearsal; distributed guarantees require external-system enforcement and measured needs. [Roadmap](../../docs/roadmap.md), [RFC001](../../docs/RFC-001-core-semantics.md), [current scope](../../docs/verification.md).
