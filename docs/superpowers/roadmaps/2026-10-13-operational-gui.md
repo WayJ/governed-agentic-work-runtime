@@ -23,7 +23,7 @@ A local browser UI for real Work state, requirement blockers, evidence and logic
 
 | sprint | state | note |
 |---|---|---|
-| S5 | ready | Start after S4 merged; WIP1 maintained. 2026-10-14 ready: S4 merged at be6f977, published main33e657b with successful CI38498479749; D25 ratifies builder01b93c3. DoD covers read-only GUI, browser and installation proof. 2026-10-13; [S4](../sprints/2026-10-13-S4-plan.md), [user context](../../../.agents/notes/2026-10-13-autonomous-continuation.md). |
+| S5 | started | Start after S4 merged; WIP1 maintained. 2026-10-14 ready then started ([sprint](../sprints/2026-10-14-S5-plan.md)): S4 merged at be6f977, published main33e657b with successful CI38498479749; D25 ratifies builder01b93c3. DoD covers read-only GUI, browser and installation proof. 2026-10-13; [S4](../sprints/2026-10-13-S4-plan.md), [user context](../../../.agents/notes/2026-10-13-autonomous-continuation.md). |
 
 ## Decisions (ADR)
 
