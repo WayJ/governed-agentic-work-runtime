@@ -26,7 +26,7 @@ date: 2026-10-15
 
 | sprint | state | note |
 |---|---|---|
-| S9 | ready | 2026-10-15 strategic go: S8 merged40dd635/published635e7b1 with CI38603764253 independently verified; full DoD covers bounded TD-1 repair, independent draft review resolved by [ratification](../specs/2026-10-15-td1-accepted-evidence-collision-design.md#master-ratification--2026-10-15-d38d42-before-implementation). No early/deferred start. |
+| S9 | started | 2026-10-15 strategic go: S8 merged40dd635/published635e7b1 with CI38603764253 independently verified; full DoD covers bounded TD-1 repair, independent draft review resolved by [ratification](../specs/2026-10-15-td1-accepted-evidence-collision-design.md#master-ratification--2026-10-15-d38d42-before-implementation). No early/deferred start. Materialized 2026-10-15 [S9](../sprints/2026-10-15-S9-plan.md). |
 
 ## Decisions (ADR)
 
