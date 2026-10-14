@@ -70,25 +70,58 @@ reconciliation continue. An attempt already durable when cancellation
 arrives remains uncertain until queried through the original operation
 key — cancellation is an internal stop, not an external fence.
 
+**Compensation exception (S10).** The linked `propose_action` compensation
+variant (`compensates` = the confirmed original operation id; expense
+family, `expense.withdraw`) is the one proposal form admitted while the
+intent is active — for **fresh proposals and re-admission alike** — because
+RFC-001 §7 places the necessary withdrawal inside this window. The variant
+requires the intent: without one it is rejected
+`CANCELLATION_NOT_REQUESTED`, and every other proposal form (forward
+payloads) keeps `CANCELLATION_ACTIVE` exactly as before. Admission,
+authority, pairing and the immutable link snapshot are specified in
+[runtime-boundaries.md](runtime-boundaries.md#compensation-boundary-s10--expense-family-active-cancellation-window);
+a prepared compensation is never auto-cancelled by dispatch inside the
+window, and it blocks `finalize_cancel` until resolved (below).
+
 `finalize_cancel` is the only way to close a cancelled Work, and there is
 no automatic close. It refuses while any operation is unresolved
 (`OUTCOME_UNRESOLVED` — a missing or malformed lookup answer can never be
-finalized past). Once every effect is resolved, the acknowledgement must
+finalized past; under S10 this includes any prepared, held or
+`outcome_unknown` compensation, so a necessary withdrawal cannot be
+abandoned silently — there is no public abandon command in this slice).
+Once every effect is resolved, the acknowledgement must
 equal **exactly** the set of `confirmed_succeeded` operation ids — an
 empty list is correct only when there were no succeeded effects — else
 `CANCEL_ACKNOWLEDGEMENT_MISMATCH` with the succeeded ids as blockers. An
 accepted finalize closes the Work as `cancelled` (never `succeeded`) and
 stores an immutable closure snapshot: the original cancellation intent,
 the acknowledged succeeded operations with their external ids, and every
-operation's disposition.
+operation's disposition. **Compensation dispositions (S10)** add the
+immutable `compensates` link and, when present, the stored
+`adapter_result` — so a refused withdrawal is recorded explicitly
+("attempted, refused, effect stands"), never as a reversal; ordinary
+dispositions keep their three-field shape and previously stored closures
+are never rewritten. A succeeded withdrawal joins the acknowledgement
+alongside its original; a failed one is excluded from the ack set but
+recorded in the dispositions.
 
-**Acknowledgement is not compensation.** Closing as cancelled admits the
-listed external effects exist and will not be reversed by this runtime;
-effect reversal/compensation execution is deferred scope. Evidence
-revocation — durably withdrawing a proof's current validity without
-touching the closure snapshot or the retained effects — is supported since
-S8 and documented in [evidence-revocation.md](evidence-revocation.md); it,
-too, is never compensation.
+**Acknowledgement is not compensation by itself.** Closing as cancelled
+admits the listed external effects exist; since S10 a **bounded
+compensation slice** exists for the expense family inside the active
+cancellation window: the owner holding `expense.withdraw` may propose a
+linked withdrawal of a confirmed effect (see the compensation exception
+above and [runtime-boundaries.md](runtime-boundaries.md)). A succeeded
+withdrawal appends a distinct external effect and a `withdrawn` proof — it
+never erases the original, whose receipt, proof, invoices and disposition
+are retained. A refused or unresolved withdrawal is explicit truth, not a
+guaranteed reversal: refusal is recorded in the disposition with its
+reason, and unresolved compensations block closure. Publishing-family
+compensation, post-closure compensation, chains and a public abandon
+command remain deferred scope. Evidence revocation — durably withdrawing
+a proof's current validity without touching the closure snapshot or the
+retained effects — is supported since S8 and documented in
+[evidence-revocation.md](evidence-revocation.md); it, too, is never
+compensation.
 
 ## Ownership transfer
 
@@ -150,19 +183,26 @@ New in this slice: `CANCELLATION_ALREADY_REQUESTED`,
 `MIGRATION_TARGET_UNCHANGED`, `MIGRATION_TARGET_UNREGISTERED`,
 `MIGRATION_FAMILY_MISMATCH`. From S8 evidence revocation:
 `EVIDENCE_UNKNOWN`, `EVIDENCE_SCOPE_MISMATCH`,
-`EVIDENCE_ALREADY_REVOKED`, `EVIDENCE_NOT_REVOKABLE`. Reused from the core
+`EVIDENCE_ALREADY_REVOKED`, `EVIDENCE_NOT_REVOKABLE`. From S10
+compensation: `COMPENSATION_TARGET_INVALID` (blockers carry the target
+operation id) and the reuse of `CANCELLATION_NOT_REQUESTED` for a
+compensation proposed without an active intent. Reused from the core
 protocol: `AUTHORITY_DENIED`, `WORK_NOT_ACTIONABLE`, `OUTCOME_UNRESOLVED`,
 `CONTRACT_NOT_ACTIVE`, `COMMAND_UNSUPPORTED`, `COMMAND_ID_REUSED`,
 `STATE_VERSION_CONFLICT` and the contract/plan/scope revision codes.
 
 ## Limits (honest boundaries)
 
-- No compensation or reversal execution; acknowledgement records effects,
-  it does not undo them. Revocation withdraws current validity only —
-  see [evidence-revocation.md](evidence-revocation.md) for its boundaries
-  (no external fencing, no retroactive history edits; the accepted-source
-  operation-id collision is prevented at intake and existing poisoned
-  stores recover through the conflict boundary in
+- Compensation is bounded to the expense family inside the active
+  cancellation window (S10): a refused withdrawal is recorded, never
+  reversed, and unresolved compensations block closure. Publishing-family
+  and post-closure compensation, chains and a public abandon command
+  remain deferred. Acknowledgement of effects that were never withdrawn
+  records them; it does not undo them. Revocation withdraws current
+  validity only — see [evidence-revocation.md](evidence-revocation.md)
+  for its boundaries (no external fencing, no retroactive history edits;
+  the accepted-source operation-id collision is prevented at intake and
+  existing poisoned stores recover through the conflict boundary in
   [runtime-boundaries.md](runtime-boundaries.md), with TD-1 repayment
   tracked in the tech debt tracker).
 - One coordinator, local process, no distributed leases or fencing; an

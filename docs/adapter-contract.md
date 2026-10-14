@@ -14,7 +14,7 @@ runtime an adapter object is already trusted local code.
 
 ## The `AdapterContract` dataclass
 
-A frozen dataclass with five required fields:
+A frozen dataclass with five required fields plus one defaulted opt-in:
 
 | field | meaning |
 |---|---|
@@ -23,12 +23,14 @@ A frozen dataclass with five required fields:
 | `retention` | how long the external system remembers receipts |
 | `lookup_consistency` | what a key lookup is authoritative for |
 | `uniqueness` | tuple of external uniqueness promises beyond key replay |
+| `supports_action_context` | `bool`, default `False`: the adapter opts into receiving the explicit action and compensation link at execution (see [opt-in action/link execution](#opt-in-actionlink-execution-context)) |
 
 Construction validates the invariants (`ValueError`): `actions` is a nonempty
 tuple of unique nonempty strings; `idempotency_scope`, `retention` and
 `lookup_consistency` are nonempty strings; `uniqueness` is a tuple of nonempty
-strings. An empty `uniqueness` tuple is valid and asserts no additional
-uniqueness promise beyond idempotent replay. `valid_contract(value)` re-checks
+strings; `supports_action_context` is a `bool` (an `int` is rejected). An
+empty `uniqueness` tuple is valid and asserts no additional uniqueness
+promise beyond idempotent replay. `valid_contract(value)` re-checks
 everything and returns `bool` — the runtime uses it to fail closed on
 malformed descriptors.
 
@@ -73,6 +75,37 @@ contract (M3/M4 ordering — grant/rule checks run first):
 - The preflight is a local claim check only: it does not verify that the
   external system actually performs the capability.
 
+## Opt-in action/link execution context (S10)
+
+An adapter whose contract asserts `supports_action_context=True` receives the
+explicit action and compensation link at execution:
+
+```python
+def execute(self, key, document, content_digest, *, action=None, compensates=None)
+```
+
+- The runtime calls an opted-in adapter as
+  `execute(key, document, digest, action=op_capability,
+  compensates=op_link_or_None)`: forward operations pass the forward
+  capability and `compensates=None`; compensations pass the paired capability
+  and the immutable `{operation_id, external_id, capability}` snapshot.
+- Every other adapter — no declared contract, or a contract without the
+  opt-in — is invoked with **exactly the pre-S10 three positional
+  arguments**. The dispatch decision reads the declared contract only: no
+  signature introspection, no `inspect`, no TypeError fallback (a TypeError
+  probe could fire only after an effect committed — forbidden).
+- A compensation dispatched to an adapter whose effective contract does not
+  assert the opt-in is held `ADAPTER_ACTION_CONTEXT_UNSUPPORTED` after the
+  declared-actions preflight and before any attempt is persisted — zero
+  attempts, zero external calls, work stays out of `needs_attention`,
+  re-dispatchable with an opted-in adapter. Declaring the action without the
+  opt-in is not enough: the adapter could not receive the binding link.
+- The action is derived solely from the operation's capability and the link
+  solely from the runtime-validated operation body; nothing in `document`
+  can select or influence the action. `action=None` meaning "forward" is
+  FakeOA-side normalization for its own legacy direct callers, not a
+  protocol rule.
+
 ## Policy-owned accepted receipt source
 
 When a result is accepted, the runtime records verified evidence (kind
@@ -99,20 +132,115 @@ cancelled-operation early returns are unaffected by the check.
 ## FakeOA's declared contract
 
 ```python
-AdapterContract(actions=("expense.submit",),
+AdapterContract(actions=("expense.submit", "expense.withdraw"),
                 idempotency_scope="adapter-store:key",
                 retention="lifetime-of-store",
                 lookup_consistency="authoritative-by-key",
-                uniqueness=("invoice.id",))
+                uniqueness=("invoice.id", "withdrawal.original_external_id"),
+                supports_action_context=True)
 ```
 
 | value | assertion |
 |---|---|
-| `actions=("expense.submit",)` | executes only the expense submit capability |
+| `actions=("expense.submit", "expense.withdraw")` | executes the expense submit capability and its paired withdrawal |
 | `idempotency_scope="adapter-store:key"` | idempotency keys are scoped to its own SQLite store |
 | `retention="lifetime-of-store"` | receipts persist as long as the store file exists |
 | `lookup_consistency="authoritative-by-key"` | a key lookup returns the committed receipt |
-| `uniqueness=("invoice.id",)` | one external acceptance per invoice id across all keys |
+| `uniqueness=("invoice.id", "withdrawal.original_external_id")` | one external acceptance per invoice id and one withdrawal effect per original across all keys |
+| `supports_action_context=True` | opts into explicit action/link execution context |
+
+The policy side of the pairing (`ExpensePolicy.compensation_capabilities`
+maps `expense.withdraw` to `expense.submit`, inherited by `ExpensePolicyV2`)
+lives in `work_runtime/policy.py`; admission semantics are specified in
+[runtime-boundaries.md](runtime-boundaries.md).
+
+## FakeOA store schema, migration and counters (S10)
+
+`receipts` is the per-key call/lookup surface for both actions; `withdrawals`
+is the per-original effect surface. Opening a store runs one `BEGIN IMMEDIATE`
+transaction that creates any missing table, probes
+`PRAGMA table_info(receipts)` **inside the transaction**, and adds the two
+nullable identity columns when absent — concurrent first-open and re-open are
+therefore race-free (no duplicate-column error), and pre-S10 stores open
+unchanged:
+
+```sql
+-- legacy columns, unchanged shape for old rows
+CREATE TABLE IF NOT EXISTS receipts (
+    key TEXT PRIMARY KEY, digest TEXT NOT NULL, result TEXT NOT NULL);
+-- additive identity columns (NULL = legacy forward row / no link)
+ALTER TABLE receipts ADD COLUMN action TEXT;
+ALTER TABLE receipts ADD COLUMN link_digest TEXT;
+CREATE TABLE IF NOT EXISTS withdrawals (
+    original_external_id TEXT PRIMARY KEY, external_id TEXT NOT NULL,
+    key TEXT NOT NULL, digest TEXT NOT NULL);
+```
+
+Every receipts write uses named columns. New forward rows store the explicit
+action `"expense.submit"`; legacy rows keep `NULL`, normalized to the forward
+action on read (FakeOA-side policy for its own legacy direct callers — a
+legacy three-positional `execute(key, document, digest)` call behaves exactly
+as before). Replay of an existing row — forward or withdrawal — validates the
+digest, the normalized action and the link fingerprint (`digest(compensates)`
+for withdrawals, `NULL` for forward); any mismatch raises
+`ValueError("Idempotency key reused with different content")` with zero new
+effects, so a key can never be replayed across actions or links.
+
+**Counters (both derived from the SQLite store, never stdout):**
+`accepted_count()` is the number of **distinct accepted forward effects** —
+receipt rows with `status == "accepted"` whose action is `NULL` (legacy) or
+`"expense.submit"`, counted by distinct `external_id` (direct zero-invoice
+acceptances included; withdrawal and alias receipts excluded).
+`withdrawn_count()` is the `withdrawals` row count — exactly one withdrawal
+effect per withdrawn original. Original `receipts`/`invoices` rows are never
+deleted or rewritten.
+
+### Withdrawal execution (per-key receipts + per-original effects)
+
+An opted-in withdrawal call carries the runtime-validated immutable link
+(`compensates` = `{operation_id, external_id, capability}`); nothing in the
+document can select or influence the action. Input guards run before any
+write (`ValueError`): unknown action; a withdrawal without a well-formed
+three-field link; a forward call carrying a link. Then, inside one
+`BEGIN IMMEDIATE` transaction:
+
+1. **Existing receipts row under the key** → replay only when the digest,
+   the normalized action and the link fingerprint (`digest(compensates)`)
+   all match; any mismatch is the established
+   `ValueError("Idempotency key reused with different content")` with zero
+   new effects — a key can never be replayed across actions or links, in
+   either direction.
+2. **No row, effect already exists** for the original (possibly created
+   under a different key in a shared store) → insert an **alias** receipts
+   row under the requesting key carrying the requesting digest/action/link
+   fingerprint and the **same** `WD-…` effect id: the returned receipt is
+   digest-valid for the requesting call and `lookup(requesting key)` stays
+   authoritative. No second `withdrawals` row can exist.
+3. **No row, no effect** → original existence is decided by an accepted
+   **forward receipt** (`action` NULL/`"expense.submit"`) for that
+   `external_id` — a receipts scan with the invoices table as a
+   short-circuit, so direct zero-invoice acceptances count (an
+   invoices-only probe would fabricate known absence for them). Present →
+   create the one effect (new `WD-…` id, `withdrawals` row plus the
+   receipts row) and return the accepted receipt. Absent → store a
+   **queryable business rejection** receipt
+   (`status:"rejected"`, `reason:"ORIGINAL_ABSENT"`) with no effect row:
+   known absence is authoritative. A genuine store failure raises and the
+   whole transaction rolls back — unavailability is never reported as
+   absence.
+4. The forward path never consults `withdrawals`: duplicate-invoice
+   submits are always business-rejected, and no store state can turn a
+   forward call into a withdrawal.
+
+`timeout_after_commit` applies to the withdrawal path too, so a lost
+response after a committed withdrawal recovers through `lookup` with the
+digest-valid receipt.
+
+Withdrawal receipts carry `original_external_id` (and, on refusal, a
+`reason` such as `ORIGINAL_ABSENT`); `receipt_is_valid` accepts the extra
+fields unchanged. The runtime-side binding check, the stored `adapter_result`
+and the `withdrawn` proof kind are specified in
+[runtime-boundaries.md](runtime-boundaries.md).
 
 ## Reusable conformance tests
 
@@ -127,14 +255,20 @@ implementing four fixture hooks:
 | `changed_document()` | a valid document with a **different digest** |
 | `effect_count(adapter)` | external effects committed so far |
 
-The mixin runs five tests: declared metadata invariants (frozen valid
+The mixin runs six tests: declared metadata invariants (frozen valid
 `AdapterContract`); same-key/same-payload replay returns the identical receipt
 with exactly one effect and a `receipt_is_valid` shape; same key with different
 content raises `ValueError` without a second effect; `lookup` of the committed
-key matches the receipt; `lookup` of a missing key returns `None`.
+key matches the receipt; `lookup` of a missing key returns `None`; and — for
+adapters that declare the action/link opt-in — an explicit-context replay
+(`action` derived from the adapter's own `contract.actions[0]`,
+`compensates=None`) returns the identical receipt with one effect, skipped
+when the opt-in is absent (no hardcoded domain capability in generic
+conformance code).
 
 Domain-specific uniqueness (FakeOA's invoice-id uniqueness, a publisher's
-`(document.id, digest)` uniqueness) is deliberately **not** in the mixin — each
+`(document.id, digest)` uniqueness, and FakeOA's per-original withdrawal
+uniqueness) is deliberately **not** in the mixin — each
 domain tests its own external constraints separately.
 
 ## Verification

@@ -188,6 +188,36 @@ The read-only viewer surfaces (derived revoked identities, closed-work
 notice) remain the later S8 owner wave recorded in the sprint plan; this
 slice adds no viewer claim.
 
+## S10 coverage — expense compensation during active cancellation
+
+The S10 core wave adds linked compensation proposals, opt-in adapter
+action/link execution, the FakeOA withdrawal store, the `withdrawn` proof
+kind, stored adapter results and truthful closure
+(`tests/test_compensation.py`, plus contract/mixin additions in
+`tests/test_adapter_contract.py` and `tests/adapter_conformance.py`) on the
+unchanged Runtime schema 1, both demo policy families and the unchanged
+publishing family. Semantics and boundaries:
+[runtime boundaries](runtime-boundaries.md),
+[adapter contract](adapter-contract.md), [interventions](interventions.md).
+
+| guarantee | test (all in `tests/test_compensation.py` unless noted) |
+|---|---|
+| paired capability admitted, unpaired/publishing degrade | `PolicyPairingTests` |
+| additive serialized store migration, legacy replay, named writes, counters | `AdapterStoreMigrationTests`, `ForwardWriteAndCounterTests` |
+| withdrawal execution: one effect, alias receipts, link fingerprint, ORIGINAL_ABSENT, guards | `WithdrawalExecutionTests` |
+| window/windowless admission, exact payload, target status matrix, pairing, stable key, immutable snapshot, authority, revoked-proof orthogonal, both versions | `CompensationAdmissionTests` |
+| dispatch carve-out, belt-and-braces legs, context hold (zero attempts/effects then re-dispatch), kwargs/legacy call shapes, link revalidation, grant loss | `CompensationDispatchTests` |
+| revision matrix binding, one effect + original intact, binding mismatch quarantine (accepted+rejected, idempotent), withdrawn proof never satisfies E08, stored adapter_result, refused closure, S9 conflict over withdrawal identity | `CompensationResolutionTests` |
+| exact two-id ack, failed-withdrawal ack/disposition, unresolved blockers, replay/authority | `CompensationClosureTests` |
+| recover inside window, re-admission/transfer re-admits, outside-window/closed codes, real child crash (one original + one withdrawal, attempts 1), execute-exception truth, read-only inspector zero-write | `CompensationRecoveryTests` |
+| contract field invariants incl. bool-only opt-in | `tests/test_adapter_contract.py` (`AdapterContractTests`) |
+| generic opt-in conformance replay (action from `contract.actions[0]`, skipped without the opt-in) | `tests/adapter_conformance.py` |
+
+The compensation demonstration harness, installed-verification stage and
+README entries are the separate W2 wave; the five AGENTS gates and the
+existing five demos are unchanged by this slice, and the read-only
+inspector renders compensations generically with zero writes (pinned).
+
 ## S9 coverage — accepted-evidence collision prevention and recovery
 
 The S9 core wave added the accepted-source operation-id reservation and
@@ -255,7 +285,17 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 
 - Remote or multi-tenant authentication and authorization (local principal names only). Owner, delegate and `work.intervene` administrator grants are trusted-local configuration, not authenticated identities; replay protection rechecks this local authority, it is not a distributed security boundary.
 - Policy/SOP publication, author review workflow, and policy migration beyond the explicit same-family command above. Cross-domain policy registries are rejected; there is no implicit upgrade on restart or recovery. Static SOP lint is structural review only: no textual-predicate execution, no provenance verification, no authority approval, and no link from a linted card to an executing Python policy.
-- Compensation (effect reversal) execution: `finalize_cancel` acknowledges external effects with their external ids and records every disposition — it never claims to reverse an effect. Evidence revocation (S8) withdraws a proof's current validity durably but is likewise not compensation, does not fence an in-flight external call, and does not rewrite historical receipts, closure snapshots or confirmed effects.
+- Compensation (effect reversal) is bounded: since S10 the expense family
+  supports linked withdrawal proposals **only inside the active
+  cancellation window**, executing a distinct appended external effect
+  under the current owner's `expense.withdraw` grant. It is not a general
+  reversal: `finalize_cancel` never claims to undo an effect (a refused
+  withdrawal is recorded, effects stand), publishing-family and
+  post-closure compensation, chains and a public abandon command are
+  unimplemented, and evidence revocation (S8) remains withdrawal of a
+  proof's current validity only — not compensation, no fencing of
+  in-flight calls, no rewriting of historical receipts, closure snapshots
+  or confirmed effects.
 - Distributed execution: worker leases, fencing, cross-node coordination (P13). An attempt already durable when cancellation is requested remains uncertain until reconciled; there is no external fence. `FilePublisher`'s per-key artifact uniqueness is adapter-local, not a distributed exactly-once claim.
 - Automatic repair of corrupted stores. Conflict recovery degrades malformed-but-valid-JSON evidence bodies to `null` snapshot fields; a body that is not valid JSON aborts only that operation's resolution (rolled back, retried) and is never repaired by the runtime.
 - Any real external system adapter beyond the local filesystem; `FakeOA` and `FakePublisher` are local demonstrations, and `FilePublisher` targets trusted local directories only (hardlink support required, best-effort directory fsync, no power-loss/hostile-filesystem/symlink guarantee).

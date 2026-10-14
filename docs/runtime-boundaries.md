@@ -42,6 +42,80 @@ stored receipt is returned for a closed work while authority holds.
 | operation | business key derived by the policy (expense demo: policy id + capability + document id + document revision) | a new command proposing the same logical effect re-associates the existing operation instead of creating a second one; same key with different content is rejected `OPERATION_CONTENT_CONFLICT` |
 | external effect | idempotency key = the operation's business key, enforced by the adapter | the external system deduplicates repeated calls with the same key and content |
 
+## Compensation boundary (S10 — expense family, active-cancellation window)
+
+`propose_action` gains one **linked compensation variant** (D43): a payload
+carrying `compensates` (the original operation id, a nonempty string) plus
+exactly `capability`, `contract_revision`, `plan_revision` and
+`document_digest` — anything else is an unpersisted `CommandError`. Ordinary
+payloads (no `compensates` key) keep the pre-S10 lenient handling unchanged.
+The variant exists only for the expense family (`expense.withdraw`, paired by
+`ExpensePolicy.compensation_capabilities`) and only while a cancellation
+intent is active.
+
+Admission precedence (each step a persisted business rejection unless marked
+misuse):
+
+```text
+exact payload shape (CommandError, nothing persisted)
+→ authority: current owner + capability in grants            AUTHORITY_DENIED
+→ window split: forward payload + active intent              CANCELLATION_ACTIVE
+              compensation variant + no intent               CANCELLATION_NOT_REQUESTED
+→ contract/plan/digest matches (unchanged codes)             CONTRACT_REVISION_MISMATCH /
+                                                              PLAN_REVISION_MISMATCH / EVIDENCE_SCOPE_MISMATCH
+→ link validation: target exists, same work,
+   confirmed_succeeded, not itself a compensation,
+   policy pairing matches                                     COMPENSATION_TARGET_INVALID, blockers [target id]
+→ policy blockers for the capability (empty when paired)     REQUIREMENT_UNSATISFIED / APPLICABILITY_UNRESOLVED
+→ pending different-digest guard (unchanged)                 OUTCOME_UNRESOLVED
+→ business-key lookup → re-admitted (free) /                 OPERATION_CONTENT_CONFLICT
+→ insert compensation operation + events
+```
+
+- **Window split covers fresh AND re-admission**: the single gate sits before
+  the business-key branch, so inside the window a compensation re-proposal
+  under a new command id re-admits the existing operation (re-preparing a
+  cancelled/held one, updating the actor) exactly like an ordinary
+  re-admission outside the window; re-admission never rebinds the link. The
+  in-window document freeze (`revise_document` is `CANCELLATION_ACTIVE`)
+  keeps the re-admission digest guard unreachable from drift.
+- **Link validation is admission-time truth on terminal facts**: the target
+  must be `confirmed_succeeded` (an uncertain target must be reconciled
+  first; a failed target has no effect to withdraw), in the same work, and
+  not itself a compensation (no chains). Requirement/proof state is
+  orthogonal: a revoked accepted proof does not undo the effect and does not
+  block compensation. The pairing arm applies only when the capability is in
+  the policy's pairing map; an unpaired capability degrades to the ordinary
+  `CAPABILITY_UNSUPPORTED` blocker (how publishing stays out of scope without
+  a runtime flag).
+- **Business key** (runtime-owned, D6): `digest([policy.id, capability,
+  target_operation_id])` — stable across same-family policy versions,
+  structurally distinct from every forward key (the store-global
+  `business_key UNIQUE` then gives at most one compensation per (family,
+  capability, original)), and embedding the original operation id. The
+  forward `operation_key` is never consulted for compensation proposals.
+- **Operation body** adds one immutable snapshot
+  `"compensates": {"operation_id", "external_id", "capability"}` — terminal
+  facts of the target at proposal, never rewritten afterwards (terminal
+  operations are immutable). `OperationPrepared`/`OperationReadmitted`
+  events carry the same additive `compensates` object for compensations
+  only; generic readers treat an absent `compensates` as an ordinary
+  operation. The operation's `document`/`document_digest` remain the current
+  frozen work state, so every existing digest touchpoint (admission scope,
+  pending guard, dispatch staleness, adapter digest check) applies unchanged.
+
+Dispatch, resolution, proofs and closure are covered in
+[the dispatch boundary](#the-dispatch-boundary) below (compensation
+carve-out), [adapter result contract](#adapter-result-contract) (binding
+check, stored adapter result, `withdrawn` proof) and
+[interventions.md](interventions.md) (finalization). **Reconcile stays
+caller-trusted** under the single two-action adapter (B): `reconcile`/
+`recover` accept one adapter and `lookup` by business key regardless of
+action; wiring a wrong adapter to a compensation's reconcile is a caller
+error outside the product surface (unchanged from the pre-S10 trust model —
+principal names and adapters are trusted-local configuration, never
+authentication).
+
 ## Policy registry and per-work binding
 
 `Runtime(path, policy, grants, *, policies=None)` accepts an optional
@@ -81,7 +155,18 @@ registry fixed at construction.
    (otherwise the intent is `cancelled`/`STALE_INTENT`, never a fake
    external failure); authority (including current Work ownership) and
    requirement blockers are re-evaluated (otherwise `held` with a reason —
-   accepted commands are never retroactively rejected).
+   accepted commands are never retroactively rejected). **Compensation
+   carve-out (S10)**: an operation carrying `compensates` is *not*
+   auto-cancelled by an active cancellation intent — it was structurally
+   admitted only inside that window — while every forward prepared intent
+   keeps `WORK_CANCELLED`. Two belt-and-braces branches (unreachable via
+   public API, pinned by crafted-store tests) mirror the carve-out: a
+   compensation without an active intent cancels `STALE_INTENT`, and a
+   compensation whose stored link no longer re-validates against the stored
+   target (exists, same work, `confirmed_succeeded`, not itself a
+   compensation, snapshot `external_id`/`capability` equality, current
+   policy pairing) is `held` with reason `COMPENSATION_TARGET_INVALID` —
+   visible, never auto-cancelled, never dispatched.
 2. Immediately before the attempt is created it fails closed on policy
    configuration: the accepted receipt source (below) must be a nonempty
    string, else `CommandError` — no attempt, no external call. It then runs the
@@ -89,7 +174,13 @@ registry fixed at construction.
    [`AdapterContract`](adapter-contract.md) excluding the operation's
    capability is `held` with reason `ADAPTER_ACTION_UNSUPPORTED` — again zero
    attempts and zero external calls — and stays dispatchable by a compatible
-   adapter. A malformed descriptor raises `CommandError` before an external
+   adapter. A **compensation** additionally requires an adapter whose declared
+   contract asserts `supports_action_context=True`: without the opt-in it is
+   `held` with reason `ADAPTER_ACTION_CONTEXT_UNSUPPORTED` (zero attempts,
+   zero calls, work stays out of `needs_attention`, re-dispatchable) — even
+   when the contract's `actions` claims the withdraw capability, because a
+   non-opted-in adapter cannot receive the binding link. A malformed
+   descriptor raises `CommandError` before an external
    call; only a missing `contract` attribute keeps the legacy trusted
    duck-typed path — a descriptor that is present but invalid (a non-contract
    value, an explicit `None`, or an incomplete `AdapterContract` instance) is
@@ -100,7 +191,11 @@ registry fixed at construction.
    happened" and must be reconciled, never assumed absent.
 4. `adapter.execute(business_key, document, document_digest)` then runs outside
    the transaction; a crash between commit and call still leaves an inspectable
-   uncertain state (see limitations).
+   uncertain state (see limitations). An opted-in adapter is called instead as
+   `execute(business_key, document, document_digest, action=capability,
+   compensates=link_or_None)` — the dispatch decision reads the declared
+   contract only (no signature introspection, no TypeError probing), so legacy
+   adapters keep the exact three-positional-argument call.
 
 ## Adapter result contract
 
@@ -135,6 +230,44 @@ recorded. The quarantine is recoverable: once the adapter answers correctly,
 An adapter exception during `execute` or `lookup` never fabricates a business
 rejection; it records `outcome_unknown` with the exception's type name as the
 reason.
+
+**Compensation resolution binding, stored results and `withdrawn` proofs
+(S10 D45).** For an operation carrying `compensates`, `_resolve` adds one
+check after `receipt_is_valid` and **before** the accepted/rejected split:
+`result["original_external_id"]` must be a nonempty string equal to the
+immutable snapshot's `external_id`. A malformed or mismatched receipt —
+accepted or rejected alike — is quarantined
+(`outcome_unknown`/`ADAPTER_RESULT_INVALID`, work `needs_attention`,
+idempotent on repeat), never a confirmation against the wrong original. A
+valid compensation result additionally stores the full validated receipt
+additively as `op["adapter_result"]` (refusal reasons included); ordinary
+operations never carry the field. An accepted withdrawal resolves
+`confirmed_succeeded` with `external_id` = the `WD-…` id and inserts the
+runtime-owned proof with **kind `"withdrawn"`** (data
+`{digest, external_id, original_external_id}`) at the same accepted-source
+identity — never a forward `accepted` proof, so it can never satisfy an
+`accepted`-kind rule such as E08 at any digest. A rejected withdrawal
+resolves `confirmed_failed` with the work `needs_attention`. The S9
+collision path covers withdrawal resolutions verbatim: an occupied
+`(accepted source, operation id)` identity records the actual withdrawal
+result plus the conflict snapshot and inserts no proof of any kind.
+
+**No `withdrawn` evidence-source mapping (deliberate).** Withdrawn proofs
+ride the accepted-source identity space only: `record_evidence` rejects kind
+`withdrawn` for every actor (no configured source can authorize it), signed
+ingress is denied at `record_evidence`, imports are impossible, and
+revocation of a withdrawn proof is administrator-only. Runtime-observed
+withdrawal effects are not source-claimable.
+
+**External stand-in store compatibility (S10).** `FakeOA`'s own SQLite store
+migrated additively: opening any store — including pre-S10 ones — runs one
+`BEGIN IMMEDIATE` transaction that adds the nullable `receipts.action` /
+`receipts.link_digest` identity columns and the per-original `withdrawals`
+effect table exactly once (schema, migration, withdrawal execution and
+counter semantics: [adapter-contract.md](adapter-contract.md)). The runtime
+store schema stays `1`; forward adapter behavior (duplicate-invoice
+rejection, key replay, counters) is preserved, with the forward INSERT on
+named columns.
 
 ## Accepted-evidence reservation (operation-id intake)
 

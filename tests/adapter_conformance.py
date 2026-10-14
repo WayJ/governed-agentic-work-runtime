@@ -71,3 +71,25 @@ class AdapterConformanceMixin:
     def test_lookup_missing_key_returns_none(self):
         adapter = self.make_adapter()
         self.assertIsNone(adapter.lookup("missing-conformance-key"))
+
+    def test_opted_in_action_context_replay_returns_identical_receipt(self):
+        """Opt-in action/link execution: explicit forward context replays.
+
+        The action is derived from the adapter's own declared contract
+        (actions[0], forward context, compensates=None) — never a hardcoded
+        domain capability. Adapters without the opt-in skip: the generic
+        mixin makes no claim about their kwargs surface.
+        """
+        adapter = self.make_adapter()
+        contract = getattr(adapter, "contract", None)
+        if contract is None or not getattr(contract, "supports_action_context", False):
+            self.skipTest("adapter does not opt into action/link execution context")
+        action = contract.actions[0]
+        document = self.sample_document()
+        first = adapter.execute("conformance-context-key", document, digest(document),
+                                action=action, compensates=None)
+        second = adapter.execute("conformance-context-key", document, digest(document),
+                                 action=action, compensates=None)
+        self.assertEqual(first, second)
+        self.assertTrue(receipt_is_valid(first, digest(document)))
+        self.assertEqual(self.effect_count(adapter), 1)

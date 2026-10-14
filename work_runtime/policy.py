@@ -44,6 +44,11 @@ class ExpensePolicy:
         "confirmation": "requester",
         "accepted": "oa",
     }
+    # Compensation pairing (S10 D43/D44): the compensating capability maps to
+    # the forward capability whose accepted effect it withdraws. A policy
+    # without this attribute keeps CAPABILITY_UNSUPPORTED for every
+    # non-forward capability — graceful degradation for custom/old policies.
+    compensation_capabilities = {"expense.withdraw": "expense.submit"}
 
     def validate_document(self, document: dict) -> None:
         if set(document) != {"id", "amount", "limit", "invoices", "sealed"}:
@@ -127,6 +132,10 @@ class ExpensePolicy:
 
     def action_blockers(self, capability: str, requirements: List[dict]) -> List[dict]:
         if capability != "expense.submit":
+            # A paired compensating capability is admitted through its link
+            # check (runtime), not requirements: its blockers are empty.
+            if self.compensation_capabilities.get(capability) == "expense.submit":
+                return []
             return [{"code": "CAPABILITY_UNSUPPORTED", "capability": capability}]
         return [r for r in requirements if r["rule_id"] != "E08" and
                 (r["applicability"] in ("unknown", "conflict") or

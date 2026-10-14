@@ -101,6 +101,20 @@ class AdapterContractTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.make(**overrides)
 
+    def test_supports_action_context_defaults_false_and_validates(self):
+        contract = self.make()
+        self.assertIs(contract.supports_action_context, False)
+        opted_in = self.make(supports_action_context=True)
+        self.assertIs(opted_in.supports_action_context, True)
+        self.assertTrue(valid_contract(contract))
+        self.assertTrue(valid_contract(opted_in))
+
+    def test_supports_action_context_must_be_bool(self):
+        for value in (1, 0, "yes", None, ["true"]):
+            with self.subTest(value=repr(value)):
+                with self.assertRaises(ValueError):
+                    self.make(supports_action_context=value)
+
     def test_empty_uniqueness_means_no_additional_promise(self):
         contract = self.make(uniqueness=())
         self.assertEqual(contract.uniqueness, ())
@@ -162,13 +176,13 @@ class CountingFakeOA:
         self.executed = 0
         self.looked_up = 0
 
-    def execute(self, *args):
+    def execute(self, *args, **kwargs):
         self.executed += 1
-        return self.inner.execute(*args)
+        return self.inner.execute(*args, **kwargs)
 
-    def lookup(self, *args):
+    def lookup(self, *args, **kwargs):
         self.looked_up += 1
-        return self.inner.lookup(*args)
+        return self.inner.lookup(*args, **kwargs)
 
 
 def evidence_rows(path, work_id="demo"):

@@ -514,14 +514,27 @@ class Runtime:
             return self._reject("CANCEL_ACKNOWLEDGEMENT_MISMATCH", version, succeeded_ids)
         acknowledged = [op for op in succeeded if op["id"] in set(ack)]
         work["status"], work["outcome"] = "closed", "cancelled"
+
+        def disposition(op):
+            entry = {"operation_id": op["id"], "status": op["status"],
+                     "dispatch_state": op["dispatch_state"]}
+            # Compensation dispositions only (S10 D45): the immutable link and
+            # the stored adapter result describe the withdrawal truthfully —
+            # a refusal is explicit, never implied or reversed. Ordinary
+            # dispositions keep exactly the three-field shape; previously
+            # stored closures are never rewritten.
+            if "compensates" in op:
+                entry["compensates"] = op["compensates"]
+            if "adapter_result" in op:
+                entry["adapter_result"] = op["adapter_result"]
+            return entry
+
         work["completion"] = {
             "cancellation": work["cancellation"],
             "acknowledged_operations": [{"operation_id": op["id"],
                                          "external_id": op.get("external_id")}
                                         for op in acknowledged],
-            "operation_dispositions": [{"operation_id": op["id"], "status": op["status"],
-                                        "dispatch_state": op["dispatch_state"]}
-                                       for op in operations]}
+            "operation_dispositions": [disposition(op) for op in operations]}
         self._save(db, work, "WorkCancelled", work["completion"])
         return self._accepted(work)
 
@@ -611,14 +624,32 @@ class Runtime:
 
     def _propose(self, db, actor, work, payload):
         version = work["state_version"]
+        compensation_of = payload.get("compensates")
+        if compensation_of is not None or "compensates" in payload:
+            # Linked compensation variant (S10 D43/D44): exact payload shape is
+            # API misuse (unpersisted CommandError), checked first.
+            if (not isinstance(compensation_of, str) or not compensation_of
+                    or set(payload) != {"capability", "contract_revision",
+                                        "plan_revision", "document_digest",
+                                        "compensates"}):
+                raise CommandError(
+                    "Compensation proposals require exactly capability, "
+                    "contract_revision, plan_revision, document_digest and "
+                    "a nonempty compensates operation id")
         owner = work.get("owner")
         if owner is not None and actor != owner:
             return self._reject("AUTHORITY_DENIED", version)
         capability = payload.get("capability")
         if capability not in self.grants[actor]:
             return self._reject("AUTHORITY_DENIED", version)
-        if work.get("cancellation"):
-            return self._reject("CANCELLATION_ACTIVE", version)
+        if compensation_of is None:
+            if work.get("cancellation"):
+                return self._reject("CANCELLATION_ACTIVE", version)
+        elif not work.get("cancellation"):
+            # Compensation exists only inside the active cancellation window.
+            # The gate sits before the business-key branch below, so the split
+            # covers fresh proposals AND re-admission.
+            return self._reject("CANCELLATION_NOT_REQUESTED", version)
         if not work["contract"]:
             return self._reject("CONTRACT_NOT_ACTIVE", version)
         if payload.get("contract_revision") != work["contract"]["revision"]:
@@ -628,6 +659,12 @@ class Runtime:
         if payload.get("document_digest") != work["document_digest"]:
             return self._reject("EVIDENCE_SCOPE_MISMATCH", version)
         policy = self._policy_for(work)
+        link = None
+        if compensation_of is not None:
+            link = self._validated_link(db, work, policy, capability, compensation_of)
+            if link is None:
+                return self._reject("COMPENSATION_TARGET_INVALID", version,
+                                    [compensation_of])
         blockers = policy.action_blockers(capability, work["requirements"])
         if blockers:
             code = "APPLICABILITY_UNRESOLVED" if any(
@@ -639,7 +676,13 @@ class Runtime:
             if (pending["status"] in ("dispatched", "outcome_unknown")
                     and pending["document_digest"] != work["document_digest"]):
                 return self._reject("OUTCOME_UNRESOLVED", version, [pending["id"]])
-        key = policy.operation_key(capability, work)
+        if compensation_of is None:
+            key = policy.operation_key(capability, work)
+        else:
+            # Runtime-owned compensation key (D6): stable across same-family
+            # policy versions, structurally distinct from every forward key,
+            # and embedding the original operation id.
+            key = digest([policy.id, capability, compensation_of])
         old = db.execute("SELECT body FROM operations WHERE business_key=?", (key,)).fetchone()
         if old:
             operation = json.loads(old[0])
@@ -651,7 +694,10 @@ class Runtime:
                                  contract_revision=work["contract"]["revision"])
                 operation.pop("reason", None)
                 self._save_op(db, operation)
-                self._save(db, work, "OperationReadmitted", {"operation_id": operation["id"]})
+                details = {"operation_id": operation["id"]}
+                if "compensates" in operation:
+                    details["compensates"] = operation["compensates"]
+                self._save(db, work, "OperationReadmitted", details)
             return self._accepted(work, operation_id=operation["id"],
                                   operation_status_at_decision=operation["status"])
         operation = {"id": uuid.uuid4().hex, "business_key": key, "work_id": work["id"],
@@ -660,9 +706,47 @@ class Runtime:
                      "document": work["document"], "document_digest": work["document_digest"],
                      "plan_revision": work["plan_revision"],
                      "contract_revision": work["contract"]["revision"]}
+        if link is not None:
+            operation["compensates"] = link
         self._save_op(db, operation)
-        self._save(db, work, "OperationPrepared", {"operation_id": operation["id"]})
+        details = {"operation_id": operation["id"]}
+        if link is not None:
+            details["compensates"] = link
+        self._save(db, work, "OperationPrepared", details)
         return self._accepted(work, operation_id=operation["id"], operation_status_at_decision="prepared")
+
+    @staticmethod
+    def _compensation_pairing(policy, capability):
+        """The forward capability a compensating capability withdraws, if paired.
+
+        A policy without the attribute (or without the entry) yields None:
+        graceful degradation to the ordinary CAPABILITY_UNSUPPORTED blocker.
+        """
+        pairing = getattr(policy, "compensation_capabilities", None)
+        return pairing.get(capability) if isinstance(pairing, dict) else None
+
+    def _validated_link(self, db, work, policy, capability, target_id):
+        """The immutable target snapshot for a compensation, or None if invalid.
+
+        Admission truth: the target must be a terminal, confirmed, same-work,
+        non-compensation forward effect the current policy pairing names.
+        Requirement/proof state is orthogonal — a revoked accepted proof does
+        not undo the effect.
+        """
+        row = db.execute("SELECT body FROM operations WHERE id=?", (target_id,)).fetchone()
+        if row is None:
+            return None
+        target = json.loads(row[0])
+        if (target.get("work_id") != work["id"]
+                or target.get("status") != "confirmed_succeeded"
+                or "compensates" in target):
+            return None
+        paired = self._compensation_pairing(policy, capability)
+        if paired is not None and target.get("capability") != paired:
+            return None
+        return {"operation_id": target["id"],
+                "external_id": target.get("external_id"),
+                "capability": target["capability"]}
 
     def _reserved_accepted_sources(self) -> set:
         """Accepted sources of every loaded policy version, per intake.
@@ -848,21 +932,30 @@ class Runtime:
     def _proof_conflict(self, db, work, op, source, result) -> Optional[dict]:
         """Adopt an accepted external result, snapshotting any collision.
 
-        Without a colliding row this inserts the runtime-owned accepted
-        proof and returns None. When an existing candidate already occupies
-        the acceptance-proof identity (source, operation id) — any kind,
+        Without a colliding row this inserts the runtime-owned proof and
+        returns None. When an existing candidate already occupies the
+        acceptance-proof identity (source, operation id) — any kind,
         status or work — it returns the nine-field D40 snapshot instead and
         never touches the conflicting row: the real external acceptance is
         recorded on the operation, the candidate keeps its identity.
+
+        A compensation's accepted proof uses kind "withdrawn" (S10 D45) —
+        never a forward "accepted" proof — with the withdrawal's own
+        external id and the immutable link's original external id.
         """
         row = db.execute("SELECT work_id,fingerprint,body FROM evidence "
                          "WHERE source=? AND event_id=?",
                          (source, op["id"])).fetchone()
         if row is None:
+            data = {"digest": op["document_digest"],
+                    "external_id": result["external_id"]}
+            kind = "accepted"
+            if op.get("compensates") is not None:
+                kind = "withdrawn"
+                data["original_external_id"] = op["compensates"]["external_id"]
             proof = {"id": uuid.uuid4().hex, "source": source, "event_id": op["id"],
-                     "kind": "accepted", "status": "verified",
-                     "data": {"digest": op["document_digest"],
-                              "external_id": result["external_id"]}}
+                     "kind": kind, "status": "verified",
+                     "data": data}
             db.execute("INSERT INTO evidence VALUES (?,?,?,?,?)",
                        (source, op["id"], work["id"], digest(proof), canonical(proof)))
             return None
@@ -888,12 +981,32 @@ class Runtime:
                 return op
             work = self._work(db, op["work_id"])
             policy = self._policy_for(work)
-            if work.get("cancellation") and op["dispatch_state"] != "cancelled":
-                # Belt and braces: request_cancel already cancelled every
-                # prepared intent; nothing new may ever leave under cancel.
-                op["dispatch_state"], op["reason"] = "cancelled", "WORK_CANCELLED"
+            compensation = op.get("compensates")
+            if work.get("cancellation"):
+                if compensation is None:
+                    # Belt and braces: request_cancel already cancelled every
+                    # prepared intent; nothing new may ever leave under cancel.
+                    op["dispatch_state"], op["reason"] = "cancelled", "WORK_CANCELLED"
+                    self._save_op(db, op)
+                    self._save(db, work, "DispatchCancelled", {"operation_id": op["id"]})
+                    return op
+                # The one carve-out (S10 D44): a structurally admitted
+                # compensation executes inside the window; dispatch still
+                # re-runs every check below.
+            elif compensation is not None:
+                # Belt-and-braces mirror: compensation without an active intent
+                # is stale (unreachable via public API — the window gate and
+                # finalize's unresolved block both precede it).
+                op["dispatch_state"], op["reason"] = "cancelled", "STALE_INTENT"
                 self._save_op(db, op)
                 self._save(db, work, "DispatchCancelled", {"operation_id": op["id"]})
+                return op
+            if compensation is not None and not self._link_still_valid(
+                    db, work, policy, op):
+                op["dispatch_state"], op["reason"] = "held", "COMPENSATION_TARGET_INVALID"
+                self._save_op(db, op)
+                self._save(db, work, "DispatchHeld",
+                           {"operation_id": op["id"], "reason": op["reason"]})
                 return op
             if (work["status"] == "closed" or op["document_digest"] != work["document_digest"]
                     or op["plan_revision"] != work["plan_revision"]
@@ -921,17 +1034,63 @@ class Runtime:
                 self._save(db, work, "DispatchHeld",
                            {"operation_id": op["id"], "reason": op["reason"]})
                 return op
+            if (compensation is not None
+                    and not (contract is not None and contract.supports_action_context)):
+                # Context hold (S10 D44): a compensation needs an adapter that
+                # opted into receiving the binding link — declaring the action
+                # without the opt-in is not enough. Zero attempts, zero calls,
+                # work stays out of needs_attention, re-dispatchable.
+                op["dispatch_state"] = "held"
+                op["reason"] = "ADAPTER_ACTION_CONTEXT_UNSUPPORTED"
+                self._save_op(db, op)
+                self._save(db, work, "DispatchHeld",
+                           {"operation_id": op["id"], "reason": op["reason"]})
+                return op
             op["status"], op["dispatch_state"] = "dispatched", "in_flight"
             op["attempts"].append({"id": uuid.uuid4().hex, "status": "outcome_unknown"})
             self._save_op(db, op)
             self._save(db, work, "AttemptStarted", {"operation_id": op["id"]})
         try:
-            result = adapter.execute(op["business_key"], op["document"], op["document_digest"])
+            if contract is not None and contract.supports_action_context:
+                # Opted-in adapters receive the explicit action and the
+                # runtime-validated immutable link (or None for forward ops).
+                # Legacy adapters are called with exactly today's three
+                # positional arguments — no introspection, no TypeError probe.
+                result = adapter.execute(op["business_key"], op["document"],
+                                         op["document_digest"],
+                                         action=op["capability"], compensates=compensation)
+            else:
+                result = adapter.execute(op["business_key"], op["document"], op["document_digest"])
         except Exception as error:
             return self._unknown(operation_id, type(error).__name__)
         if fault:
             fault()  # Injection point: external effect committed, local outcome not recorded.
         return self._resolve(operation_id, result)
+
+    def _link_still_valid(self, db, work, policy, op) -> bool:
+        """Dispatch-time revalidation of the immutable link (belt and braces).
+
+        The snapshot's terminal facts cannot change (operations are immutable
+        once terminal); this re-derives them from the stored target so a
+        corrupted store or a policy reconfiguration is held visibly instead
+        of dispatching against a broken binding.
+        """
+        link = op.get("compensates")
+        if not isinstance(link, dict):
+            return False
+        row = db.execute("SELECT body FROM operations WHERE id=?",
+                         (link.get("operation_id"),)).fetchone()
+        if row is None:
+            return False
+        target = json.loads(row[0])
+        paired = self._compensation_pairing(policy, op["capability"])
+        return (target.get("work_id") == work["id"]
+                and target.get("status") == "confirmed_succeeded"
+                and "compensates" not in target
+                and target.get("external_id") == link.get("external_id")
+                and target.get("capability") == link.get("capability")
+                and paired is not None
+                and target.get("capability") == paired)
 
     def _unknown(self, operation_id, reason):
         with self._transaction() as db:
@@ -973,8 +1132,17 @@ class Runtime:
             if op["status"] in ("confirmed_succeeded", "confirmed_failed"):
                 return op
             work = self._work(db, op["work_id"])
+            compensation = op.get("compensates")
             conflict = None
-            if not receipt_is_valid(result, op["document_digest"]):
+            # Compensation binding check (S10 D45), BEFORE the accepted/rejected
+            # split: false confirmation of failure against the wrong original is
+            # still false confirmation.
+            binding_ok = True
+            if compensation is not None:
+                bound = result.get("original_external_id") if isinstance(result, dict) else None
+                binding_ok = (isinstance(bound, str) and bool(bound)
+                              and bound == compensation.get("external_id"))
+            if not receipt_is_valid(result, op["document_digest"]) or not binding_ok:
                 if (op["status"] == "outcome_unknown" and op.get("reason") == "ADAPTER_RESULT_INVALID"
                         and work["status"] == "needs_attention"):
                     return op  # Idempotent recovery: the quarantine is already durable.
@@ -986,6 +1154,10 @@ class Runtime:
                 op["dispatch_state"] = "finished"
                 op["external_id"] = result["external_id"]
                 op["attempts"][-1]["status"] = op["status"]
+                if compensation is not None:
+                    # The full validated receipt is stored truthfully on the
+                    # operation (refusal reasons included).
+                    op["adapter_result"] = result
                 if result["status"] == "accepted":
                     conflict = self._proof_conflict(db, work, op, source, result)
                     if conflict is not None:
