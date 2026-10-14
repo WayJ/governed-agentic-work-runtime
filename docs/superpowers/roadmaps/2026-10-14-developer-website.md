@@ -51,7 +51,7 @@ date: 2026-10-14
 | id | question | status | resolution |
 |---|---|---|---|
 | Q1 | Which public hostname for initial publication? | closed | D27: GitHub Pages project URL by default; custom domain deferred unless user supplies one. |
-| Q2 | Does existing account permit Pages setup/deployment? | open | Integration verifies API permission and actual deployment after review; report concrete blocker if unavailable, never fabricate public availability. |
+| Q2 | Does existing account permit Pages setup/deployment? | closed | Yes — proven 2026-10-14: integration enabled Pages via API (`POST /repos/WayJ/governed-agentic-work-runtime/pages`, `build_type=workflow`) with the authorized WayJ account (repo admin); deploy run [38527217416](https://github.com/WayJ/governed-agentic-work-runtime/actions/runs/38527217416) succeeded at `7b7e434`; live https://wayj.github.io/governed-agentic-work-runtime/ verified over HTTPS (EN/ZH pages and assets byte-equal to the release). [Close note](../../../.agents/notes/2026-10-14-S6-close.md). |
 
 ## Cross-cutting
 
