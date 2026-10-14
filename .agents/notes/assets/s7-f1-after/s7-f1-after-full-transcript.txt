@@ -1,0 +1,233 @@
+PASS first load renders 5 works without interaction — {"items": 5, "status": "共 5 项工作中的 5 项", "lang": "zh"}
+PASS first load settles past loading — '共 5 项工作中的 5 项'
+PASS keyboard: ArrowDown x2 + Enter selects the focused work — first='cancel-1' second='transfer-1' detail='transfer-1'
+PASS list ArrowDown moves focus to the next work item — 'cancel-1' -> 'succeed-1'
+MEAS tab arrow step 0 — {'active': 'requirements', 'connected': True, 'selected': 'requirements'}
+MEAS tab arrow step 1 — {'active': 'evidence', 'connected': True, 'selected': 'evidence'}
+MEAS tab arrow step 2 — {'active': 'requirements', 'connected': True, 'selected': 'requirements'}
+MEAS tab arrow step 3 — {'active': 'evidence', 'connected': True, 'selected': 'evidence'}
+PASS tab ArrowRight/Left keep focus on live selected tab — 4 trusted key presses at 1440
+MEAS focus outline — {'tab': 'operations', 'style': 'solid', 'width': '2px', 'color': 'rgb(245, 78, 0)', 'offset': '2px', 'connected': True}
+PASS focus outline solid 2px orange offset 2px — {'tab': 'operations', 'style': 'solid', 'width': '2px', 'color': 'rgb(245, 78, 0)', 'offset': '2px', 'connected': True}
+MEAS contrast focus outline on white card — {'ratio': 3.5162620296536407}
+PASS focus outline non-text contrast >= 3.0 on white — 3.5162620296536407
+PASS "/" focuses the search box — 'work-search'
+PASS typing filters the list to 1 work — {"items": 1, "status": "共 5 项工作中的 1 项", "lang": "zh"}
+PASS clearing the filter restores 5 works — {"items": 5, "status": "共 5 项工作中的 5 项", "lang": "zh"}
+PASS status filter keyboard select filters the list — focus=True mechanism=letter w jump chosen='waiting' items=1
+PASS status filter back to all restores 5 works — chosen='' state={"items": 5, "status": "共 5 项工作中的 5 项", "lang": "zh"}
+PASS language toggle flips the interface language — lang 'zh'->'en' footer '↑/↓ 列表 · 回车选中 · ←/→ 切换页签 · / 搜索'->'↑/↓ list · Enter select · ←/→ tabs · / search'
+MEAS zh letter-spacing — {'title': 'normal', 'tile': 'normal'}
+PASS zh display tracking zero — {'title': 'normal', 'tile': 'normal'}
+PASS language toggle flips back — 'zh'
+PASS manual refresh keeps the list rendered — {"items": 5, "status": "共 5 项工作中的 5 项", "lang": "zh"}
+PASS pause shows the paused chip and resume label — {"chip": true, "text": "恢复轮询"}
+PASS resume hides the paused chip — hidden class present after resume click
+MEAS visual/1440-en — {'tokens': {'--color-canvas': '#f7f7f4', '--color-canvas-soft': '#fafaf7', '--color-surface-card': '#ffffff', '--color-surface-strong': '#e6e5e0', '--color-hairline': '#e6e5e0', '--color-hairline-strong': '#cfcdc4', '--color-ink': '#26251e', '--color-body': '#5a5852', '--color-accent': '#f54e00', '--color-accent-active': '#d04200', '--color-on-ink': '#f7f7f4', '--color-success': '#146c4e', '--color-success-soft': '#e8f2ec', '--color-warn': '#8a5400', '--color-warn-soft': '#faf0df', '--color-error': '#b32449', '--color-error-soft': '#f9e8ec', '--color-neutral-soft': '#eceae4', '--radius-control': '8px', '--radius-card': '12px', '--radius-chip': '9999px', '--space-xxs': '4px', '--space-xs': '8px', '--space-sm': '12px', '--space-base': '16px', '--space-md': '20px', '--space-lg': '24px', '--font-sans': '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,\n               "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",\n               "Microsoft YaHei", "Noto Sans CJK SC", sans-serif', '--font-mono': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,\n               Consolas, monospace', '--content-max': '1200px', '--tracking-display-md': '-0.325px', '--tracking-display-sm': '-0.11px'}, 'body': {'backgroundColor': 'rgb(247, 247, 244)', 'color': 'rgb(38, 37, 30)', 'fontFamily': '-apple-system, "system-ui", "Segoe UI", system-ui, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif', 'fontSize': '15px', 'overflowX': 'visible'}, 'htmlOverflowX': 'visible', 'card': {'backgroundColor': 'rgb(255, 255, 255)', 'borderRadius': '12px', 'borderTopWidth': '1px', 'borderTopColor': 'rgb(230, 229, 224)', 'boxShadow': 'none'}, 'detailCard': {'backgroundColor': 'rgb(255, 255, 255)', 'borderRadius': '12px', 'borderTopColor': 'rgb(230, 229, 224)', 'boxShadow': 'none'}, 'button': {'borderRadius': '8px', 'backgroundColor': 'rgb(38, 37, 30)', 'color': 'rgb(247, 247, 244)'}, 'input': {'borderRadius': '8px'}, 'chip': {'borderRadius': '9999px', 'backgroundColor': 'rgb(236, 234, 228)', 'color': 'rgb(38, 37, 30)'}, 'tileValue': {'fontSize': '26px', 'fontWeight': '400', 'letterSpacing': 'normal'}, 'detailTitle': {'fontSize': '22px', 'fontWeight': '400', 'letterSpacing': 'normal', 'fontFamily': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'}, 'label': {'fontSize': '16px', 'fontWeight': '600'}, 'mono': {'fontFamily': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', 'fontSize': '13px'}, 'raw': None, 'tabSelected': {'backgroundColor': 'rgb(38, 37, 30)', 'color': 'rgb(247, 247, 244)'}, 'workSelected': {'borderTopColor': 'rgb(38, 37, 30)', 'backgroundColor': 'rgb(250, 250, 247)'}, 'layout': {'gridTemplateColumns': '360px 792px', 'maxWidth': '1200px'}, 'note': {'color': 'rgb(90, 88, 82)', 'backgroundColor': 'rgb(236, 234, 228)'}, 'tileDesc': {'color': 'rgb(90, 88, 82)'}, 'fieldsDt': {'color': 'rgb(90, 88, 82)'}, 'tableTh': {'color': 'rgb(90, 88, 82)', 'backgroundColor': 'rgb(236, 234, 228)'}, 'geometry': {'refresh': {'height': 44, 'width': 62}, 'langToggle': {'height': 44, 'width': 52}, 'search': {'height': 44, 'width': 181}, 'statusFilter': {'height': 44, 'width': 171}, 'tab': {'height': 44, 'width': 58}, 'workItem': {'height': 60, 'width': 356}, 'summary': None}, 'fonts': {'jetbrains': True, 'pingfang': True}, 'page': {'scrollWidth': 1440, 'clientWidth': 1440}}
+PASS 1440-en body background == rgb(247, 247, 244) — 'rgb(247, 247, 244)'
+PASS 1440-en body color == rgb(38, 37, 30) — 'rgb(38, 37, 30)'
+PASS 1440-en body overflow-x == visible — 'visible'
+PASS 1440-en html overflow-x == visible — 'visible'
+PASS 1440-en card radius == 12px — '12px'
+PASS 1440-en card border == ('1px', 'rgb(230, 229, 224)') — ('1px', 'rgb(230, 229, 224)')
+PASS 1440-en card background == rgb(255, 255, 255) — 'rgb(255, 255, 255)'
+PASS 1440-en card shadow == none — 'none'
+PASS 1440-en detail card radius == 12px — '12px'
+PASS 1440-en detail card shadow == none — 'none'
+PASS 1440-en button radius == 8px — '8px'
+PASS 1440-en input radius == 8px — '8px'
+PASS 1440-en chip pill radius == 9999px — '9999px'
+PASS 1440-en tile value 26px/400 == ('26px', '400') — ('26px', '400')
+PASS 1440-en detail title 22px/400 == ('22px', '400') — ('22px', '400')
+PASS 1440-en detail title mono contains JetBrains Mono — '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+PASS 1440-en mono family contains JetBrains Mono — '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+PASS 1440-en section label 16px/600 == ('16px', '600') — ('16px', '600')
+PASS 1440-en selected tab ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)') — ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')
+PASS 1440-en primary control ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)') — ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')
+PASS 1440-en selected work ink border == rgb(38, 37, 30) — 'rgb(38, 37, 30)'
+PASS 1440-en content cap == 1200px — '1200px'
+PASS 1440-en layout tracks == 2 — '360px 792px'
+PASS 1440-en refresh target >= 44px — {'height': 44, 'width': 62}
+PASS 1440-en langToggle target >= 44px — {'height': 44, 'width': 52}
+PASS 1440-en search target >= 44px — {'height': 44, 'width': 181}
+PASS 1440-en statusFilter target >= 44px — {'height': 44, 'width': 171}
+PASS 1440-en tab target >= 44px — {'height': 44, 'width': 58}
+PASS 1440-en workItem target >= 44px — {'height': 60, 'width': 356}
+MEAS 1440-en summary target absent on this tab — None
+PASS 1440-en no page-level horizontal overflow — {'scrollWidth': 1440, 'clientWidth': 1440}
+PASS 1440-en token --color-canvas defined — '#f7f7f4'
+PASS 1440-en token --color-ink defined — '#26251e'
+PASS 1440-en token --color-body defined — '#5a5852'
+PASS 1440-en token --color-accent defined — '#f54e00'
+PASS 1440-en token --color-hairline defined — '#e6e5e0'
+PASS 1440-en token --color-hairline-strong defined — '#cfcdc4'
+PASS 1440-en token --radius-control defined — '8px'
+PASS 1440-en token --radius-card defined — '12px'
+PASS 1440-en token --font-sans defined — '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,\n               "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",\n               "Microsoft YaHei", "Noto Sans CJK SC", sans-serif'
+PASS 1440-en token --font-mono defined — '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,\n               Consolas, monospace'
+PASS 1440-en token --content-max defined — '1200px'
+PASS 1440-en token canvas == #f7f7f4 — '#f7f7f4'
+PASS 1440-en token ink == #26251e — '#26251e'
+PASS 1440-en token body == #5a5852 — '#5a5852'
+PASS 1440-en token accent == #f54e00 — '#f54e00'
+PASS 1440-en token hairline == #e6e5e0 — '#e6e5e0'
+PASS 1440-en token hairline strong == #cfcdc4 — '#cfcdc4'
+PASS 1440-en token content cap == 1200px — '1200px'
+MEAS contrast tile description on white card — {'fg': 'rgb(90, 88, 82)', 'bg': 'rgba(0, 0, 0, 0)', 'ratio': 7.112711555021926}
+PASS contrast tile description on white card >= 4.50 — rgb(90, 88, 82) on rgba(0, 0, 0, 0) = 7.11
+MEAS contrast note text on neutral surface — {'fg': 'rgb(90, 88, 82)', 'bg': 'rgb(236, 234, 228)', 'ratio': 5.912352778521385}
+PASS contrast note text on neutral surface >= 4.50 — rgb(90, 88, 82) on rgb(236, 234, 228) = 5.91
+MEAS contrast field label on white card — {'fg': 'rgb(90, 88, 82)', 'bg': 'rgba(0, 0, 0, 0)', 'ratio': 7.112711555021926}
+PASS contrast field label on white card >= 4.50 — rgb(90, 88, 82) on rgba(0, 0, 0, 0) = 7.11
+MEAS contrast waiting warn chip — {'fg': 'rgb(138, 84, 0)', 'bg': 'rgb(250, 240, 223)', 'ratio': 5.552575331194186}
+PASS contrast waiting warn chip >= 4.50 — rgb(138, 84, 0) on rgb(250, 240, 223) = 5.55
+MEAS contrast table header on neutral surface — {'fg': 'rgb(90, 88, 82)', 'bg': 'rgb(236, 234, 228)', 'ratio': 5.912352778521385}
+PASS contrast table header on neutral surface >= 4.50 — rgb(90, 88, 82) on rgb(236, 234, 228) = 5.91
+MEAS contrast needs_attention error chip — {'fg': 'rgb(179, 36, 73)', 'bg': 'rgb(249, 232, 236)', 'ratio': 5.445692851854061}
+PASS contrast needs_attention error chip >= 4.50 — rgb(179, 36, 73) on rgb(249, 232, 236) = 5.45
+MEAS contrast succeeded success chip — {'fg': 'rgb(20, 108, 78)', 'bg': 'rgb(232, 242, 236)', 'ratio': 5.584311101316154}
+PASS contrast succeeded success chip >= 4.50 — rgb(20, 108, 78) on rgb(232, 242, 236) = 5.58
+MEAS contrast selected tab text on ink — {'fg': 'rgb(247, 247, 244)', 'bg': 'rgb(38, 37, 30)', 'ratio': 14.325401476463416}
+PASS contrast selected tab text on ink >= 4.50 — rgb(247, 247, 244) on rgb(38, 37, 30) = 14.33
+MEAS contrast primary control text on ink — {'fg': 'rgb(247, 247, 244)', 'bg': 'rgb(38, 37, 30)', 'ratio': 14.325401476463416}
+PASS contrast primary control text on ink >= 4.50 — rgb(247, 247, 244) on rgb(38, 37, 30) = 14.33
+MEAS contrast selected work item text — {'fg': 'rgb(38, 37, 30)', 'bg': 'rgb(250, 250, 247)', 'ratio': 14.703683925687073}
+PASS contrast selected work item text >= 4.50 — rgb(38, 37, 30) on rgb(250, 250, 247) = 14.70
+MEAS contrast body text on canvas — {'fg': 'rgb(38, 37, 30)', 'bg': 'rgb(247, 247, 244)', 'ratio': 14.325401476463416}
+PASS contrast body text on canvas >= 4.50 — rgb(38, 37, 30) on rgb(247, 247, 244) = 14.33
+MEAS contrast rejected decision chip — {'fg': 'rgb(179, 36, 73)', 'bg': 'rgb(249, 232, 236)', 'ratio': 5.445692851854061}
+PASS contrast rejected decision chip >= 4.50 — rgb(179, 36, 73) on rgb(249, 232, 236) = 5.45
+MEAS contrast base chip (unknown/extra classes neutral) — {'fg': 'rgb(38, 37, 30)', 'bg': 'rgb(236, 234, 228)', 'ratio': 12.7808872307641}
+PASS contrast base chip (unknown/extra classes neutral) >= 4.50 — rgb(38, 37, 30) on rgb(236, 234, 228) = 12.78
+MEAS contrast cancellation banner error text — {'fg': 'rgb(179, 36, 73)', 'bg': 'rgb(249, 232, 236)', 'ratio': 5.445692851854061}
+PASS contrast cancellation banner error text >= 4.50 — rgb(179, 36, 73) on rgb(249, 232, 236) = 5.45
+MEAS raw disclosure summary target — {'height': 44}
+PASS raw disclosure summary target >= 44px — {'height': 44}
+PASS 390 first load renders 5 works — {"items": 5, "status": "共 5 项工作中的 5 项", "lang": "zh"}
+MEAS visual/390-en — {'tokens': {'--color-canvas': '#f7f7f4', '--color-canvas-soft': '#fafaf7', '--color-surface-card': '#ffffff', '--color-surface-strong': '#e6e5e0', '--color-hairline': '#e6e5e0', '--color-hairline-strong': '#cfcdc4', '--color-ink': '#26251e', '--color-body': '#5a5852', '--color-accent': '#f54e00', '--color-accent-active': '#d04200', '--color-on-ink': '#f7f7f4', '--color-success': '#146c4e', '--color-success-soft': '#e8f2ec', '--color-warn': '#8a5400', '--color-warn-soft': '#faf0df', '--color-error': '#b32449', '--color-error-soft': '#f9e8ec', '--color-neutral-soft': '#eceae4', '--radius-control': '8px', '--radius-card': '12px', '--radius-chip': '9999px', '--space-xxs': '4px', '--space-xs': '8px', '--space-sm': '12px', '--space-base': '16px', '--space-md': '20px', '--space-lg': '24px', '--font-sans': '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,\n               "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",\n               "Microsoft YaHei", "Noto Sans CJK SC", sans-serif', '--font-mono': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,\n               Consolas, monospace', '--content-max': '1200px', '--tracking-display-md': '-0.325px', '--tracking-display-sm': '-0.11px'}, 'body': {'backgroundColor': 'rgb(247, 247, 244)', 'color': 'rgb(38, 37, 30)', 'fontFamily': '-apple-system, "system-ui", "Segoe UI", system-ui, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif', 'fontSize': '15px', 'overflowX': 'visible'}, 'htmlOverflowX': 'visible', 'card': {'backgroundColor': 'rgb(255, 255, 255)', 'borderRadius': '12px', 'borderTopWidth': '1px', 'borderTopColor': 'rgb(230, 229, 224)', 'boxShadow': 'none'}, 'detailCard': {'backgroundColor': 'rgb(255, 255, 255)', 'borderRadius': '12px', 'borderTopColor': 'rgb(230, 229, 224)', 'boxShadow': 'none'}, 'button': {'borderRadius': '8px', 'backgroundColor': 'rgb(38, 37, 30)', 'color': 'rgb(247, 247, 244)'}, 'input': {'borderRadius': '8px'}, 'chip': {'borderRadius': '9999px', 'backgroundColor': 'rgb(236, 234, 228)', 'color': 'rgb(38, 37, 30)'}, 'tileValue': {'fontSize': '26px', 'fontWeight': '400', 'letterSpacing': 'normal'}, 'detailTitle': {'fontSize': '22px', 'fontWeight': '400', 'letterSpacing': 'normal', 'fontFamily': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'}, 'label': {'fontSize': '16px', 'fontWeight': '600'}, 'mono': {'fontFamily': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', 'fontSize': '13px'}, 'raw': None, 'tabSelected': {'backgroundColor': 'rgb(38, 37, 30)', 'color': 'rgb(247, 247, 244)'}, 'workSelected': {'borderTopColor': 'rgb(38, 37, 30)', 'backgroundColor': 'rgb(250, 250, 247)'}, 'layout': {'gridTemplateColumns': '366px', 'maxWidth': '1200px'}, 'note': {'color': 'rgb(90, 88, 82)', 'backgroundColor': 'rgb(236, 234, 228)'}, 'tileDesc': {'color': 'rgb(90, 88, 82)'}, 'fieldsDt': {'color': 'rgb(90, 88, 82)'}, 'tableTh': {'color': 'rgb(90, 88, 82)', 'backgroundColor': 'rgb(236, 234, 228)'}, 'geometry': {'refresh': {'height': 44, 'width': 62}, 'langToggle': {'height': 44, 'width': 52}, 'search': {'height': 44, 'width': 366}, 'statusFilter': {'height': 44, 'width': 366}, 'tab': {'height': 44, 'width': 58}, 'workItem': {'height': 60, 'width': 362}, 'summary': None}, 'fonts': {'jetbrains': True, 'pingfang': True}, 'page': {'scrollWidth': 390, 'clientWidth': 390}}
+PASS 390-en body background == rgb(247, 247, 244) — 'rgb(247, 247, 244)'
+PASS 390-en body color == rgb(38, 37, 30) — 'rgb(38, 37, 30)'
+PASS 390-en body overflow-x == visible — 'visible'
+PASS 390-en html overflow-x == visible — 'visible'
+PASS 390-en card radius == 12px — '12px'
+PASS 390-en card border == ('1px', 'rgb(230, 229, 224)') — ('1px', 'rgb(230, 229, 224)')
+PASS 390-en card background == rgb(255, 255, 255) — 'rgb(255, 255, 255)'
+PASS 390-en card shadow == none — 'none'
+PASS 390-en detail card radius == 12px — '12px'
+PASS 390-en detail card shadow == none — 'none'
+PASS 390-en button radius == 8px — '8px'
+PASS 390-en input radius == 8px — '8px'
+PASS 390-en chip pill radius == 9999px — '9999px'
+PASS 390-en tile value 26px/400 == ('26px', '400') — ('26px', '400')
+PASS 390-en detail title 22px/400 == ('22px', '400') — ('22px', '400')
+PASS 390-en detail title mono contains JetBrains Mono — '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+PASS 390-en mono family contains JetBrains Mono — '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+PASS 390-en section label 16px/600 == ('16px', '600') — ('16px', '600')
+PASS 390-en selected tab ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)') — ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')
+PASS 390-en primary control ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)') — ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')
+PASS 390-en selected work ink border == rgb(38, 37, 30) — 'rgb(38, 37, 30)'
+PASS 390-en content cap == 1200px — '1200px'
+PASS 390-en layout tracks == 1 — '366px'
+PASS 390-en refresh target >= 44px — {'height': 44, 'width': 62}
+PASS 390-en langToggle target >= 44px — {'height': 44, 'width': 52}
+PASS 390-en search target >= 44px — {'height': 44, 'width': 366}
+PASS 390-en statusFilter target >= 44px — {'height': 44, 'width': 366}
+PASS 390-en tab target >= 44px — {'height': 44, 'width': 58}
+PASS 390-en workItem target >= 44px — {'height': 60, 'width': 362}
+MEAS 390-en summary target absent on this tab — None
+PASS 390-en no page-level horizontal overflow — {'scrollWidth': 390, 'clientWidth': 390}
+PASS 390-en token --color-canvas defined — '#f7f7f4'
+PASS 390-en token --color-ink defined — '#26251e'
+PASS 390-en token --color-body defined — '#5a5852'
+PASS 390-en token --color-accent defined — '#f54e00'
+PASS 390-en token --color-hairline defined — '#e6e5e0'
+PASS 390-en token --color-hairline-strong defined — '#cfcdc4'
+PASS 390-en token --radius-control defined — '8px'
+PASS 390-en token --radius-card defined — '12px'
+PASS 390-en token --font-sans defined — '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,\n               "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",\n               "Microsoft YaHei", "Noto Sans CJK SC", sans-serif'
+PASS 390-en token --font-mono defined — '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,\n               Consolas, monospace'
+PASS 390-en token --content-max defined — '1200px'
+PASS 390-en token canvas == #f7f7f4 — '#f7f7f4'
+PASS 390-en token ink == #26251e — '#26251e'
+PASS 390-en token body == #5a5852 — '#5a5852'
+PASS 390-en token accent == #f54e00 — '#f54e00'
+PASS 390-en token hairline == #e6e5e0 — '#e6e5e0'
+PASS 390-en token hairline strong == #cfcdc4 — '#cfcdc4'
+PASS 390-en token content cap == 1200px — '1200px'
+PASS 390 tab arrows keep tab focus — trusted ArrowRight/Left at 390
+PASS 320 first load renders 5 works — {"items": 5, "status": "共 5 项工作中的 5 项", "lang": "zh"}
+MEAS visual/320-en — {'tokens': {'--color-canvas': '#f7f7f4', '--color-canvas-soft': '#fafaf7', '--color-surface-card': '#ffffff', '--color-surface-strong': '#e6e5e0', '--color-hairline': '#e6e5e0', '--color-hairline-strong': '#cfcdc4', '--color-ink': '#26251e', '--color-body': '#5a5852', '--color-accent': '#f54e00', '--color-accent-active': '#d04200', '--color-on-ink': '#f7f7f4', '--color-success': '#146c4e', '--color-success-soft': '#e8f2ec', '--color-warn': '#8a5400', '--color-warn-soft': '#faf0df', '--color-error': '#b32449', '--color-error-soft': '#f9e8ec', '--color-neutral-soft': '#eceae4', '--radius-control': '8px', '--radius-card': '12px', '--radius-chip': '9999px', '--space-xxs': '4px', '--space-xs': '8px', '--space-sm': '12px', '--space-base': '16px', '--space-md': '20px', '--space-lg': '24px', '--font-sans': '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,\n               "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",\n               "Microsoft YaHei", "Noto Sans CJK SC", sans-serif', '--font-mono': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,\n               Consolas, monospace', '--content-max': '1200px', '--tracking-display-md': '-0.325px', '--tracking-display-sm': '-0.11px'}, 'body': {'backgroundColor': 'rgb(247, 247, 244)', 'color': 'rgb(38, 37, 30)', 'fontFamily': '-apple-system, "system-ui", "Segoe UI", system-ui, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif', 'fontSize': '15px', 'overflowX': 'visible'}, 'htmlOverflowX': 'visible', 'card': {'backgroundColor': 'rgb(255, 255, 255)', 'borderRadius': '12px', 'borderTopWidth': '1px', 'borderTopColor': 'rgb(230, 229, 224)', 'boxShadow': 'none'}, 'detailCard': {'backgroundColor': 'rgb(255, 255, 255)', 'borderRadius': '12px', 'borderTopColor': 'rgb(230, 229, 224)', 'boxShadow': 'none'}, 'button': {'borderRadius': '8px', 'backgroundColor': 'rgb(38, 37, 30)', 'color': 'rgb(247, 247, 244)'}, 'input': {'borderRadius': '8px'}, 'chip': {'borderRadius': '9999px', 'backgroundColor': 'rgb(236, 234, 228)', 'color': 'rgb(38, 37, 30)'}, 'tileValue': {'fontSize': '26px', 'fontWeight': '400', 'letterSpacing': 'normal'}, 'detailTitle': {'fontSize': '22px', 'fontWeight': '400', 'letterSpacing': 'normal', 'fontFamily': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'}, 'label': {'fontSize': '16px', 'fontWeight': '600'}, 'mono': {'fontFamily': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', 'fontSize': '13px'}, 'raw': None, 'tabSelected': {'backgroundColor': 'rgb(38, 37, 30)', 'color': 'rgb(247, 247, 244)'}, 'workSelected': {'borderTopColor': 'rgb(38, 37, 30)', 'backgroundColor': 'rgb(250, 250, 247)'}, 'layout': {'gridTemplateColumns': '296px', 'maxWidth': '1200px'}, 'note': {'color': 'rgb(90, 88, 82)', 'backgroundColor': 'rgb(236, 234, 228)'}, 'tileDesc': {'color': 'rgb(90, 88, 82)'}, 'fieldsDt': {'color': 'rgb(90, 88, 82)'}, 'tableTh': {'color': 'rgb(90, 88, 82)', 'backgroundColor': 'rgb(236, 234, 228)'}, 'geometry': {'refresh': {'height': 44, 'width': 62}, 'langToggle': {'height': 44, 'width': 52}, 'search': {'height': 44, 'width': 296}, 'statusFilter': {'height': 44, 'width': 296}, 'tab': {'height': 44, 'width': 58}, 'workItem': {'height': 57, 'width': 292}, 'summary': None}, 'fonts': {'jetbrains': True, 'pingfang': True}, 'page': {'scrollWidth': 320, 'clientWidth': 320}}
+PASS 320-en body background == rgb(247, 247, 244) — 'rgb(247, 247, 244)'
+PASS 320-en body color == rgb(38, 37, 30) — 'rgb(38, 37, 30)'
+PASS 320-en body overflow-x == visible — 'visible'
+PASS 320-en html overflow-x == visible — 'visible'
+PASS 320-en card radius == 12px — '12px'
+PASS 320-en card border == ('1px', 'rgb(230, 229, 224)') — ('1px', 'rgb(230, 229, 224)')
+PASS 320-en card background == rgb(255, 255, 255) — 'rgb(255, 255, 255)'
+PASS 320-en card shadow == none — 'none'
+PASS 320-en detail card radius == 12px — '12px'
+PASS 320-en detail card shadow == none — 'none'
+PASS 320-en button radius == 8px — '8px'
+PASS 320-en input radius == 8px — '8px'
+PASS 320-en chip pill radius == 9999px — '9999px'
+PASS 320-en tile value 26px/400 == ('26px', '400') — ('26px', '400')
+PASS 320-en detail title 22px/400 == ('22px', '400') — ('22px', '400')
+PASS 320-en detail title mono contains JetBrains Mono — '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+PASS 320-en mono family contains JetBrains Mono — '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+PASS 320-en section label 16px/600 == ('16px', '600') — ('16px', '600')
+PASS 320-en selected tab ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)') — ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')
+PASS 320-en primary control ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)') — ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')
+PASS 320-en selected work ink border == rgb(38, 37, 30) — 'rgb(38, 37, 30)'
+PASS 320-en content cap == 1200px — '1200px'
+PASS 320-en layout tracks == 1 — '296px'
+PASS 320-en refresh target >= 44px — {'height': 44, 'width': 62}
+PASS 320-en langToggle target >= 44px — {'height': 44, 'width': 52}
+PASS 320-en search target >= 44px — {'height': 44, 'width': 296}
+PASS 320-en statusFilter target >= 44px — {'height': 44, 'width': 296}
+PASS 320-en tab target >= 44px — {'height': 44, 'width': 58}
+PASS 320-en workItem target >= 44px — {'height': 57, 'width': 292}
+MEAS 320-en summary target absent on this tab — None
+PASS 320-en no page-level horizontal overflow — {'scrollWidth': 320, 'clientWidth': 320}
+PASS 320-en token --color-canvas defined — '#f7f7f4'
+PASS 320-en token --color-ink defined — '#26251e'
+PASS 320-en token --color-body defined — '#5a5852'
+PASS 320-en token --color-accent defined — '#f54e00'
+PASS 320-en token --color-hairline defined — '#e6e5e0'
+PASS 320-en token --color-hairline-strong defined — '#cfcdc4'
+PASS 320-en token --radius-control defined — '8px'
+PASS 320-en token --radius-card defined — '12px'
+PASS 320-en token --font-sans defined — '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,\n               "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",\n               "Microsoft YaHei", "Noto Sans CJK SC", sans-serif'
+PASS 320-en token --font-mono defined — '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,\n               Consolas, monospace'
+PASS 320-en token --content-max defined — '1200px'
+PASS 320-en token canvas == #f7f7f4 — '#f7f7f4'
+PASS 320-en token ink == #26251e — '#26251e'
+PASS 320-en token body == #5a5852 — '#5a5852'
+PASS 320-en token accent == #f54e00 — '#f54e00'
+PASS 320-en token hairline == #e6e5e0 — '#e6e5e0'
+PASS 320-en token hairline strong == #cfcdc4 — '#cfcdc4'
+PASS 320-en token content cap == 1200px — '1200px'
+PASS 320 tab arrows keep tab focus — trusted ArrowRight/Left at 320
+MEAS zh letter-spacing — {'title': 'normal', 'tile': 'normal'}
+PASS zh display tracking zero — {'title': 'normal', 'tile': 'normal'}
+MEAS zh letter-spacing — {'title': 'normal', 'tile': 'normal'}
+PASS zh display tracking zero — {'title': 'normal', 'tile': 'normal'}
+MEAS zh letter-spacing — {'title': 'normal', 'tile': 'normal'}
+PASS zh display tracking zero — {'title': 'normal', 'tile': 'normal'}
+PASS matrix captures 30 pngs — 30 files
+PASS hostile stored goal renders as inert text — '<img src=x onerror="window.__xssEvil=1"> 目标<script>window.__xssEvil=2</script>'
+PASS huge state_version renders exactly — '9007199254740993'
+PASS hostile event body renders as inert text — '{"note": "<script>window.__xssEvil=2</script>", "huge": 123456789012345678901234567890}'
+PASS huge event version renders exactly — '序号 1 · 版本 9007199254740993'
+PASS hostile evidence data renders as inert text — True
+PASS no hostile markup executed (window clean) — window.__xssEvil=None
+PASS empty store settles to 0 works with the empty message — {"items": 0, "status": "此存储中还没有工作。", "lang": "zh"}
+PASS loading state visible under emulated latency — '正在加载工作…'
+PASS deleted work shows the gone message with retry — poll picked up the external delete
+PASS server kill shows the disconnected banner — '与本地 UI 服务的连接已断开。页面会持续重试，请检查 ui 进程。'
+MEAS contrast disconnected banner error text — {'fg': 'rgb(179, 36, 73)', 'bg': 'rgb(249, 232, 236)', 'ratio': 5.445692851854061}
+PASS contrast disconnected banner error text >= 4.50 — rgb(179, 36, 73) on rgb(249, 232, 236) = 5.45
+PASS pause/resume control stays usable while disconnected — '暂停轮询' -> '恢复轮询'
+PASS demo store six tables identical after all reads/interactions — 45bf4cfcfed2... -> 45bf4cfcfed2...
+PASS empty store six tables identical after all reads/interactions — e49d9a31170f... -> e49d9a31170f...
+PASS xss store six tables identical after all reads/interactions — c4977642492a... -> c4977642492a...
+s7 audit (after): 200 checks, 0 failed; evidence: /tmp/s7-f1-after/after-results.json

@@ -297,7 +297,12 @@ def measure_contrast(page, label, selector, minimum, phase,
                      prop="color", bg_prop="backgroundColor"):
     pair = page_pair(page, selector, prop, bg_prop)
     if not pair:
+        # F1: a required measurement whose element never appeared must not
+        # pass silently — record it and fail a check in every phase, so the
+        # audit cannot exit 0 with this measurement omitted.
         measure("contrast " + label, "element missing")
+        check("contrast %s >= %.2f" % (label, minimum), False,
+              "element missing — selector %s matched nothing" % selector)
         return
     value = ratio(pair["fg"], pair["bg"])
     entry = {"fg": pair["fg"], "bg": pair["bg"], "ratio": value}
@@ -1029,7 +1034,14 @@ def main():
                              ".chip-decision-rejected", 4.5, args.phase)
         if open_tab(page, "events"):
             # event type chips use the un-styled chip-st-evt class: the
-            # neutral fallback every unknown stored status class gets
+            # neutral fallback every unknown stored status class gets.
+            # The events panel renders a loading note first and loads its
+            # cards asynchronously, so wait for a rendered event chip before
+            # measuring (same pattern as the xss step's pre.raw wait below)
+            # or the measurement races the fetch and records nothing.
+            wait_true(
+                page,
+                "!!document.querySelector('#detail-body .chip-st-evt')")
             measure_contrast(page, "base chip (unknown/extra classes neutral)",
                              ".chip-st-evt", 4.5, args.phase)
             page.screenshot(os.path.join(views, "view-events.png"))
