@@ -8,6 +8,7 @@ application, and a cancelled work acknowledges the confirmed effect instead
 of reversing it.
 """
 
+import sys
 import tempfile
 from pathlib import Path
 
@@ -182,3 +183,54 @@ def seed_ui_demo(directory=None):
     print(f'  python3 -m work_runtime inspect --db "{runtime_path}" --work wait-1',
           flush=True)
     return str(runtime_path)
+
+
+def _startup_fail(message):
+    """Report one bounded startup problem and exit 2 (house convention)."""
+    print("work-runtime ui: " + message, file=sys.stderr, flush=True)
+    raise SystemExit(2)
+
+
+def _valid_port(port):
+    return isinstance(port, int) and 0 <= port <= 65535
+
+
+def serve_ui(db_path, port=0, server_factory=None):
+    """Serve the read-only GUI on loopback until interrupted.
+
+    The read-only backend is imported lazily so installs without it keep
+    every prior CLI command working; startup failures exit 2 with a bounded
+    message, the actual URL is printed (flushed) before serving starts, and
+    an interrupt shuts the server down cleanly. ``server_factory`` overrides
+    the backend lookup for lifecycle tests only.
+    """
+    if not _valid_port(port):
+        _startup_fail("port must be an integer between 0 and 65535")
+    if not Path(db_path).is_file():
+        _startup_fail("database not found: %s" % db_path)
+    try:
+        if server_factory is not None:
+            httpd = server_factory(db_path, port)
+        else:
+            from .ui_server import make_ui_server
+            httpd = make_ui_server(db_path, port)
+    except ImportError:
+        _startup_fail("UI backend (work_runtime.ui_server) is not available "
+                      "in this install")
+    except Exception as error:
+        _startup_fail("cannot start UI: %s" % error)
+    print("http://127.0.0.1:%d/" % httpd.server_address[1], flush=True)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+
+
+def run_ui_demo(directory=None, port=0, server_factory=None):
+    """Seed a fresh sample store, then serve the read-only GUI over it."""
+    if not _valid_port(port):
+        _startup_fail("port must be an integer between 0 and 65535")
+    db_path = seed_ui_demo(directory)
+    serve_ui(db_path, port, server_factory=server_factory)
