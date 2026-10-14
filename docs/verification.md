@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-14 (S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-14 (S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -81,6 +81,17 @@ The S4 wave added two foundations (authoring, file adapter) with their own revie
 
 The adoption harness adds no protocol matrix row: it reuses the same command/dispatch/reconcile machinery already covered above, on the unchanged Runtime and `PublishingPolicy`.
 
+## S5 coverage — local operations GUI (frontend/CLI slice)
+
+The S5 frontend slice added the five-work sample seed, the `ui`/`ui-demo` CLI surface and the offline bilingual browser assets (`tests/test_ui_demo.py`, `tests/test_ui_cli.py`). The read-only HTTP backend and the assembled browser verification belong to other owners/waves; this section states exactly what this slice verifies. Guide: [GUI](gui.md).
+
+- **Sample seed** (`tests/test_ui_demo.py`, all assertions read stored SQLite truth directly): the five pinned works (`wait-1` waiting with pending-verification approval evidence and a persisted rejected proposal; `uncertain-1` needs_attention with `NO_AUTHORITATIVE_RESULT` while the external store retains its accepted effect; `transfer-1` owned by the delegate with the invalidated-then-readmitted operation confirmed; `succeed-1` closed/succeeded with completion; `cancel-1` closed/cancelled acknowledging the exact recovered external effect, not a reversal); unique invoice ids; real command history (events and command receipts persisted, including the cancel acknowledgement decision); exactly four accepted applications in the shared external store; hygiene — parent-directory contents survive, two runs create two distinct folders; the `UnavailableLookup` composition wrapper reports no authoritative result while the wrapped store keeps its committed receipt. No protocol matrix row: the seed reuses already-covered command machinery.
+- **CLI serve surface** (`tests/test_ui_cli.py`): importing `work_runtime.cli` never imports the read-only backend (subprocess-isolated check), prior subcommands keep working without it; port out of range, missing database and directory-as-database exit 2 with bounded messages before any backend import; an install without the backend is a bounded exit-2 startup error (skip-guarded so it keeps passing once the backend is assembled); the serve lifecycle prints the actual loopback URL flushed, enters `serve_forever`, and on interrupt closes the server and exits cleanly (unit-tested with an interface-conforming stub server — a lifecycle test, not an HTTP claim).
+- **Packaging and installed verification** (`scripts/verify_install.py`): the packaged web assets must ship inside a fresh install (always-on stage); the installed-UI HTTP stage — real subprocess `ui-demo`/`ui` runs outside the checkout, byte-equality of served assets, the five seeded works over the API, store tables byte-identical before/after serving, clean interrupt exit — executes only when the read-only backend module is part of the install and otherwise prints an explicit SKIPPED line that the final summary discloses. In this slice's checkout the backend is absent, so that stage's evidence is SKIPPED; its helper logic was additionally smoke-tested against a scratch stand-in server (not recorded as assembled verification).
+- **Explicitly pending (assembled backend/browser verification, independent integration wave)**: real HTTP serving against the actual read-only backend, and actual browser behavior — desktop/narrow layout, bilingual toggle, keyboard navigation, filter/refresh/poll pause, stored-XSS non-execution, exact big-integer rendering, disconnected/error states and stale-response races in a real browser. No DOM mock or source-keyword test is recorded as browser coverage.
+
+
+
 ## RFC-001 acceptance behaviors (R1–R7)
 
 R1 restart/persistence — `test_prepared_intent_survives_restart`, `test_wait_expiry_survives_restart`, P07/P15 tests. R2 plan edits cannot delete requirements — P10 test. R3 unknown conditions block — P14 tests. R4 timeouts are not failures — `test_timeout_after_commit_then_reconcile`, `test_unknown_without_query_result_requires_attention` (no query result → `needs_attention`, no blind retry). R5 content change invalidates old confirmations — `test_existing_invoice_proof_reused_after_document_change`, `test_invoice_revision_invalidates_old_verification`, `test_unknown_old_content_blocks_new_submission`. R6 duplicate/late callbacks — P08/P09 tests. R7 no success without goal evidence — P12 tests.
@@ -106,5 +117,6 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 - [Signed evidence](signed-evidence.md) — ingress trust model, envelope semantics, replay handling and key guidance.
 - [SOP authoring](sop-authoring.md) — rule-card schema, the exactly-14 diagnostic codes and digest semantics.
 - [File adapter](file-adapter.md) — `FilePublisher` contract, artifact shape and platform boundaries.
+- [GUI](gui.md) — the local read-only operations viewer: commands, sample store, tile definitions and limits.
 - [Contributor guide](contributor-guide.md) — adapter and rule-card tutorials over the public interfaces.
 - [RFC-001](RFC-001-core-semantics.md) · [RFC-002](RFC-002-sop-authoring-and-binding.md) · [RFC-003](RFC-003-runtime-protocol.md) · [Reference scenarios](reference-scenarios.md) · [Roadmap](roadmap.md)
