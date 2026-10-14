@@ -27,6 +27,9 @@ RESERVED_KIND = "accepted"
 
 CODE_ENVELOPE_INVALID = "EVIDENCE_ENVELOPE_INVALID"
 CODE_AUTHENTICATION_FAILED = "EVIDENCE_AUTHENTICATION_FAILED"
+CODE_CLOCK_INVALID = "EVIDENCE_CLOCK_INVALID"
+CODE_KEY_NOT_YET_VALID = "EVIDENCE_KEY_NOT_YET_VALID"
+CODE_KEY_RETIRED = "EVIDENCE_KEY_RETIRED"
 CODE_EXPIRED = "EVIDENCE_EXPIRED"
 CODE_KIND_UNSUPPORTED = "EVIDENCE_KIND_UNSUPPORTED"
 
@@ -275,14 +278,42 @@ class SignedEvidenceGateway:
             problem = "envelope cannot be canonically encoded as UTF-8"
         if problem is not None:
             return _reject(CODE_ENVELOPE_INVALID)
-        secret, _entry = self._select_key(message["source"],
-                                          message.get(OPTIONAL_KEY_FIELD))
+        secret, entry = self._select_key(message["source"],
+                                         message.get(OPTIONAL_KEY_FIELD))
         if secret is None:
             return _reject(CODE_AUTHENTICATION_FAILED)
         if not hmac.compare_digest(_signature(secret, encoded), signature):
             return _reject(CODE_AUTHENTICATION_FAILED)
+        # One clock sample, taken only after successful HMAC, is shared by the
+        # key-window and freshness checks (D51/F4). An invalid clock is an
+        # operator configuration failure, not a signature or freshness
+        # verdict: fail closed with a minimal receipt and no runtime calls.
+        # Only ordinary exceptions are caught — never BaseException — and the
+        # sample is never re-taken.
+        try:
+            now = self.clock()
+        except Exception:
+            return _reject(CODE_CLOCK_INVALID)
+        if type(now) is not int and type(now) is not float:
+            return _reject(CODE_CLOCK_INVALID)
+        if type(now) is float and not math.isfinite(now):
+            # ints (however huge) are finite by definition; isfinite itself
+            # would overflow converting a huge int to float, so only floats
+            # pass through it.
+            return _reject(CODE_CLOCK_INVALID)
+        if entry is not None:
+            # Inclusive bounds on the current verification time — never the
+            # signed issued_at, so a key holder cannot backdate around a
+            # retirement.
+            if entry.not_before is not None and now < entry.not_before:
+                return _reject(CODE_KEY_NOT_YET_VALID)
+            if entry.not_after is not None and now > entry.not_after:
+                return _reject(CODE_KEY_RETIRED)
         snapshot = json.loads(encoded)
-        if abs(self.clock() - snapshot["issued_at"]) > self.max_age:
+        # Equivalent to abs(now - issued_at) <= max_age (inclusive boundary),
+        # written as comparisons so no float/integer subtraction can overflow.
+        if not (snapshot["issued_at"] - self.max_age <= now
+                <= snapshot["issued_at"] + self.max_age):
             return _reject(CODE_EXPIRED)
         if snapshot["kind"] == RESERVED_KIND:
             return _reject(CODE_KIND_UNSUPPORTED)

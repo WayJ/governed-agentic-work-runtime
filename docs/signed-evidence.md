@@ -81,18 +81,40 @@ checks, in order:
    `key_id` when present), compared with `hmac.compare_digest`. Tampering
    with any signed field — including swapping the selector — fails here.
    → `EVIDENCE_AUTHENTICATION_FAILED`
-5. **Freshness** — `abs(now - issued_at) <= max_age`, covering future skew.
+5. **Clock sample** — one `clock()` call, taken only now that HMAC has
+   succeeded, serves both the key-window and freshness checks. The sample
+   must be an `int` or `float` (bool rejected) and, when a float, finite; a
+   non-finite or wrongly-typed sample, or a clock that raises an ordinary
+   exception, is an **operator configuration failure** and fails closed with
+   `EVIDENCE_CLOCK_INVALID` — zero runtime calls, zero writes, no retry, no
+   second sample, and `BaseException` (e.g. `KeyboardInterrupt`) is never
+   caught. Integer samples of any magnitude are finite; huge integers are
+   compared exactly and never converted to float.
+   → `EVIDENCE_CLOCK_INVALID`
+6. **Key validity window** (keyring entries only) — `not_before <= now <=
+   not_after`, inclusive, evaluated against the **current verification
+   time**, never the signed `issued_at`: a key holder cannot backdate
+   around a retirement or future-date past an activation. Checked after
+   HMAC, so both codes are reachable only by a genuine key holder and the
+   receipt stays minimal (no key echo). Retaining a retired entry in the
+   configuration keeps the operator-actionable `EVIDENCE_KEY_RETIRED`
+   signal; dropping it collapses that envelope to
+   `EVIDENCE_AUTHENTICATION_FAILED` (indistinguishable from an unknown
+   key). → `EVIDENCE_KEY_NOT_YET_VALID` / `EVIDENCE_KEY_RETIRED`
+7. **Freshness** — `abs(now - issued_at) <= max_age` on the same single
+   sample, covering future skew (inclusive boundary, unchanged semantics;
+   the historical NaN-sample fail-open is intentionally fixed by step 5).
    → `EVIDENCE_EXPIRED`
-6. **Reserved kind** — `kind == "accepted"` is reserved for Runtime-written
+8. **Reserved kind** — `kind == "accepted"` is reserved for Runtime-written
    adapter receipts; signed ingress refuses it even for an authorized,
    key-configured source. → `EVIDENCE_KIND_UNSUPPORTED`
-7. Only then `runtime.command(actor=source, kind="record_evidence", ...)`
+9. Only then `runtime.command(actor=source, kind="record_evidence", ...)`
    with the business payload `{event_id, kind, data}` taken from the same
    detached JSON snapshot whose bytes were authenticated. The signature,
    timestamp and `key_id` are authentication-envelope data and are never
    persisted in the business payload or part of any evidence fingerprint.
 
-Rejection receipts for steps 1–6 are exactly `{"decision": "rejected",
+Rejection receipts for steps 1–8 are exactly `{"decision": "rejected",
 "code": ...}` and leave **all** Runtime tables unchanged: no command, evidence,
 event or work rows are written for unauthenticated input. Authenticated
 business rejections are different and follow normal Runtime semantics — a
@@ -144,9 +166,15 @@ secret material distinct across the whole configuration. The ring is
 normalized to an immutable per-source tuple copied at construction: mutating
 the caller's dict or list afterwards changes nothing, and rotation means
 constructing a new gateway from new configuration — there is no in-process
-rotation surface. Verification-key selection for keyring sources is specified
-under [Gateway checks](#gateway-checks-and-receipts); key validity windows are
-evaluated on the gateway clock and land with the S11 clock work on this branch.
+rotation surface. Verification-key selection and validity-window semantics
+for keyring sources are specified under
+[Gateway checks](#gateway-checks-and-receipts) above; the documented rollover
+ladder is: add the new key (both valid, signers cite it by `key_id`), switch
+signers, flip `current` and set the old key's `not_after` to `now + grace`
+(grace ≥ `max_age` recommended so in-flight envelopes land inside it — an
+operator recommendation, not a distribution guarantee), then retire by
+dropping the entry or keeping it expired (dropping loses the
+`EVIDENCE_KEY_RETIRED` signal, keeping it preserves it).
 
 ## Limitations
 

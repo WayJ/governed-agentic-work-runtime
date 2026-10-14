@@ -342,6 +342,31 @@ is the D49–D53 section of the
   `test_signer_rejects_bad_key_id_values`,
   `test_gateway_rejects_bad_key_id_shape_as_envelope_invalid`
   (`SignerKeyFieldTests`).
+- **Single finite clock and key windows (D51)**: inclusive window edges on
+  both envelope formats, retired/not-yet-valid codes with zero writes,
+  window precedence over freshness, verification-time (never `issued_at`)
+  window evaluation in both directions (no backdating), window codes gated
+  behind a valid signature (no oracle), current-entry-outside-window on the
+  legacy path, retained-expired vs dropped-entry distinct codes, the full
+  invalid-clock matrix (non-finite floats, wrong types incl. bool, raising
+  clock → minimal `EVIDENCE_CLOCK_INVALID` with zero writes on both source
+  shapes; `BaseException` propagates), huge-integer samples compared
+  exactly without overflow, exactly one shared clock sample per record
+  (zero calls before successful HMAC, sequence-based single-sample proof in
+  both directions), and legacy ±`max_age` freshness semantics unchanged.
+  Named (class `WindowClockTests`): `test_window_bounds_inclusive_at_edges`,
+  `test_retired_key_rejected_after_not_after`, `test_not_yet_valid_key_rejected`,
+  `test_window_precedes_freshness`, `test_window_uses_verification_time_not_issued_at`,
+  `test_window_codes_require_valid_signature`,
+  `test_current_entry_outside_window_on_legacy_path`,
+  `test_dropped_and_retained_expired_keys_have_distinct_codes`,
+  `test_clock_invalid_samples_fail_closed`,
+  `test_clock_raising_ordinary_exception_fails_closed`,
+  `test_clock_base_exception_propagates`,
+  `test_huge_int_clock_sample_is_finite_and_safe`,
+  `test_single_clock_sample_shared_by_window_and_freshness`,
+  `test_clock_not_sampled_until_hmac_succeeds`,
+  `test_legacy_freshness_semantics_unchanged`.
 
 ## RFC-001 acceptance behaviors (R1–R7)
 

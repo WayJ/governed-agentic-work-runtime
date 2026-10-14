@@ -358,5 +358,254 @@ class SignerKeyFieldTests(unittest.TestCase):
         self.assertEqual(counts(), before)
 
 
+class WindowClockTests(unittest.TestCase):
+    """Inclusive key windows on one finite shared clock sample (D51)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.now = 2000000000
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.runtime = Runtime(self.path, ExpensePolicy(), demo_grants())
+        initialize(self.runtime)
+        self.legacy = key()
+
+    def message(self, source="finance", **overrides):
+        base = {"source": source, "command_id": "cmd-1", "work_id": "demo",
+                "event_id": "evt-1", "kind": "approval",
+                "data": {"digest": self.runtime.get_work("demo")["document_digest"]},
+                "issued_at": self.now}
+        base.update(overrides)
+        return base
+
+    def signed(self, secret, key_id=False, **overrides):
+        message = self.message(**overrides)
+        if key_id is not False:
+            message["key_id"] = key_id
+        return sign_evidence(secret, message)
+
+    def gateway(self, ring, clock=None):
+        return SignedEvidenceGateway(self.runtime, {"finance": ring, "ledger": self.legacy},
+                                     clock=clock or (lambda: self.now))
+
+    def table_counts(self):
+        with sqlite3.connect(self.path) as db:
+            return {t: db.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
+                    for t in ("works", "commands", "evidence", "operations", "events", "metadata")}
+
+    def test_window_bounds_inclusive_at_edges(self):
+        secret = key()
+        for edge in (self.now - 100, self.now + 100):
+            windowed = SourceKey("ring-windowed", secret, current=True,
+                                 not_before=self.now - 100, not_after=self.now + 100)
+            gateway = self.gateway([windowed], clock=lambda: edge)
+            for key_id in (False, "ring-windowed"):
+                envelope = self.signed(secret, key_id=key_id,
+                                       command_id="cmd-%s-%s" % (edge, key_id),
+                                       event_id="evt-%s-%s" % (edge, key_id))
+                self.assertEqual(gateway.record(envelope)["decision"], "accepted",
+                                 (edge, key_id))
+
+    def test_retired_key_rejected_after_not_after(self):
+        retired = SourceKey("ring-old", key(), current=True,
+                            not_after=self.now - 10)
+        gateway = self.gateway([retired, SourceKey("ring-new", key())])
+        before = self.table_counts()
+        envelope = self.signed(retired.secret, key_id="ring-old")
+        self.assertEqual(gateway.record(envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_KEY_RETIRED"})
+        self.assertEqual(self.table_counts(), before)
+
+    def test_not_yet_valid_key_rejected(self):
+        future = SourceKey("ring-future", key(), current=True,
+                           not_before=self.now + 10)
+        gateway = self.gateway([future, SourceKey("ring-new", key())])
+        before = self.table_counts()
+        envelope = self.signed(future.secret, key_id="ring-future")
+        self.assertEqual(gateway.record(envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_KEY_NOT_YET_VALID"})
+        self.assertEqual(self.table_counts(), before)
+
+    def test_window_precedes_freshness(self):
+        retired = SourceKey("ring-old", key(), current=True, not_after=self.now - 10)
+        future = SourceKey("ring-future", key(), current=True,
+                           not_before=self.now + 10)
+        for entry, code in ((retired, "EVIDENCE_KEY_RETIRED"),
+                            (future, "EVIDENCE_KEY_NOT_YET_VALID")):
+            gateway = self.gateway([entry, SourceKey("ring-new", key())])
+            stale = self.signed(entry.secret, key_id=entry.key_id,
+                                issued_at=self.now - 400)  # also stale
+            self.assertEqual(gateway.record(stale),
+                             {"decision": "rejected", "code": code}, entry.key_id)
+
+    def test_window_uses_verification_time_not_issued_at(self):
+        # A key holder cannot backdate around not_after, nor future-date its
+        # way past not_before: the window sees the verification clock only.
+        retired = SourceKey("ring-old", key(), current=True, not_after=self.now - 10)
+        gateway = self.gateway([retired, SourceKey("ring-new", key())])
+        backdated = self.signed(retired.secret, key_id="ring-old",
+                                issued_at=self.now - 100)  # fresh, inside at issue time
+        self.assertEqual(gateway.record(backdated),
+                         {"decision": "rejected", "code": "EVIDENCE_KEY_RETIRED"})
+        future = SourceKey("ring-future", key(), current=True,
+                           not_before=self.now + 100)
+        gateway = self.gateway([future, SourceKey("ring-new", key())])
+        future_dated = self.signed(future.secret, key_id="ring-future",
+                                   issued_at=self.now + 150)  # fresh, valid at issue time
+        self.assertEqual(gateway.record(future_dated),
+                         {"decision": "rejected", "code": "EVIDENCE_KEY_NOT_YET_VALID"})
+
+    def test_window_codes_require_valid_signature(self):
+        retired = SourceKey("ring-old", key(), current=True, not_after=self.now - 10)
+        gateway = self.gateway([retired, SourceKey("ring-new", key())])
+        before = self.table_counts()
+        for key_id in (False, "ring-old"):
+            envelope = self.signed(key(), key_id=key_id)
+            self.assertEqual(gateway.record(envelope),
+                             {"decision": "rejected",
+                              "code": "EVIDENCE_AUTHENTICATION_FAILED"}, key_id)
+        self.assertEqual(self.table_counts(), before)
+
+    def test_current_entry_outside_window_on_legacy_path(self):
+        retired = SourceKey("ring-old", key(), current=True, not_after=self.now - 10)
+        future = SourceKey("ring-future", key(), current=True,
+                           not_before=self.now + 10)
+        for entry, code in ((retired, "EVIDENCE_KEY_RETIRED"),
+                            (future, "EVIDENCE_KEY_NOT_YET_VALID")):
+            gateway = self.gateway([entry, SourceKey("ring-new", key())])
+            legacy_format = self.signed(entry.secret)
+            self.assertEqual(gateway.record(legacy_format),
+                             {"decision": "rejected", "code": code}, entry.key_id)
+
+    def test_dropped_and_retained_expired_keys_have_distinct_codes(self):
+        old = SourceKey("ring-old", key(), not_after=self.now - 10)
+        new = SourceKey("ring-new", key(), current=True)
+        envelope = self.signed(old.secret, key_id="ring-old")
+        retained = self.gateway([old, new])
+        self.assertEqual(retained.record(envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_KEY_RETIRED"})
+        dropped = self.gateway([new])
+        before = self.table_counts()
+        self.assertEqual(dropped.record(envelope),
+                         {"decision": "rejected",
+                          "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(self.table_counts(), before)
+
+    def test_clock_invalid_samples_fail_closed(self):
+        open_ring = [SourceKey("ring-open", key(), current=True)]
+        bad_samples = (float("nan"), float("inf"), float("-inf"),
+                       "2000000000", True, False, None, [self.now])
+        for sample in bad_samples:
+            for label, ring, envelope in (
+                    ("ring", open_ring, self.signed(open_ring[0].secret)),
+                    ("legacy", open_ring, self.signed(self.legacy, source="ledger"))):
+                gateway = self.gateway(ring, clock=lambda s=sample: s)
+                before = self.table_counts()
+                self.assertEqual(gateway.record(envelope),
+                                 {"decision": "rejected",
+                                  "code": "EVIDENCE_CLOCK_INVALID"}, (sample, label))
+                self.assertEqual(self.table_counts(), before, (sample, label))
+
+    def test_clock_raising_ordinary_exception_fails_closed(self):
+        def broken_clock():
+            raise ValueError("operator clock failed")
+        secret = key()
+        gateway = self.gateway([SourceKey("ring-open", secret, current=True)],
+                               clock=broken_clock)
+        before = self.table_counts()
+        self.assertEqual(gateway.record(self.signed(secret)),
+                         {"decision": "rejected", "code": "EVIDENCE_CLOCK_INVALID"})
+        self.assertEqual(self.table_counts(), before)
+
+    def test_clock_base_exception_propagates(self):
+        def interrupted_clock():
+            raise KeyboardInterrupt
+        secret = key()
+        gateway = self.gateway([SourceKey("ring-open", secret, current=True)],
+                               clock=interrupted_clock)
+        with self.assertRaises(KeyboardInterrupt):
+            gateway.record(self.signed(secret))
+
+    def test_huge_int_clock_sample_is_finite_and_safe(self):
+        open_ring = [SourceKey("ring-open", key(), current=True)]
+        bounded = [SourceKey("ring-bounded", key(), current=True,
+                             not_before=self.now - 100, not_after=self.now + 100)]
+        cases = ((bounded, 10 ** 400, "EVIDENCE_KEY_RETIRED"),
+                 (bounded, -(10 ** 400), "EVIDENCE_KEY_NOT_YET_VALID"),
+                 (open_ring, 10 ** 400, "EVIDENCE_EXPIRED"),
+                 (open_ring, -(10 ** 400), "EVIDENCE_EXPIRED"))
+        for ring, sample, code in cases:
+            gateway = self.gateway(ring, clock=lambda s=sample: s)
+            self.assertEqual(gateway.record(self.signed(ring[0].secret)),
+                             {"decision": "rejected", "code": code}, sample)
+
+    def test_single_clock_sample_shared_by_window_and_freshness(self):
+        sequence = []
+
+        def sequencing_clock():
+            sequence.append(len(sequence))
+            return (self.now - 400, self.now)[sequence[-1]]
+
+        # First sample passes the window but fails freshness; a second sample
+        # (fresh) would accept. One shared sample must report EVIDENCE_EXPIRED.
+        windowed = SourceKey("ring-windowed", key(), current=True,
+                             not_before=self.now - 1000, not_after=self.now + 1000)
+        gateway = self.gateway([windowed], clock=sequencing_clock)
+        envelope = self.signed(windowed.secret, issued_at=self.now)
+        self.assertEqual(gateway.record(envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_EXPIRED"})
+        self.assertEqual(len(sequence), 1)
+        # Mirror case: the first sample fails the window (before not_before)
+        # while the second would pass window and freshness both.
+        sequence.clear()
+        future = SourceKey("ring-future", key(), current=True,
+                           not_before=self.now - 300)
+        gateway = self.gateway([future], clock=sequencing_clock)
+        envelope = self.signed(future.secret, issued_at=self.now)
+        self.assertEqual(gateway.record(envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_KEY_NOT_YET_VALID"})
+        self.assertEqual(len(sequence), 1)
+
+    def test_clock_not_sampled_until_hmac_succeeds(self):
+        calls = []
+
+        def counting_clock():
+            calls.append(1)
+            return self.now
+
+        secret = key()
+        gateway = self.gateway([SourceKey("ring-open", secret, current=True)],
+                               clock=counting_clock)
+        missing = self.signed(secret)
+        del missing["kind"]
+        unknown_source = self.signed(secret, source="ghost")
+        bad_selector = self.signed(secret, key_id="ring-ghost")
+        wrong_secret = self.signed(key())
+        for bad in (missing, unknown_source, bad_selector, wrong_secret):
+            self.assertEqual(gateway.record(bad)["decision"], "rejected")
+            self.assertEqual(len(calls), 0, "clock sampled before successful HMAC")
+        self.assertEqual(gateway.record(self.signed(secret))["decision"], "accepted")
+        self.assertEqual(len(calls), 1)
+
+    def test_legacy_freshness_semantics_unchanged(self):
+        gateway = SignedEvidenceGateway(self.runtime, {"finance": self.legacy},
+                                        clock=lambda: self.now)
+        for issued_at in (self.now - 300, self.now + 300):
+            receipt = gateway.record(self.signed(self.legacy,
+                                                 command_id="cmd-%d" % issued_at,
+                                                 event_id="evt-%d" % issued_at,
+                                                 issued_at=issued_at))
+            self.assertEqual(receipt["decision"], "accepted", issued_at)
+        before = self.table_counts()
+        for issued_at in (self.now - 301, self.now + 301):
+            receipt = gateway.record(self.signed(self.legacy,
+                                                 command_id="cmd-%d" % issued_at,
+                                                 event_id="evt-%d" % issued_at,
+                                                 issued_at=issued_at))
+            self.assertEqual(receipt, {"decision": "rejected", "code": "EVIDENCE_EXPIRED"},
+                             issued_at)
+        self.assertEqual(self.table_counts(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
