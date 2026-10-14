@@ -81,3 +81,38 @@ Beyond the map: `docs/evidence-revocation.md` (new reference),
 `docs/gui.md`, both READMEs updated by owners and verified truthful this run;
 website pages intentionally unchanged (older optional examples remain listed;
 website scope is outside S8, per roadmap).
+
+## Correction (2026-10-15, post-release, appended)
+
+After the release at `e0f0c558d12ddc9fd5b489d788670f49cc9ebdf9` (CI run
+38602805407 success on that exact SHA), the coordinator's independent
+verification found shipped-documentation defects. This section appends the
+correction per the append-only record discipline: the verdict, scenario
+results, DoD checklist, obstacles and drift audit above stand as originally
+recorded; nothing above is rewritten.
+
+- **Attribution corrected.** The obstacles entry and the closing note
+  described the coordinator's direct viewing of the committed 320px PNG as
+  a "human visual check". The coordinator (root) is Codex — an agent. The
+  correct attribution is **coordinator direct image inspection**: an
+  agent-coordinator check, not human or external-author feedback. The
+  closing note's phrasing was corrected in the supplementary commit; real
+  external human adoption feedback remains uncollected and unclaimed.
+- **Closing-note link corrected.** The close note's acceptance-record link
+  used `../docs/...`, which from `.agents/notes/` resolves to
+  `.agents/docs` (nonexistent); corrected to `../../docs/...`. Links in the
+  touched notes were re-validated with an explicit path resolver because
+  `check_docs` excludes `.agents`.
+- **Roadmap truthfulness corrected** (`docs/roadmap.md`): the 0.3 narrative
+  no longer lists evidence revocation as open — S8 shipped it (links to
+  `evidence-revocation.md` and this record added); the 0.2 sentence now
+  distinguishes open **source-key rotation** from delivered evidence
+  withdrawal; compensation execution, distributed fencing, publication and
+  human feedback remain open. One additional adjacent staleness was fixed
+  in the same file and is disclosed here: the 0.4 sentence claiming S7
+  "remains in development" now states S7 was accepted and released.
+- **Ledger unchanged.** The sprint's `merged-commit` stays
+  `40dd635994d6ad96ded3ad7cf40218aae88062c8`; the original release SHA is
+  `e0f0c558d12ddc9fd5b489d788670f49cc9ebdf9`; this correction is a
+  supplementary documentation commit on main (SHA recorded in the dispatch
+  report), not a re-release. No product, code, UI or gate behavior changed.
