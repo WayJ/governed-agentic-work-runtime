@@ -1,0 +1,25 @@
+{
+ "probes": {
+  "P0": {
+   "measurement": {
+    "fg": "rgb(138, 84, 0)",
+    "bg": "rgb(250, 240, 223)",
+    "ratio": 5.552575331194186
+   }
+  },
+  "P2": {
+   "chip_present_immediately_after_open_tab": false,
+   "measurement": {
+    "fg": "rgb(38, 37, 30)",
+    "bg": "rgb(236, 234, 228)",
+    "ratio": 12.7808872307641
+   }
+  },
+  "P1": {
+   "measurement": "element missing"
+  },
+  "P1b": {
+   "measurement": "element missing"
+  }
+ }
+}

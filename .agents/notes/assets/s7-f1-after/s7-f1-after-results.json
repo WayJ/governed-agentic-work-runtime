@@ -1,0 +1,1576 @@
+{
+ "phase": "after",
+ "checks": [
+  {
+   "name": "first load renders 5 works without interaction",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "first load settles past loading",
+   "ok": true,
+   "observed": "'共 5 项工作中的 5 项'"
+  },
+  {
+   "name": "keyboard: ArrowDown x2 + Enter selects the focused work",
+   "ok": true,
+   "observed": "first='cancel-1' second='transfer-1' detail='transfer-1'"
+  },
+  {
+   "name": "list ArrowDown moves focus to the next work item",
+   "ok": true,
+   "observed": "'cancel-1' -> 'succeed-1'"
+  },
+  {
+   "name": "tab ArrowRight/Left keep focus on live selected tab",
+   "ok": true,
+   "observed": "4 trusted key presses at 1440"
+  },
+  {
+   "name": "focus outline solid 2px orange offset 2px",
+   "ok": true,
+   "observed": "{'tab': 'operations', 'style': 'solid', 'width': '2px', 'color': 'rgb(245, 78, 0)', 'offset': '2px', 'connected': True}"
+  },
+  {
+   "name": "focus outline non-text contrast >= 3.0 on white",
+   "ok": true,
+   "observed": "3.5162620296536407"
+  },
+  {
+   "name": "\"/\" focuses the search box",
+   "ok": true,
+   "observed": "'work-search'"
+  },
+  {
+   "name": "typing filters the list to 1 work",
+   "ok": true,
+   "observed": "{\"items\": 1, \"status\": \"共 5 项工作中的 1 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "clearing the filter restores 5 works",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "status filter keyboard select filters the list",
+   "ok": true,
+   "observed": "focus=True mechanism=letter w jump chosen='waiting' items=1"
+  },
+  {
+   "name": "status filter back to all restores 5 works",
+   "ok": true,
+   "observed": "chosen='' state={\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "language toggle flips the interface language",
+   "ok": true,
+   "observed": "lang 'zh'->'en' footer '↑/↓ 列表 · 回车选中 · ←/→ 切换页签 · / 搜索'->'↑/↓ list · Enter select · ←/→ tabs · / search'"
+  },
+  {
+   "name": "zh display tracking zero",
+   "ok": true,
+   "observed": "{'title': 'normal', 'tile': 'normal'}"
+  },
+  {
+   "name": "language toggle flips back",
+   "ok": true,
+   "observed": "'zh'"
+  },
+  {
+   "name": "manual refresh keeps the list rendered",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "pause shows the paused chip and resume label",
+   "ok": true,
+   "observed": "{\"chip\": true, \"text\": \"恢复轮询\"}"
+  },
+  {
+   "name": "resume hides the paused chip",
+   "ok": true,
+   "observed": "hidden class present after resume click"
+  },
+  {
+   "name": "1440-en body background == rgb(247, 247, 244)",
+   "ok": true,
+   "observed": "'rgb(247, 247, 244)'"
+  },
+  {
+   "name": "1440-en body color == rgb(38, 37, 30)",
+   "ok": true,
+   "observed": "'rgb(38, 37, 30)'"
+  },
+  {
+   "name": "1440-en body overflow-x == visible",
+   "ok": true,
+   "observed": "'visible'"
+  },
+  {
+   "name": "1440-en html overflow-x == visible",
+   "ok": true,
+   "observed": "'visible'"
+  },
+  {
+   "name": "1440-en card radius == 12px",
+   "ok": true,
+   "observed": "'12px'"
+  },
+  {
+   "name": "1440-en card border == ('1px', 'rgb(230, 229, 224)')",
+   "ok": true,
+   "observed": "('1px', 'rgb(230, 229, 224)')"
+  },
+  {
+   "name": "1440-en card background == rgb(255, 255, 255)",
+   "ok": true,
+   "observed": "'rgb(255, 255, 255)'"
+  },
+  {
+   "name": "1440-en card shadow == none",
+   "ok": true,
+   "observed": "'none'"
+  },
+  {
+   "name": "1440-en detail card radius == 12px",
+   "ok": true,
+   "observed": "'12px'"
+  },
+  {
+   "name": "1440-en detail card shadow == none",
+   "ok": true,
+   "observed": "'none'"
+  },
+  {
+   "name": "1440-en button radius == 8px",
+   "ok": true,
+   "observed": "'8px'"
+  },
+  {
+   "name": "1440-en input radius == 8px",
+   "ok": true,
+   "observed": "'8px'"
+  },
+  {
+   "name": "1440-en chip pill radius == 9999px",
+   "ok": true,
+   "observed": "'9999px'"
+  },
+  {
+   "name": "1440-en tile value 26px/400 == ('26px', '400')",
+   "ok": true,
+   "observed": "('26px', '400')"
+  },
+  {
+   "name": "1440-en detail title 22px/400 == ('22px', '400')",
+   "ok": true,
+   "observed": "('22px', '400')"
+  },
+  {
+   "name": "1440-en detail title mono contains JetBrains Mono",
+   "ok": true,
+   "observed": "'\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'"
+  },
+  {
+   "name": "1440-en mono family contains JetBrains Mono",
+   "ok": true,
+   "observed": "'\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'"
+  },
+  {
+   "name": "1440-en section label 16px/600 == ('16px', '600')",
+   "ok": true,
+   "observed": "('16px', '600')"
+  },
+  {
+   "name": "1440-en selected tab ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')",
+   "ok": true,
+   "observed": "('rgb(38, 37, 30)', 'rgb(247, 247, 244)')"
+  },
+  {
+   "name": "1440-en primary control ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')",
+   "ok": true,
+   "observed": "('rgb(38, 37, 30)', 'rgb(247, 247, 244)')"
+  },
+  {
+   "name": "1440-en selected work ink border == rgb(38, 37, 30)",
+   "ok": true,
+   "observed": "'rgb(38, 37, 30)'"
+  },
+  {
+   "name": "1440-en content cap == 1200px",
+   "ok": true,
+   "observed": "'1200px'"
+  },
+  {
+   "name": "1440-en layout tracks == 2",
+   "ok": true,
+   "observed": "'360px 792px'"
+  },
+  {
+   "name": "1440-en refresh target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 62}"
+  },
+  {
+   "name": "1440-en langToggle target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 52}"
+  },
+  {
+   "name": "1440-en search target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 181}"
+  },
+  {
+   "name": "1440-en statusFilter target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 171}"
+  },
+  {
+   "name": "1440-en tab target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 58}"
+  },
+  {
+   "name": "1440-en workItem target >= 44px",
+   "ok": true,
+   "observed": "{'height': 60, 'width': 356}"
+  },
+  {
+   "name": "1440-en no page-level horizontal overflow",
+   "ok": true,
+   "observed": "{'scrollWidth': 1440, 'clientWidth': 1440}"
+  },
+  {
+   "name": "1440-en token --color-canvas defined",
+   "ok": true,
+   "observed": "'#f7f7f4'"
+  },
+  {
+   "name": "1440-en token --color-ink defined",
+   "ok": true,
+   "observed": "'#26251e'"
+  },
+  {
+   "name": "1440-en token --color-body defined",
+   "ok": true,
+   "observed": "'#5a5852'"
+  },
+  {
+   "name": "1440-en token --color-accent defined",
+   "ok": true,
+   "observed": "'#f54e00'"
+  },
+  {
+   "name": "1440-en token --color-hairline defined",
+   "ok": true,
+   "observed": "'#e6e5e0'"
+  },
+  {
+   "name": "1440-en token --color-hairline-strong defined",
+   "ok": true,
+   "observed": "'#cfcdc4'"
+  },
+  {
+   "name": "1440-en token --radius-control defined",
+   "ok": true,
+   "observed": "'8px'"
+  },
+  {
+   "name": "1440-en token --radius-card defined",
+   "ok": true,
+   "observed": "'12px'"
+  },
+  {
+   "name": "1440-en token --font-sans defined",
+   "ok": true,
+   "observed": "'-apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui,\\n               \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\",\\n               \"Microsoft YaHei\", \"Noto Sans CJK SC\", sans-serif'"
+  },
+  {
+   "name": "1440-en token --font-mono defined",
+   "ok": true,
+   "observed": "'\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo,\\n               Consolas, monospace'"
+  },
+  {
+   "name": "1440-en token --content-max defined",
+   "ok": true,
+   "observed": "'1200px'"
+  },
+  {
+   "name": "1440-en token canvas == #f7f7f4",
+   "ok": true,
+   "observed": "'#f7f7f4'"
+  },
+  {
+   "name": "1440-en token ink == #26251e",
+   "ok": true,
+   "observed": "'#26251e'"
+  },
+  {
+   "name": "1440-en token body == #5a5852",
+   "ok": true,
+   "observed": "'#5a5852'"
+  },
+  {
+   "name": "1440-en token accent == #f54e00",
+   "ok": true,
+   "observed": "'#f54e00'"
+  },
+  {
+   "name": "1440-en token hairline == #e6e5e0",
+   "ok": true,
+   "observed": "'#e6e5e0'"
+  },
+  {
+   "name": "1440-en token hairline strong == #cfcdc4",
+   "ok": true,
+   "observed": "'#cfcdc4'"
+  },
+  {
+   "name": "1440-en token content cap == 1200px",
+   "ok": true,
+   "observed": "'1200px'"
+  },
+  {
+   "name": "contrast tile description on white card >= 4.50",
+   "ok": true,
+   "observed": "rgb(90, 88, 82) on rgba(0, 0, 0, 0) = 7.11"
+  },
+  {
+   "name": "contrast note text on neutral surface >= 4.50",
+   "ok": true,
+   "observed": "rgb(90, 88, 82) on rgb(236, 234, 228) = 5.91"
+  },
+  {
+   "name": "contrast field label on white card >= 4.50",
+   "ok": true,
+   "observed": "rgb(90, 88, 82) on rgba(0, 0, 0, 0) = 7.11"
+  },
+  {
+   "name": "contrast waiting warn chip >= 4.50",
+   "ok": true,
+   "observed": "rgb(138, 84, 0) on rgb(250, 240, 223) = 5.55"
+  },
+  {
+   "name": "contrast table header on neutral surface >= 4.50",
+   "ok": true,
+   "observed": "rgb(90, 88, 82) on rgb(236, 234, 228) = 5.91"
+  },
+  {
+   "name": "contrast needs_attention error chip >= 4.50",
+   "ok": true,
+   "observed": "rgb(179, 36, 73) on rgb(249, 232, 236) = 5.45"
+  },
+  {
+   "name": "contrast succeeded success chip >= 4.50",
+   "ok": true,
+   "observed": "rgb(20, 108, 78) on rgb(232, 242, 236) = 5.58"
+  },
+  {
+   "name": "contrast selected tab text on ink >= 4.50",
+   "ok": true,
+   "observed": "rgb(247, 247, 244) on rgb(38, 37, 30) = 14.33"
+  },
+  {
+   "name": "contrast primary control text on ink >= 4.50",
+   "ok": true,
+   "observed": "rgb(247, 247, 244) on rgb(38, 37, 30) = 14.33"
+  },
+  {
+   "name": "contrast selected work item text >= 4.50",
+   "ok": true,
+   "observed": "rgb(38, 37, 30) on rgb(250, 250, 247) = 14.70"
+  },
+  {
+   "name": "contrast body text on canvas >= 4.50",
+   "ok": true,
+   "observed": "rgb(38, 37, 30) on rgb(247, 247, 244) = 14.33"
+  },
+  {
+   "name": "contrast rejected decision chip >= 4.50",
+   "ok": true,
+   "observed": "rgb(179, 36, 73) on rgb(249, 232, 236) = 5.45"
+  },
+  {
+   "name": "contrast base chip (unknown/extra classes neutral) >= 4.50",
+   "ok": true,
+   "observed": "rgb(38, 37, 30) on rgb(236, 234, 228) = 12.78"
+  },
+  {
+   "name": "contrast cancellation banner error text >= 4.50",
+   "ok": true,
+   "observed": "rgb(179, 36, 73) on rgb(249, 232, 236) = 5.45"
+  },
+  {
+   "name": "raw disclosure summary target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44}"
+  },
+  {
+   "name": "390 first load renders 5 works",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "390-en body background == rgb(247, 247, 244)",
+   "ok": true,
+   "observed": "'rgb(247, 247, 244)'"
+  },
+  {
+   "name": "390-en body color == rgb(38, 37, 30)",
+   "ok": true,
+   "observed": "'rgb(38, 37, 30)'"
+  },
+  {
+   "name": "390-en body overflow-x == visible",
+   "ok": true,
+   "observed": "'visible'"
+  },
+  {
+   "name": "390-en html overflow-x == visible",
+   "ok": true,
+   "observed": "'visible'"
+  },
+  {
+   "name": "390-en card radius == 12px",
+   "ok": true,
+   "observed": "'12px'"
+  },
+  {
+   "name": "390-en card border == ('1px', 'rgb(230, 229, 224)')",
+   "ok": true,
+   "observed": "('1px', 'rgb(230, 229, 224)')"
+  },
+  {
+   "name": "390-en card background == rgb(255, 255, 255)",
+   "ok": true,
+   "observed": "'rgb(255, 255, 255)'"
+  },
+  {
+   "name": "390-en card shadow == none",
+   "ok": true,
+   "observed": "'none'"
+  },
+  {
+   "name": "390-en detail card radius == 12px",
+   "ok": true,
+   "observed": "'12px'"
+  },
+  {
+   "name": "390-en detail card shadow == none",
+   "ok": true,
+   "observed": "'none'"
+  },
+  {
+   "name": "390-en button radius == 8px",
+   "ok": true,
+   "observed": "'8px'"
+  },
+  {
+   "name": "390-en input radius == 8px",
+   "ok": true,
+   "observed": "'8px'"
+  },
+  {
+   "name": "390-en chip pill radius == 9999px",
+   "ok": true,
+   "observed": "'9999px'"
+  },
+  {
+   "name": "390-en tile value 26px/400 == ('26px', '400')",
+   "ok": true,
+   "observed": "('26px', '400')"
+  },
+  {
+   "name": "390-en detail title 22px/400 == ('22px', '400')",
+   "ok": true,
+   "observed": "('22px', '400')"
+  },
+  {
+   "name": "390-en detail title mono contains JetBrains Mono",
+   "ok": true,
+   "observed": "'\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'"
+  },
+  {
+   "name": "390-en mono family contains JetBrains Mono",
+   "ok": true,
+   "observed": "'\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'"
+  },
+  {
+   "name": "390-en section label 16px/600 == ('16px', '600')",
+   "ok": true,
+   "observed": "('16px', '600')"
+  },
+  {
+   "name": "390-en selected tab ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')",
+   "ok": true,
+   "observed": "('rgb(38, 37, 30)', 'rgb(247, 247, 244)')"
+  },
+  {
+   "name": "390-en primary control ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')",
+   "ok": true,
+   "observed": "('rgb(38, 37, 30)', 'rgb(247, 247, 244)')"
+  },
+  {
+   "name": "390-en selected work ink border == rgb(38, 37, 30)",
+   "ok": true,
+   "observed": "'rgb(38, 37, 30)'"
+  },
+  {
+   "name": "390-en content cap == 1200px",
+   "ok": true,
+   "observed": "'1200px'"
+  },
+  {
+   "name": "390-en layout tracks == 1",
+   "ok": true,
+   "observed": "'366px'"
+  },
+  {
+   "name": "390-en refresh target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 62}"
+  },
+  {
+   "name": "390-en langToggle target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 52}"
+  },
+  {
+   "name": "390-en search target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 366}"
+  },
+  {
+   "name": "390-en statusFilter target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 366}"
+  },
+  {
+   "name": "390-en tab target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 58}"
+  },
+  {
+   "name": "390-en workItem target >= 44px",
+   "ok": true,
+   "observed": "{'height': 60, 'width': 362}"
+  },
+  {
+   "name": "390-en no page-level horizontal overflow",
+   "ok": true,
+   "observed": "{'scrollWidth': 390, 'clientWidth': 390}"
+  },
+  {
+   "name": "390-en token --color-canvas defined",
+   "ok": true,
+   "observed": "'#f7f7f4'"
+  },
+  {
+   "name": "390-en token --color-ink defined",
+   "ok": true,
+   "observed": "'#26251e'"
+  },
+  {
+   "name": "390-en token --color-body defined",
+   "ok": true,
+   "observed": "'#5a5852'"
+  },
+  {
+   "name": "390-en token --color-accent defined",
+   "ok": true,
+   "observed": "'#f54e00'"
+  },
+  {
+   "name": "390-en token --color-hairline defined",
+   "ok": true,
+   "observed": "'#e6e5e0'"
+  },
+  {
+   "name": "390-en token --color-hairline-strong defined",
+   "ok": true,
+   "observed": "'#cfcdc4'"
+  },
+  {
+   "name": "390-en token --radius-control defined",
+   "ok": true,
+   "observed": "'8px'"
+  },
+  {
+   "name": "390-en token --radius-card defined",
+   "ok": true,
+   "observed": "'12px'"
+  },
+  {
+   "name": "390-en token --font-sans defined",
+   "ok": true,
+   "observed": "'-apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui,\\n               \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\",\\n               \"Microsoft YaHei\", \"Noto Sans CJK SC\", sans-serif'"
+  },
+  {
+   "name": "390-en token --font-mono defined",
+   "ok": true,
+   "observed": "'\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo,\\n               Consolas, monospace'"
+  },
+  {
+   "name": "390-en token --content-max defined",
+   "ok": true,
+   "observed": "'1200px'"
+  },
+  {
+   "name": "390-en token canvas == #f7f7f4",
+   "ok": true,
+   "observed": "'#f7f7f4'"
+  },
+  {
+   "name": "390-en token ink == #26251e",
+   "ok": true,
+   "observed": "'#26251e'"
+  },
+  {
+   "name": "390-en token body == #5a5852",
+   "ok": true,
+   "observed": "'#5a5852'"
+  },
+  {
+   "name": "390-en token accent == #f54e00",
+   "ok": true,
+   "observed": "'#f54e00'"
+  },
+  {
+   "name": "390-en token hairline == #e6e5e0",
+   "ok": true,
+   "observed": "'#e6e5e0'"
+  },
+  {
+   "name": "390-en token hairline strong == #cfcdc4",
+   "ok": true,
+   "observed": "'#cfcdc4'"
+  },
+  {
+   "name": "390-en token content cap == 1200px",
+   "ok": true,
+   "observed": "'1200px'"
+  },
+  {
+   "name": "390 tab arrows keep tab focus",
+   "ok": true,
+   "observed": "trusted ArrowRight/Left at 390"
+  },
+  {
+   "name": "320 first load renders 5 works",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "320-en body background == rgb(247, 247, 244)",
+   "ok": true,
+   "observed": "'rgb(247, 247, 244)'"
+  },
+  {
+   "name": "320-en body color == rgb(38, 37, 30)",
+   "ok": true,
+   "observed": "'rgb(38, 37, 30)'"
+  },
+  {
+   "name": "320-en body overflow-x == visible",
+   "ok": true,
+   "observed": "'visible'"
+  },
+  {
+   "name": "320-en html overflow-x == visible",
+   "ok": true,
+   "observed": "'visible'"
+  },
+  {
+   "name": "320-en card radius == 12px",
+   "ok": true,
+   "observed": "'12px'"
+  },
+  {
+   "name": "320-en card border == ('1px', 'rgb(230, 229, 224)')",
+   "ok": true,
+   "observed": "('1px', 'rgb(230, 229, 224)')"
+  },
+  {
+   "name": "320-en card background == rgb(255, 255, 255)",
+   "ok": true,
+   "observed": "'rgb(255, 255, 255)'"
+  },
+  {
+   "name": "320-en card shadow == none",
+   "ok": true,
+   "observed": "'none'"
+  },
+  {
+   "name": "320-en detail card radius == 12px",
+   "ok": true,
+   "observed": "'12px'"
+  },
+  {
+   "name": "320-en detail card shadow == none",
+   "ok": true,
+   "observed": "'none'"
+  },
+  {
+   "name": "320-en button radius == 8px",
+   "ok": true,
+   "observed": "'8px'"
+  },
+  {
+   "name": "320-en input radius == 8px",
+   "ok": true,
+   "observed": "'8px'"
+  },
+  {
+   "name": "320-en chip pill radius == 9999px",
+   "ok": true,
+   "observed": "'9999px'"
+  },
+  {
+   "name": "320-en tile value 26px/400 == ('26px', '400')",
+   "ok": true,
+   "observed": "('26px', '400')"
+  },
+  {
+   "name": "320-en detail title 22px/400 == ('22px', '400')",
+   "ok": true,
+   "observed": "('22px', '400')"
+  },
+  {
+   "name": "320-en detail title mono contains JetBrains Mono",
+   "ok": true,
+   "observed": "'\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'"
+  },
+  {
+   "name": "320-en mono family contains JetBrains Mono",
+   "ok": true,
+   "observed": "'\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'"
+  },
+  {
+   "name": "320-en section label 16px/600 == ('16px', '600')",
+   "ok": true,
+   "observed": "('16px', '600')"
+  },
+  {
+   "name": "320-en selected tab ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')",
+   "ok": true,
+   "observed": "('rgb(38, 37, 30)', 'rgb(247, 247, 244)')"
+  },
+  {
+   "name": "320-en primary control ink/canvas == ('rgb(38, 37, 30)', 'rgb(247, 247, 244)')",
+   "ok": true,
+   "observed": "('rgb(38, 37, 30)', 'rgb(247, 247, 244)')"
+  },
+  {
+   "name": "320-en selected work ink border == rgb(38, 37, 30)",
+   "ok": true,
+   "observed": "'rgb(38, 37, 30)'"
+  },
+  {
+   "name": "320-en content cap == 1200px",
+   "ok": true,
+   "observed": "'1200px'"
+  },
+  {
+   "name": "320-en layout tracks == 1",
+   "ok": true,
+   "observed": "'296px'"
+  },
+  {
+   "name": "320-en refresh target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 62}"
+  },
+  {
+   "name": "320-en langToggle target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 52}"
+  },
+  {
+   "name": "320-en search target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 296}"
+  },
+  {
+   "name": "320-en statusFilter target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 296}"
+  },
+  {
+   "name": "320-en tab target >= 44px",
+   "ok": true,
+   "observed": "{'height': 44, 'width': 58}"
+  },
+  {
+   "name": "320-en workItem target >= 44px",
+   "ok": true,
+   "observed": "{'height': 57, 'width': 292}"
+  },
+  {
+   "name": "320-en no page-level horizontal overflow",
+   "ok": true,
+   "observed": "{'scrollWidth': 320, 'clientWidth': 320}"
+  },
+  {
+   "name": "320-en token --color-canvas defined",
+   "ok": true,
+   "observed": "'#f7f7f4'"
+  },
+  {
+   "name": "320-en token --color-ink defined",
+   "ok": true,
+   "observed": "'#26251e'"
+  },
+  {
+   "name": "320-en token --color-body defined",
+   "ok": true,
+   "observed": "'#5a5852'"
+  },
+  {
+   "name": "320-en token --color-accent defined",
+   "ok": true,
+   "observed": "'#f54e00'"
+  },
+  {
+   "name": "320-en token --color-hairline defined",
+   "ok": true,
+   "observed": "'#e6e5e0'"
+  },
+  {
+   "name": "320-en token --color-hairline-strong defined",
+   "ok": true,
+   "observed": "'#cfcdc4'"
+  },
+  {
+   "name": "320-en token --radius-control defined",
+   "ok": true,
+   "observed": "'8px'"
+  },
+  {
+   "name": "320-en token --radius-card defined",
+   "ok": true,
+   "observed": "'12px'"
+  },
+  {
+   "name": "320-en token --font-sans defined",
+   "ok": true,
+   "observed": "'-apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui,\\n               \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\",\\n               \"Microsoft YaHei\", \"Noto Sans CJK SC\", sans-serif'"
+  },
+  {
+   "name": "320-en token --font-mono defined",
+   "ok": true,
+   "observed": "'\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo,\\n               Consolas, monospace'"
+  },
+  {
+   "name": "320-en token --content-max defined",
+   "ok": true,
+   "observed": "'1200px'"
+  },
+  {
+   "name": "320-en token canvas == #f7f7f4",
+   "ok": true,
+   "observed": "'#f7f7f4'"
+  },
+  {
+   "name": "320-en token ink == #26251e",
+   "ok": true,
+   "observed": "'#26251e'"
+  },
+  {
+   "name": "320-en token body == #5a5852",
+   "ok": true,
+   "observed": "'#5a5852'"
+  },
+  {
+   "name": "320-en token accent == #f54e00",
+   "ok": true,
+   "observed": "'#f54e00'"
+  },
+  {
+   "name": "320-en token hairline == #e6e5e0",
+   "ok": true,
+   "observed": "'#e6e5e0'"
+  },
+  {
+   "name": "320-en token hairline strong == #cfcdc4",
+   "ok": true,
+   "observed": "'#cfcdc4'"
+  },
+  {
+   "name": "320-en token content cap == 1200px",
+   "ok": true,
+   "observed": "'1200px'"
+  },
+  {
+   "name": "320 tab arrows keep tab focus",
+   "ok": true,
+   "observed": "trusted ArrowRight/Left at 320"
+  },
+  {
+   "name": "zh display tracking zero",
+   "ok": true,
+   "observed": "{'title': 'normal', 'tile': 'normal'}"
+  },
+  {
+   "name": "zh display tracking zero",
+   "ok": true,
+   "observed": "{'title': 'normal', 'tile': 'normal'}"
+  },
+  {
+   "name": "zh display tracking zero",
+   "ok": true,
+   "observed": "{'title': 'normal', 'tile': 'normal'}"
+  },
+  {
+   "name": "matrix captures 30 pngs",
+   "ok": true,
+   "observed": "30 files"
+  },
+  {
+   "name": "hostile stored goal renders as inert text",
+   "ok": true,
+   "observed": "'<img src=x onerror=\"window.__xssEvil=1\"> 目标<script>window.__xssEvil=2</script>'"
+  },
+  {
+   "name": "huge state_version renders exactly",
+   "ok": true,
+   "observed": "'9007199254740993'"
+  },
+  {
+   "name": "hostile event body renders as inert text",
+   "ok": true,
+   "observed": "'{\"note\": \"<script>window.__xssEvil=2</script>\", \"huge\": 123456789012345678901234567890}'"
+  },
+  {
+   "name": "huge event version renders exactly",
+   "ok": true,
+   "observed": "'序号 1 · 版本 9007199254740993'"
+  },
+  {
+   "name": "hostile evidence data renders as inert text",
+   "ok": true,
+   "observed": "True"
+  },
+  {
+   "name": "no hostile markup executed (window clean)",
+   "ok": true,
+   "observed": "window.__xssEvil=None"
+  },
+  {
+   "name": "empty store settles to 0 works with the empty message",
+   "ok": true,
+   "observed": "{\"items\": 0, \"status\": \"此存储中还没有工作。\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "loading state visible under emulated latency",
+   "ok": true,
+   "observed": "'正在加载工作…'"
+  },
+  {
+   "name": "deleted work shows the gone message with retry",
+   "ok": true,
+   "observed": "poll picked up the external delete"
+  },
+  {
+   "name": "server kill shows the disconnected banner",
+   "ok": true,
+   "observed": "'与本地 UI 服务的连接已断开。页面会持续重试，请检查 ui 进程。'"
+  },
+  {
+   "name": "contrast disconnected banner error text >= 4.50",
+   "ok": true,
+   "observed": "rgb(179, 36, 73) on rgb(249, 232, 236) = 5.45"
+  },
+  {
+   "name": "pause/resume control stays usable while disconnected",
+   "ok": true,
+   "observed": "'暂停轮询' -> '恢复轮询'"
+  },
+  {
+   "name": "demo store six tables identical after all reads/interactions",
+   "ok": true,
+   "observed": "45bf4cfcfed2... -> 45bf4cfcfed2..."
+  },
+  {
+   "name": "empty store six tables identical after all reads/interactions",
+   "ok": true,
+   "observed": "e49d9a31170f... -> e49d9a31170f..."
+  },
+  {
+   "name": "xss store six tables identical after all reads/interactions",
+   "ok": true,
+   "observed": "c4977642492a... -> c4977642492a..."
+  }
+ ],
+ "measurements": {
+  "tab arrow step 0": {
+   "active": "requirements",
+   "connected": true,
+   "selected": "requirements"
+  },
+  "tab arrow step 1": {
+   "active": "evidence",
+   "connected": true,
+   "selected": "evidence"
+  },
+  "tab arrow step 2": {
+   "active": "requirements",
+   "connected": true,
+   "selected": "requirements"
+  },
+  "tab arrow step 3": {
+   "active": "evidence",
+   "connected": true,
+   "selected": "evidence"
+  },
+  "focus outline": {
+   "tab": "operations",
+   "style": "solid",
+   "width": "2px",
+   "color": "rgb(245, 78, 0)",
+   "offset": "2px",
+   "connected": true
+  },
+  "contrast focus outline on white card": {
+   "ratio": 3.5162620296536407
+  },
+  "zh letter-spacing": {
+   "title": "normal",
+   "tile": "normal"
+  },
+  "visual/1440-en": {
+   "tokens": {
+    "--color-canvas": "#f7f7f4",
+    "--color-canvas-soft": "#fafaf7",
+    "--color-surface-card": "#ffffff",
+    "--color-surface-strong": "#e6e5e0",
+    "--color-hairline": "#e6e5e0",
+    "--color-hairline-strong": "#cfcdc4",
+    "--color-ink": "#26251e",
+    "--color-body": "#5a5852",
+    "--color-accent": "#f54e00",
+    "--color-accent-active": "#d04200",
+    "--color-on-ink": "#f7f7f4",
+    "--color-success": "#146c4e",
+    "--color-success-soft": "#e8f2ec",
+    "--color-warn": "#8a5400",
+    "--color-warn-soft": "#faf0df",
+    "--color-error": "#b32449",
+    "--color-error-soft": "#f9e8ec",
+    "--color-neutral-soft": "#eceae4",
+    "--radius-control": "8px",
+    "--radius-card": "12px",
+    "--radius-chip": "9999px",
+    "--space-xxs": "4px",
+    "--space-xs": "8px",
+    "--space-sm": "12px",
+    "--space-base": "16px",
+    "--space-md": "20px",
+    "--space-lg": "24px",
+    "--font-sans": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui,\n               \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\",\n               \"Microsoft YaHei\", \"Noto Sans CJK SC\", sans-serif",
+    "--font-mono": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo,\n               Consolas, monospace",
+    "--content-max": "1200px",
+    "--tracking-display-md": "-0.325px",
+    "--tracking-display-sm": "-0.11px"
+   },
+   "body": {
+    "backgroundColor": "rgb(247, 247, 244)",
+    "color": "rgb(38, 37, 30)",
+    "fontFamily": "-apple-system, \"system-ui\", \"Segoe UI\", system-ui, \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", sans-serif",
+    "fontSize": "15px",
+    "overflowX": "visible"
+   },
+   "htmlOverflowX": "visible",
+   "card": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "12px",
+    "borderTopWidth": "1px",
+    "borderTopColor": "rgb(230, 229, 224)",
+    "boxShadow": "none"
+   },
+   "detailCard": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "12px",
+    "borderTopColor": "rgb(230, 229, 224)",
+    "boxShadow": "none"
+   },
+   "button": {
+    "borderRadius": "8px",
+    "backgroundColor": "rgb(38, 37, 30)",
+    "color": "rgb(247, 247, 244)"
+   },
+   "input": {
+    "borderRadius": "8px"
+   },
+   "chip": {
+    "borderRadius": "9999px",
+    "backgroundColor": "rgb(236, 234, 228)",
+    "color": "rgb(38, 37, 30)"
+   },
+   "tileValue": {
+    "fontSize": "26px",
+    "fontWeight": "400",
+    "letterSpacing": "normal"
+   },
+   "detailTitle": {
+    "fontSize": "22px",
+    "fontWeight": "400",
+    "letterSpacing": "normal",
+    "fontFamily": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+   },
+   "label": {
+    "fontSize": "16px",
+    "fontWeight": "600"
+   },
+   "mono": {
+    "fontFamily": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    "fontSize": "13px"
+   },
+   "raw": null,
+   "tabSelected": {
+    "backgroundColor": "rgb(38, 37, 30)",
+    "color": "rgb(247, 247, 244)"
+   },
+   "workSelected": {
+    "borderTopColor": "rgb(38, 37, 30)",
+    "backgroundColor": "rgb(250, 250, 247)"
+   },
+   "layout": {
+    "gridTemplateColumns": "360px 792px",
+    "maxWidth": "1200px"
+   },
+   "note": {
+    "color": "rgb(90, 88, 82)",
+    "backgroundColor": "rgb(236, 234, 228)"
+   },
+   "tileDesc": {
+    "color": "rgb(90, 88, 82)"
+   },
+   "fieldsDt": {
+    "color": "rgb(90, 88, 82)"
+   },
+   "tableTh": {
+    "color": "rgb(90, 88, 82)",
+    "backgroundColor": "rgb(236, 234, 228)"
+   },
+   "geometry": {
+    "refresh": {
+     "height": 44,
+     "width": 62
+    },
+    "langToggle": {
+     "height": 44,
+     "width": 52
+    },
+    "search": {
+     "height": 44,
+     "width": 181
+    },
+    "statusFilter": {
+     "height": 44,
+     "width": 171
+    },
+    "tab": {
+     "height": 44,
+     "width": 58
+    },
+    "workItem": {
+     "height": 60,
+     "width": 356
+    },
+    "summary": null
+   },
+   "fonts": {
+    "jetbrains": true,
+    "pingfang": true
+   },
+   "page": {
+    "scrollWidth": 1440,
+    "clientWidth": 1440
+   }
+  },
+  "1440-en summary target absent on this tab": null,
+  "contrast tile description on white card": {
+   "fg": "rgb(90, 88, 82)",
+   "bg": "rgba(0, 0, 0, 0)",
+   "ratio": 7.112711555021926
+  },
+  "contrast note text on neutral surface": {
+   "fg": "rgb(90, 88, 82)",
+   "bg": "rgb(236, 234, 228)",
+   "ratio": 5.912352778521385
+  },
+  "contrast field label on white card": {
+   "fg": "rgb(90, 88, 82)",
+   "bg": "rgba(0, 0, 0, 0)",
+   "ratio": 7.112711555021926
+  },
+  "contrast waiting warn chip": {
+   "fg": "rgb(138, 84, 0)",
+   "bg": "rgb(250, 240, 223)",
+   "ratio": 5.552575331194186
+  },
+  "contrast table header on neutral surface": {
+   "fg": "rgb(90, 88, 82)",
+   "bg": "rgb(236, 234, 228)",
+   "ratio": 5.912352778521385
+  },
+  "contrast needs_attention error chip": {
+   "fg": "rgb(179, 36, 73)",
+   "bg": "rgb(249, 232, 236)",
+   "ratio": 5.445692851854061
+  },
+  "contrast succeeded success chip": {
+   "fg": "rgb(20, 108, 78)",
+   "bg": "rgb(232, 242, 236)",
+   "ratio": 5.584311101316154
+  },
+  "contrast selected tab text on ink": {
+   "fg": "rgb(247, 247, 244)",
+   "bg": "rgb(38, 37, 30)",
+   "ratio": 14.325401476463416
+  },
+  "contrast primary control text on ink": {
+   "fg": "rgb(247, 247, 244)",
+   "bg": "rgb(38, 37, 30)",
+   "ratio": 14.325401476463416
+  },
+  "contrast selected work item text": {
+   "fg": "rgb(38, 37, 30)",
+   "bg": "rgb(250, 250, 247)",
+   "ratio": 14.703683925687073
+  },
+  "contrast body text on canvas": {
+   "fg": "rgb(38, 37, 30)",
+   "bg": "rgb(247, 247, 244)",
+   "ratio": 14.325401476463416
+  },
+  "contrast rejected decision chip": {
+   "fg": "rgb(179, 36, 73)",
+   "bg": "rgb(249, 232, 236)",
+   "ratio": 5.445692851854061
+  },
+  "contrast base chip (unknown/extra classes neutral)": {
+   "fg": "rgb(38, 37, 30)",
+   "bg": "rgb(236, 234, 228)",
+   "ratio": 12.7808872307641
+  },
+  "contrast cancellation banner error text": {
+   "fg": "rgb(179, 36, 73)",
+   "bg": "rgb(249, 232, 236)",
+   "ratio": 5.445692851854061
+  },
+  "raw disclosure summary target": {
+   "height": 44
+  },
+  "visual/390-en": {
+   "tokens": {
+    "--color-canvas": "#f7f7f4",
+    "--color-canvas-soft": "#fafaf7",
+    "--color-surface-card": "#ffffff",
+    "--color-surface-strong": "#e6e5e0",
+    "--color-hairline": "#e6e5e0",
+    "--color-hairline-strong": "#cfcdc4",
+    "--color-ink": "#26251e",
+    "--color-body": "#5a5852",
+    "--color-accent": "#f54e00",
+    "--color-accent-active": "#d04200",
+    "--color-on-ink": "#f7f7f4",
+    "--color-success": "#146c4e",
+    "--color-success-soft": "#e8f2ec",
+    "--color-warn": "#8a5400",
+    "--color-warn-soft": "#faf0df",
+    "--color-error": "#b32449",
+    "--color-error-soft": "#f9e8ec",
+    "--color-neutral-soft": "#eceae4",
+    "--radius-control": "8px",
+    "--radius-card": "12px",
+    "--radius-chip": "9999px",
+    "--space-xxs": "4px",
+    "--space-xs": "8px",
+    "--space-sm": "12px",
+    "--space-base": "16px",
+    "--space-md": "20px",
+    "--space-lg": "24px",
+    "--font-sans": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui,\n               \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\",\n               \"Microsoft YaHei\", \"Noto Sans CJK SC\", sans-serif",
+    "--font-mono": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo,\n               Consolas, monospace",
+    "--content-max": "1200px",
+    "--tracking-display-md": "-0.325px",
+    "--tracking-display-sm": "-0.11px"
+   },
+   "body": {
+    "backgroundColor": "rgb(247, 247, 244)",
+    "color": "rgb(38, 37, 30)",
+    "fontFamily": "-apple-system, \"system-ui\", \"Segoe UI\", system-ui, \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", sans-serif",
+    "fontSize": "15px",
+    "overflowX": "visible"
+   },
+   "htmlOverflowX": "visible",
+   "card": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "12px",
+    "borderTopWidth": "1px",
+    "borderTopColor": "rgb(230, 229, 224)",
+    "boxShadow": "none"
+   },
+   "detailCard": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "12px",
+    "borderTopColor": "rgb(230, 229, 224)",
+    "boxShadow": "none"
+   },
+   "button": {
+    "borderRadius": "8px",
+    "backgroundColor": "rgb(38, 37, 30)",
+    "color": "rgb(247, 247, 244)"
+   },
+   "input": {
+    "borderRadius": "8px"
+   },
+   "chip": {
+    "borderRadius": "9999px",
+    "backgroundColor": "rgb(236, 234, 228)",
+    "color": "rgb(38, 37, 30)"
+   },
+   "tileValue": {
+    "fontSize": "26px",
+    "fontWeight": "400",
+    "letterSpacing": "normal"
+   },
+   "detailTitle": {
+    "fontSize": "22px",
+    "fontWeight": "400",
+    "letterSpacing": "normal",
+    "fontFamily": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+   },
+   "label": {
+    "fontSize": "16px",
+    "fontWeight": "600"
+   },
+   "mono": {
+    "fontFamily": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    "fontSize": "13px"
+   },
+   "raw": null,
+   "tabSelected": {
+    "backgroundColor": "rgb(38, 37, 30)",
+    "color": "rgb(247, 247, 244)"
+   },
+   "workSelected": {
+    "borderTopColor": "rgb(38, 37, 30)",
+    "backgroundColor": "rgb(250, 250, 247)"
+   },
+   "layout": {
+    "gridTemplateColumns": "366px",
+    "maxWidth": "1200px"
+   },
+   "note": {
+    "color": "rgb(90, 88, 82)",
+    "backgroundColor": "rgb(236, 234, 228)"
+   },
+   "tileDesc": {
+    "color": "rgb(90, 88, 82)"
+   },
+   "fieldsDt": {
+    "color": "rgb(90, 88, 82)"
+   },
+   "tableTh": {
+    "color": "rgb(90, 88, 82)",
+    "backgroundColor": "rgb(236, 234, 228)"
+   },
+   "geometry": {
+    "refresh": {
+     "height": 44,
+     "width": 62
+    },
+    "langToggle": {
+     "height": 44,
+     "width": 52
+    },
+    "search": {
+     "height": 44,
+     "width": 366
+    },
+    "statusFilter": {
+     "height": 44,
+     "width": 366
+    },
+    "tab": {
+     "height": 44,
+     "width": 58
+    },
+    "workItem": {
+     "height": 60,
+     "width": 362
+    },
+    "summary": null
+   },
+   "fonts": {
+    "jetbrains": true,
+    "pingfang": true
+   },
+   "page": {
+    "scrollWidth": 390,
+    "clientWidth": 390
+   }
+  },
+  "390-en summary target absent on this tab": null,
+  "visual/320-en": {
+   "tokens": {
+    "--color-canvas": "#f7f7f4",
+    "--color-canvas-soft": "#fafaf7",
+    "--color-surface-card": "#ffffff",
+    "--color-surface-strong": "#e6e5e0",
+    "--color-hairline": "#e6e5e0",
+    "--color-hairline-strong": "#cfcdc4",
+    "--color-ink": "#26251e",
+    "--color-body": "#5a5852",
+    "--color-accent": "#f54e00",
+    "--color-accent-active": "#d04200",
+    "--color-on-ink": "#f7f7f4",
+    "--color-success": "#146c4e",
+    "--color-success-soft": "#e8f2ec",
+    "--color-warn": "#8a5400",
+    "--color-warn-soft": "#faf0df",
+    "--color-error": "#b32449",
+    "--color-error-soft": "#f9e8ec",
+    "--color-neutral-soft": "#eceae4",
+    "--radius-control": "8px",
+    "--radius-card": "12px",
+    "--radius-chip": "9999px",
+    "--space-xxs": "4px",
+    "--space-xs": "8px",
+    "--space-sm": "12px",
+    "--space-base": "16px",
+    "--space-md": "20px",
+    "--space-lg": "24px",
+    "--font-sans": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui,\n               \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\",\n               \"Microsoft YaHei\", \"Noto Sans CJK SC\", sans-serif",
+    "--font-mono": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo,\n               Consolas, monospace",
+    "--content-max": "1200px",
+    "--tracking-display-md": "-0.325px",
+    "--tracking-display-sm": "-0.11px"
+   },
+   "body": {
+    "backgroundColor": "rgb(247, 247, 244)",
+    "color": "rgb(38, 37, 30)",
+    "fontFamily": "-apple-system, \"system-ui\", \"Segoe UI\", system-ui, \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", sans-serif",
+    "fontSize": "15px",
+    "overflowX": "visible"
+   },
+   "htmlOverflowX": "visible",
+   "card": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "12px",
+    "borderTopWidth": "1px",
+    "borderTopColor": "rgb(230, 229, 224)",
+    "boxShadow": "none"
+   },
+   "detailCard": {
+    "backgroundColor": "rgb(255, 255, 255)",
+    "borderRadius": "12px",
+    "borderTopColor": "rgb(230, 229, 224)",
+    "boxShadow": "none"
+   },
+   "button": {
+    "borderRadius": "8px",
+    "backgroundColor": "rgb(38, 37, 30)",
+    "color": "rgb(247, 247, 244)"
+   },
+   "input": {
+    "borderRadius": "8px"
+   },
+   "chip": {
+    "borderRadius": "9999px",
+    "backgroundColor": "rgb(236, 234, 228)",
+    "color": "rgb(38, 37, 30)"
+   },
+   "tileValue": {
+    "fontSize": "26px",
+    "fontWeight": "400",
+    "letterSpacing": "normal"
+   },
+   "detailTitle": {
+    "fontSize": "22px",
+    "fontWeight": "400",
+    "letterSpacing": "normal",
+    "fontFamily": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+   },
+   "label": {
+    "fontSize": "16px",
+    "fontWeight": "600"
+   },
+   "mono": {
+    "fontFamily": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    "fontSize": "13px"
+   },
+   "raw": null,
+   "tabSelected": {
+    "backgroundColor": "rgb(38, 37, 30)",
+    "color": "rgb(247, 247, 244)"
+   },
+   "workSelected": {
+    "borderTopColor": "rgb(38, 37, 30)",
+    "backgroundColor": "rgb(250, 250, 247)"
+   },
+   "layout": {
+    "gridTemplateColumns": "296px",
+    "maxWidth": "1200px"
+   },
+   "note": {
+    "color": "rgb(90, 88, 82)",
+    "backgroundColor": "rgb(236, 234, 228)"
+   },
+   "tileDesc": {
+    "color": "rgb(90, 88, 82)"
+   },
+   "fieldsDt": {
+    "color": "rgb(90, 88, 82)"
+   },
+   "tableTh": {
+    "color": "rgb(90, 88, 82)",
+    "backgroundColor": "rgb(236, 234, 228)"
+   },
+   "geometry": {
+    "refresh": {
+     "height": 44,
+     "width": 62
+    },
+    "langToggle": {
+     "height": 44,
+     "width": 52
+    },
+    "search": {
+     "height": 44,
+     "width": 296
+    },
+    "statusFilter": {
+     "height": 44,
+     "width": 296
+    },
+    "tab": {
+     "height": 44,
+     "width": 58
+    },
+    "workItem": {
+     "height": 57,
+     "width": 292
+    },
+    "summary": null
+   },
+   "fonts": {
+    "jetbrains": true,
+    "pingfang": true
+   },
+   "page": {
+    "scrollWidth": 320,
+    "clientWidth": 320
+   }
+  },
+  "320-en summary target absent on this tab": null,
+  "contrast disconnected banner error text": {
+   "fg": "rgb(179, 36, 73)",
+   "bg": "rgb(249, 232, 236)",
+   "ratio": 5.445692851854061
+  }
+ }
+}

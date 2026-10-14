@@ -1,0 +1,22 @@
+PASS demo store settles with 5 works — {"items": 5, "status": "共 5 项工作中的 5 项", "lang": "zh"}
+PASS wait-1 selected (overview visible) — True
+MEAS contrast P0 waiting warn chip (present-element control) — {'fg': 'rgb(138, 84, 0)', 'bg': 'rgb(250, 240, 223)', 'ratio': 5.552575331194186}
+PASS contrast P0 waiting warn chip (present-element control) >= 4.50 — rgb(138, 84, 0) on rgb(250, 240, 223) = 5.55
+PASS P0 present element appends exactly one passing check — results=[True] checks=['contrast P0 waiting warn chip (present-element control) >= 4.50']
+PASS P0 check is the required contrast check — [{"name": "contrast P0 waiting warn chip (present-element control) >= 4.50", "ok": true, "observed": "rgb(138, 84, 0) on rgb(250, 240, 223) = 5.55"}]
+PASS P0 measurement is a real ratio >= 4.5 — {"fg": "rgb(138, 84, 0)", "bg": "rgb(250, 240, 223)", "ratio": 5.552575331194186}
+PASS P2 events tab opens — True
+MEAS P2 .chip-st-evt present immediately after open_tab — False
+PASS P2 event chip present after waiting for async render — True
+MEAS contrast P2 events neutral chip — {'fg': 'rgb(38, 37, 30)', 'bg': 'rgb(236, 234, 228)', 'ratio': 12.7808872307641}
+PASS contrast P2 events neutral chip >= 4.50 — rgb(38, 37, 30) on rgb(236, 234, 228) = 12.78
+PASS P2 neutral chip appends exactly one passing check — results=[True] checks=['contrast P2 events neutral chip >= 4.50']
+PASS P2 measurement is a real ratio >= 4.5 — {"fg": "rgb(38, 37, 30)", "bg": "rgb(236, 234, 228)", "ratio": 12.7808872307641}
+MEAS contrast P1 negative control (selector absent by design) — element missing
+FAIL P1 missing selector appends exactly one failing check — results=[] checks=[]
+FAIL P1 failing check is the required contrast check — []
+PASS P1 measurement recorded as element missing — 'element missing'
+MEAS contrast P1b negative control before phase (selector absent) — element missing
+FAIL P1b missing selector fails loudly in before phase too — results=[] checks=[]
+PASS P1b measurement recorded as element missing — 'element missing'
+s7 f1 regression: 14 assertions, 3 failed; evidence: /tmp/s7-f1-red
