@@ -359,7 +359,7 @@ def run_static(devtools, url, label, expect_crosslink):
             ".every(function(s){return !!(s.offsetWidth||s.offsetHeight);})")
         check("%s all top sections visible" % label, visible, visible)
         cross = page.evaluate(
-            "!!document.querySelector('a[href=%r]')" % expect_crosslink)
+            '!!document.querySelector("a[href=%r]")' % expect_crosslink)
         check("%s language crosslink %r present" % (label, expect_crosslink),
               cross, cross)
         no_alt = page.evaluate(
