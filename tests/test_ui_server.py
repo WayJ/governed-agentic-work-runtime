@@ -1,10 +1,15 @@
 """Tests for work_runtime.ui_server — the loopback read-only HTTP boundary."""
 
 import http.client
+import io
 import json
+import socket
+import sqlite3
+import sys
 import threading
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 from work_runtime.demo import demo_grants, initialize, send
 from work_runtime.inspection import GuiReaderError
@@ -44,6 +49,25 @@ class UiServerFixture(unittest.TestCase):
         body = response.read()
         connection.close()
         return response, body
+
+    def raw_request(self, method, target, header_lines, version="HTTP/1.1"):
+        """Hand-built request for cases http.client cannot express."""
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        try:
+            lines = ["%s %s %s" % (method, target, version),
+                     "Connection: close"] + list(header_lines)
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("utf-8"))
+            data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            sock.close()
+        head, _, body = data.partition(b"\r\n\r\n")
+        status_line = head.split(b"\r\n")[0].decode("latin-1")
+        return int(status_line.split()[1]), head.decode("latin-1"), body
 
     def error_code(self, body):
         return json.loads(body)["error"]["code"]
@@ -203,6 +227,149 @@ class ServerCoreTests(UiServerFixture):
         server.server_close()
         thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
+
+
+class BoundaryTests(UiServerFixture):
+    def correct_host(self):
+        return "Host: 127.0.0.1:%d" % self.port
+
+    def test_host_accepts_loopback_authority_with_actual_port(self):
+        for host in ("127.0.0.1:%d" % self.port, "localhost:%d" % self.port,
+                     "LOCALHOST:%d" % self.port):
+            with self.subTest(host=host):
+                status, _, body = self.raw_request(
+                    "GET", "/api/summary", ["Host: " + host])
+                self.assertEqual(status, 200)
+                self.assertIn(b"works", body)
+
+    def test_host_rejected(self):
+        cases = (
+            ["Host: evil.com"],
+            ["Host: evil.com:%d" % self.port],
+            ["Host: 127.0.0.1:9"],
+            ["Host: 127.0.0.1"],
+            ["Host: localhost"],
+            ["Host: [::1]:%d" % self.port],
+            ["Host: 127.0.0.1:%d" % self.port, "Host: localhost:%d" % self.port],
+        )
+        for headers in cases:
+            with self.subTest(headers=headers):
+                status, _, body = self.raw_request("GET", "/api/summary", headers)
+                self.assertEqual(status, 403, headers)
+                self.assertEqual(self.error_code(body), "BAD_HOST")
+
+    def test_missing_host_rejected(self):
+        # Both HTTP versions reach the boundary check itself: no Host at
+        # all is a 403 BAD_HOST, not a silent default.
+        for version in ("HTTP/1.0", "HTTP/1.1"):
+            with self.subTest(version=version):
+                status, _, body = self.raw_request(
+                    "GET", "/api/summary", [], version=version)
+                self.assertEqual(status, 403)
+                self.assertEqual(self.error_code(body), "BAD_HOST")
+
+    def test_origin_accepted_when_matching(self):
+        for origin in ("http://127.0.0.1:%d" % self.port,
+                       "http://localhost:%d" % self.port):
+            with self.subTest(origin=origin):
+                status, _, body = self.raw_request(
+                    "GET", "/api/summary", [self.correct_host(), "Origin: " + origin])
+                self.assertEqual(status, 200)
+
+    def test_origin_rejected(self):
+        cases = (
+            "https://127.0.0.1:%d" % self.port,
+            "http://evil.com",
+            "http://evil.com:%d" % self.port,
+            "http://127.0.0.1:9",
+            "null",
+            "http://127.0.0.1:%d/" % self.port,
+            "http://user@127.0.0.1:%d" % self.port,
+            "",
+        )
+        for origin in cases:
+            with self.subTest(origin=origin):
+                status, _, body = self.raw_request(
+                    "GET", "/api/summary", [self.correct_host(), "Origin: " + origin])
+                self.assertEqual(status, 403, origin)
+                self.assertEqual(self.error_code(body), "BAD_ORIGIN")
+
+    def test_duplicate_origin_rejected(self):
+        status, _, body = self.raw_request("GET", "/api/summary", [
+            self.correct_host(),
+            "Origin: http://127.0.0.1:%d" % self.port,
+            "Origin: http://evil.com"])
+        self.assertEqual(status, 403)
+        self.assertEqual(self.error_code(body), "BAD_ORIGIN")
+
+    def test_absolute_form_target_rejected(self):
+        status, _, body = self.raw_request(
+            "GET", "http://127.0.0.1:%d/api/summary" % self.port, [self.correct_host()])
+        self.assertEqual(status, 404)
+        self.assertEqual(self.error_code(body), "UNKNOWN_ROUTE")
+        status, _, body = self.raw_request(
+            "GET", "http://evil.com/api/summary", [self.correct_host()])
+        self.assertEqual(status, 404)
+
+    def test_traversal_targets_rejected(self):
+        for target in ("/%2e%2e/", "/..%2fapp.js",
+                       "/app.js/../../etc/passwd", "//127.0.0.1/api/summary"):
+            with self.subTest(target=target):
+                status, _, body = self.raw_request(
+                    "GET", target, [self.correct_host()])
+                self.assertEqual(status, 404, target)
+                self.assertEqual(self.error_code(body), "UNKNOWN_ROUTE")
+
+    def test_error_bodies_have_no_paths(self):
+        hostile = quote("../../etc/passwd\x00", safe="")
+        for target in ("/api/work?id=" + hostile, "/%2e%2e/etc/passwd",
+                       "/api/events?work_id=" + hostile):
+            with self.subTest(target=target):
+                _, _, body = self.raw_request("GET", target, [self.correct_host()])
+                text = body.decode("utf-8", "replace")
+                self.assertNotIn("/Users/", text)
+                self.assertNotIn(str(self.dir), text)
+                self.assertNotIn("work_runtime", text)
+                json.loads(body)  # still the bounded JSON envelope
+
+    def test_access_log_never_echoes_raw_url(self):
+        stream = io.StringIO()
+        stderr, sys.stderr = sys.stderr, stream
+        try:
+            self.raw_request("GET", "/api/works?limit=1&limit=2&mark=\x01secret",
+                             [self.correct_host()])
+            self.raw_request("GET", "/%2e%2e/etc/passwd", [self.correct_host()])
+        finally:
+            sys.stderr = stderr
+        logged = stream.getvalue()
+        self.assertNotIn("secret", logged)
+        self.assertNotIn("passwd", logged)
+        self.assertNotIn("limit", logged)
+        self.assertNotIn("\x01", logged)
+
+    def test_db_busy_maps_503(self):
+        writer = sqlite3.connect(self.path)
+        writer.execute("PRAGMA journal_mode=DELETE")
+        writer.execute("BEGIN EXCLUSIVE")
+        try:
+            response, body = self.request("GET", "/api/summary")
+            self.assertEqual(response.status, 503)
+            self.assertEqual(self.error_code(body), "DB_BUSY")
+        finally:
+            writer.rollback()
+            writer.close()
+        response, _ = self.request("GET", "/api/summary")
+        self.assertEqual(response.status, 200)
+
+    def test_invalid_store_maps_500(self):
+        db = sqlite3.connect(self.path)
+        db.execute("UPDATE works SET state='{\"broken'")
+        db.commit()
+        db.close()
+        response, body = self.request("GET", "/api/works")
+        self.assertEqual(response.status, 500)
+        self.assertEqual(self.error_code(body), "INVALID_STORE")
+        self.assertNotIn(str(self.dir), body.decode("utf-8"))
 
 
 if __name__ == "__main__":

@@ -45,6 +45,26 @@ def _json_bytes(payload) -> bytes:
                       ensure_ascii=False).encode("utf-8")
 
 
+_LOCAL_HOSTS = ("127.0.0.1", "localhost")
+
+
+def _split_authority(authority):
+    """Split 'host[:port]'; absent port means the HTTP default 80.
+
+    Returns (host, port) lowercased, or (None, None) for anything this
+    local tool does not recognize (IPv6 literals, malformed ports).
+    """
+    authority = authority.strip().lower()
+    if not authority or authority.startswith("["):
+        return None, None
+    if ":" in authority:
+        host, _, port_text = authority.rpartition(":")
+        if not host or not port_text.isdigit():
+            return None, None
+        return host, int(port_text, 10)
+    return authority, 80
+
+
 class _UiHandler(BaseHTTPRequestHandler):
     """Whitelist dispatch; every response bounded and leak-free."""
 
@@ -129,6 +149,8 @@ class _UiHandler(BaseHTTPRequestHandler):
             return self._fail("UNKNOWN_ROUTE", 404)
         path, _, query = target.partition("?")
         try:
+            self._check_host()
+            self._check_origin()
             if path in _STATIC_ROUTES:
                 if query:
                     raise GuiReaderError("BAD_QUERY",
@@ -165,6 +187,34 @@ class _UiHandler(BaseHTTPRequestHandler):
             self._fail("INTERNAL", 500)
 
     # -- helpers ----------------------------------------------------------
+
+    def _check_host(self):
+        """Exactly one Host, a loopback authority naming the actual port."""
+        values = self.headers.get_all("Host")
+        if values is None or len(values) != 1:
+            raise GuiReaderError("BAD_HOST", "exactly one Host header is required")
+        host, port = _split_authority(values[0])
+        actual = self.server.server_address[1]
+        if host not in _LOCAL_HOSTS or port != actual:
+            raise GuiReaderError("BAD_HOST", "Host must name this local server")
+
+    def _check_origin(self):
+        """Origin is optional, but when present it must be this origin."""
+        values = self.headers.get_all("Origin")
+        if not values:
+            return
+        if len(values) != 1:
+            raise GuiReaderError("BAD_ORIGIN", "at most one Origin header is allowed")
+        origin = values[0].strip()
+        if not origin.lower().startswith("http://"):
+            raise GuiReaderError("BAD_ORIGIN", "Origin must be this local origin")
+        authority = origin[len("http://"):]
+        if any(character in authority for character in "/@?#"):
+            raise GuiReaderError("BAD_ORIGIN", "Origin must be this local origin")
+        host, port = _split_authority(authority)
+        actual = self.server.server_address[1]
+        if host not in _LOCAL_HOSTS or port != actual:
+            raise GuiReaderError("BAD_ORIGIN", "Origin must be this local origin")
 
     @staticmethod
     def _parse_query(query, allowed, required=()):
