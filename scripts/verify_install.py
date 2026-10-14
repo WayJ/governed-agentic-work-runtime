@@ -43,6 +43,20 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     demo's printed inspect command verbatim.
 12. Run the `work-runtime adoption-demo` console entry point outside the
     checkout and apply the same independent enumeration/parse checks.
+13. Assert the packaged GUI web assets ship inside the (non-editable)
+    install — `work_runtime/web/{index.html,app.js,app.css}` resolve inside
+    the venv — so the read-only viewer is never served from this checkout.
+14. Installed UI (module AND console): when the read-only backend
+    (`work_runtime.ui_server`) is present in the install, start `ui-demo` as
+    a real subprocess outside the checkout, read the printed URL, fetch
+    HTML/JS/CSS/summary/works/work/events over real HTTP (five seeded works),
+    hash every runtime table before/after the HTTP reads (read-only
+    equality), then interrupt the process (SIGINT) and require a clean exit;
+    also run the `ui --db` console command once on the seeded store through
+    URL + summary + clean interrupt. When the backend is not assembled in
+    this build the stage prints an explicit SKIPPED line and the final
+    summary discloses the skip — it never reports UI coverage it did not
+    actually run.
 
 Usage: python3 scripts/verify_install.py [--python INTERP] [--repo PATH] [--keep]
 """
@@ -54,11 +68,13 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -66,6 +82,7 @@ DEMO_FINAL_LINE = "external applications created: 1"
 PUBLISH_FINAL_LINE = "published artifacts: 1"
 INTERVENTION_FINAL_LINE = "accepted applications: 3 (one per store)"
 ADOPTION_FINAL_LINE = "committed file artifacts: 1"
+UI_WORK_IDS = {"wait-1", "uncertain-1", "transfer-1", "succeed-1", "cancel-1"}
 PINNED_PUBLISHING_DIGEST = ("56c85d32da9a9eee6330326e2d14ce0661dbc26d"
                             "782b13d0259c3f149e6be000")
 INSPECT_DB = re.compile(r'--db "([^"]+)"')
@@ -76,11 +93,17 @@ HASH_NAMED = re.compile(r"^[0-9a-f]{64}\.json$")
 ALLOWED_PACKAGES = {"pip", "setuptools", "wheel", "pkg-resources", "governed-work-runtime"}
 
 
-def run(command, cwd, show=False):
-    """Run a command; on failure print everything and abort the script."""
+def clean_env():
+    """Child environment that cannot accidentally import from this checkout."""
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    return env
+
+
+def run(command, cwd, show=False):
+    """Run a command; on failure print everything and abort the script."""
+    env = clean_env()
     words = [str(part) for part in command]
     result = subprocess.run(words, cwd=str(cwd), capture_output=True, text=True, env=env)
     if result.returncode != 0:
@@ -266,6 +289,185 @@ def run_printed_inspect_command(stdout, venv_python, outside, source):
             "%s installed inspect did not report the succeeded work" % source)
 
 
+def http_get(url, timeout=10):
+    """One real HTTP GET with the standard library; returns (status, headers, body)."""
+    request = urllib.request.Request(url, headers={"Accept": "*/*"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.status, response.headers, response.read()
+
+
+def http_json(url, source):
+    status, headers, body = http_get(url)
+    require(status == 200, "%s: HTTP %s for %s" % (source, status, url))
+    require("application/json" in (headers.get("Content-Type") or ""),
+            "%s: %s served %r (expected application/json)"
+            % (source, url, headers.get("Content-Type")))
+    return json.loads(body.decode("utf-8"))
+
+
+def snapshot_tables(db_path):
+    """Full row snapshot of every table, for read-only equality proofs."""
+    db = sqlite3.connect(str(db_path))
+    try:
+        tables = [row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+        return {name: db.execute('SELECT * FROM "%s"' % name).fetchall()
+                for name in tables}
+    finally:
+        db.close()
+
+
+def start_ui_subprocess(command, outside, source):
+    """Start a ui/ui-demo command; block until it prints its loopback URL."""
+    proc = subprocess.Popen([str(part) for part in command], cwd=str(outside),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=clean_env())
+    for _ in range(400):
+        line = proc.stdout.readline()
+        if not line:
+            proc.wait(timeout=10)
+            raise SystemExit("FAILED: %s exited before printing a URL: %s"
+                             % (source, proc.stderr.read()[-800:]))
+        line = line.strip()
+        if line.startswith("http://127.0.0.1:"):
+            return proc, line
+    stop_ui_cleanly(proc, source)
+    raise SystemExit("FAILED: %s printed no loopback URL line" % source)
+
+
+def stop_ui_cleanly(proc, source):
+    """Interrupt the server process and require a prompt, clean exit."""
+    proc.send_signal(signal.SIGINT if os.name != "nt" else signal.SIGTERM)
+    try:
+        code = proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+        raise SystemExit("FAILED: %s did not exit after the interrupt" % source)
+    if os.name != "nt":
+        require(code == 0,
+                "%s exited %s after the interrupt (expected a clean exit 0)"
+                % (source, code))
+
+
+def require_ui_over_http(base_url, package_dir, db_path, source):
+    """Real-HTTP proof over one running UI server; returns the seeded db path.
+
+    Fetches the HTML/JS/CSS and requires byte equality with the packaged
+    assets, reads the four API endpoints and requires the five seeded works
+    with their pinned states, and proves the store byte-identical before and
+    after every read (read-only viewer).
+    """
+    before = snapshot_tables(db_path)
+    status, headers, html = http_get(base_url)
+    require(status == 200, "%s: HTTP %s for %s" % (source, status, base_url))
+    require("text/html" in (headers.get("Content-Type") or ""),
+            "%s: index served %r" % (source, headers.get("Content-Type")))
+    require(html == (package_dir / "web" / "index.html").read_bytes(),
+            "%s: served index.html differs from the packaged asset" % source)
+    for name, kind in (("app.js", "javascript"), ("app.css", "css")):
+        asset_headers = http_get(base_url + name)[1]
+        require(kind in (asset_headers.get("Content-Type") or ""),
+                "%s: %s served %r" % (source, name, asset_headers.get("Content-Type")))
+        require(http_get(base_url + name)[2]
+                == (package_dir / "web" / name).read_bytes(),
+                "%s: served %s differs from the packaged asset" % (source, name))
+    summary = http_json(base_url + "api/summary", source)
+    require(summary.get("counts", {}).get("works") == 5,
+            "%s: summary counts.works is %r (expected 5)"
+            % (source, summary.get("counts", {}).get("works")))
+    require(isinstance(summary.get("source"), str) and summary.get("source"),
+            "%s: summary source is not a nonempty string" % source)
+    works = http_json(base_url + "api/works?limit=200&offset=0", source)
+    require({work["id"] for work in works.get("works", [])} == UI_WORK_IDS,
+            "%s: /api/works ids are %s" % (source, sorted(
+                work["id"] for work in works.get("works", []))))
+    detail = http_json(base_url + "api/work?id=cancel-1", source)
+    work = detail.get("work", {})
+    require((work.get("status"), work.get("outcome")) == ("closed", "cancelled"),
+            "%s: cancel-1 is %s/%s" % (source, work.get("status"), work.get("outcome")))
+    operations = detail.get("operations", [])
+    require(any(operation.get("status") == "confirmed_succeeded"
+                and operation.get("external_id")
+                for operation in operations),
+            "%s: cancel-1 shows no confirmed external effect" % source)
+    events = http_json(base_url + "api/events?work_id=uncertain-1&after=0&limit=10",
+                       source)
+    seqs = [int(event["seq"]) for event in events.get("events", [])]
+    require(seqs == sorted(seqs) and seqs,
+            "%s: uncertain-1 events are not ascending seq" % source)
+    after = snapshot_tables(db_path)
+    require(after == before,
+            "%s: the UI changed the store while serving (tables differ)" % source)
+    print("%s: HTML/JS/CSS byte-equal to the packaged assets; summary/works/"
+          "work/events correct; store tables unchanged" % source)
+
+
+def run_ui_stages(venv_python, console, outside, workspace, package_dir):
+    """Stage 14: installed module AND console UI over real HTTP, or a loud skip.
+
+    The read-only backend (work_runtime.ui_server) is assembled by a separate
+    owner; when it is absent from this build the stage prints an explicit
+    SKIPPED line and returns the skip reason for the final summary. It never
+    reports UI coverage it did not actually run.
+    """
+    probe = subprocess.run([str(venv_python), "-c", "import work_runtime.ui_server"],
+                           cwd=str(outside), capture_output=True, text=True,
+                           env=clean_env())
+    if probe.returncode != 0:
+        print("SKIPPED: read-only UI backend (work_runtime.ui_server) is not "
+              "present in this build; installed UI HTTP verification runs once "
+              "the backend is assembled.")
+        return "installed-UI HTTP (backend not assembled)"
+    module_dir = workspace / "ui-module"
+    console_dir = workspace / "ui-console"
+    module_dir.mkdir()
+    console_dir.mkdir()
+    proc, url = start_ui_subprocess(
+        [venv_python, "-m", "work_runtime", "ui-demo", "--directory", module_dir],
+        outside, "module ui-demo")
+    try:
+        require_ui_over_http(url, package_dir, module_store(module_dir), "module ui-demo")
+        stop_ui_cleanly(proc, "module ui-demo")
+    except BaseException:
+        proc.kill()
+        raise
+    console_proc, console_url = start_ui_subprocess(
+        [console, "ui-demo", "--directory", console_dir], outside, "console ui-demo")
+    try:
+        require_ui_over_http(console_url, package_dir,
+                             module_store(console_dir), "console ui-demo")
+        stop_ui_cleanly(console_proc, "console ui-demo")
+    except BaseException:
+        console_proc.kill()
+        raise
+    ui_proc, ui_url = start_ui_subprocess(
+        [console, "ui", "--db", module_store(module_dir)], outside, "console ui")
+    try:
+        summary = http_json(ui_url + "api/summary", "console ui")
+        require(summary.get("counts", {}).get("works") == 5,
+                "console ui: summary counts.works is %r (expected 5)"
+                % summary.get("counts", {}).get("works"))
+        stop_ui_cleanly(ui_proc, "console ui")
+    except BaseException:
+        ui_proc.kill()
+        raise
+    print("independent check: module and console UI served real HTTP with the "
+          "five seeded works and shut down cleanly on interrupt")
+    return None
+
+
+def module_store(seed_directory):
+    """The runtime.sqlite inside a ui-demo seed folder (exactly one folder)."""
+    folders = [path for path in Path(seed_directory).iterdir() if path.is_dir()]
+    require(len(folders) == 1,
+            "ui-demo seed directory %s holds %d folders (expected exactly 1)"
+            % (seed_directory, len(folders)))
+    store = folders[0] / "runtime.sqlite"
+    require(store.is_file(), "no runtime.sqlite under %s" % folders[0])
+    return store
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Fresh-venv install and outside-checkout verification.")
     parser.add_argument("--python", default=sys.executable, help="interpreter used to create the venv")
@@ -405,13 +607,24 @@ def main(argv=None):
         run_printed_inspect_command(console_adoption.stdout, venv_python, outside,
                                     "console adoption-demo")
 
+        print("=== packaged web assets ship with the install ===")
+        for name in ("index.html", "app.js", "app.css"):
+            require((package_dir / "web" / name).is_file(),
+                    "the install ships no packaged web asset %s" % name)
+        print("web assets: index.html, app.js, app.css")
+
+        print("=== installed UI (module and console) over real HTTP ===")
+        ui_skip = run_ui_stages(venv_python, console, outside, workspace, package_dir)
+
         print("=== PASS ===")
         print("fresh venv install; import origin inside the venv; no third-party runtime "
               "dependencies; module and console demos outside the checkout with exactly "
               "one external application, one published artifact, one accepted "
               "application per intervention store and one independently parsed "
-              "committed file artifact per adoption entry point (%.1fs)"
-              % (time.time() - started))
+              "committed file artifact per adoption entry point; packaged web assets "
+              "shipped%s (%.1fs)"
+              % ("; SKIPPED stages: " + ui_skip if ui_skip else "",
+                 time.time() - started))
         return 0
     finally:
         if args.keep:
