@@ -452,6 +452,11 @@ def run_visual(devtools, url, label, lang, shot_dir, widths=VIEWPORTS):
                 "document.documentElement.scrollWidth -"
                 "document.documentElement.clientWidth")
             check("%s no horizontal overflow" % tag, overflow <= 0, overflow)
+            # scroll through the page so lazy images actually load
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(1.2)
+            page.evaluate("window.scrollTo(0, 0)")
+            time.sleep(0.4)
             imgs = page.evaluate(
                 "Array.from(document.images).every("
                 "function(i){return i.complete && i.naturalWidth > 0;})")

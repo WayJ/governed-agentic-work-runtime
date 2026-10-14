@@ -185,6 +185,11 @@ section { padding-block: var(--sp-section); }
   max-width: 20ch;
   margin-inline: auto;
 }
+/* Chinese display: smaller ramp and no negative tracking (CJK legibility) */
+html[lang="zh-CN"] .hero-title {
+  font-size: 52px;
+  letter-spacing: 0;
+}
 .hero .lede {
   font-size: var(--fs-title-sm);
   max-width: 62ch;
@@ -372,6 +377,19 @@ section { padding-block: var(--sp-section); }
   flex-wrap: wrap;
   gap: var(--sp-sm);
   margin-bottom: var(--sp-base);
+}
+
+/* Badge pill (status/sample labels) */
+.badge {
+  background: var(--surface-strong);
+  color: var(--ink);
+  font-size: var(--fs-caption-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: var(--r-pill);
+  padding: 4px 10px;
+  white-space: nowrap;
 }
 
 /* Subsection head inside a section (e.g. GUI showcase under Demo) */
