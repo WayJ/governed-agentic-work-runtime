@@ -115,3 +115,46 @@ Doc-sync map: no `work_runtime/runtime.py`, `work_runtime/adapters.py` or
 Frontend owner consumes `docs/gui-api.md` @ `3d5732e`+ (tip `2e5a912`); integration owns
 review, assembly, acceptance and all merges/pushes. Nothing in this slice claims
 production service safety, tenant authentication, or distributed exactly-once semantics.
+
+## Addendum — 2026-10-14 original-owner correction: Origin must match the request Host origin
+
+The master accepted the task settlement but rejected this behavior at sprint level: an
+actual HTTP reproducer (request `Host: 127.0.0.1:<port>` with
+`Origin: http://localhost:<port>`) returned **200**; D25 requires **403 BAD_ORIGIN**
+because the Origin must match the *request's own* local origin, not merely be either
+loopback alias with the right port. Earlier guidance (`msg_e0551f6f0977`) had not been
+reflected in the final tip.
+
+**Root cause** (`work_runtime/ui_server.py`, `_check_origin`): the check validated the
+Origin independently — host ∈ {127.0.0.1, localhost} and port == the *bound* port —
+so either alias was accepted regardless of which authority the request's Host named.
+The pre-correction tests encoded the same wrong behavior: the old
+`test_origin_accepted_when_matching` paired the fixed `Host: 127.0.0.1` with *both*
+alias origins, which is why 62 tests passed while the boundary was wrong.
+
+**Correction** (commit `622fc5e`): `_check_host` now returns the validated request's
+normalized `(host, port)` and `_check_origin` requires the Origin's normalized
+`(host, port)` to equal it exactly — the other alias is a different origin. Minimal
+change; same-alias positives, absent Origin, duplicate/foreign/null/https/port-mismatch
+rejection and the default-HTTP-port-80 normalization (both sides via the unchanged
+`_split_authority`) are all retained.
+
+**RED (actual HTTP, observed before the fix)**:
+`python3 -m unittest tests.test_ui_server.BoundaryTests.test_origin_cross_alias_rejected -v`
+→ `FAILED (failures=2)`, e.g. `AssertionError: 200 != 403 : ('Host: localhost:53269',
+'http://127.0.0.1:53269')` — both cross-alias pairs returned 200.
+
+**GREEN (after the fix)**: same test → 2 subTests pass; module
+`tests.test_ui_server` 26/26 OK (the same-alias test now pairs each alias with itself);
+full suite `Ran 575 tests ... OK` (574 prior + 1 new test); `python3 scripts/check_docs.py`
+→ 54 files, 182 links, 0 broken; `python3 -m compileall -q work_runtime tests scripts`
+clean. Live reproducer re-run over real HTTP recorded both cross-alias pairs →
+`403 BAD_ORIGIN` and both same-alias pairs → `200`.
+
+**Scope/VCS evidence**: correction confined to `work_runtime/ui_server.py`,
+`tests/test_ui_server.py`, `docs/gui-api.md` (commit `e0eb120`: Origin bullet now states
+the request-Host match and cross-alias rejection) and this addendum. Branch
+`WayJ/s5-readonly-backend`: `7c0d4ae` (prior tip) → `622fc5e` (fix) → `e0eb120` (doc) →
+this addendum commit. No engine/frontend/masterdoc edits, no nested agents, no local
+approval UI, no merges or pushes. Sprint acceptance remains with integration; the
+prior report's claims above describe the pre-correction tip and stand only as history.
