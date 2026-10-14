@@ -429,5 +429,206 @@ class WorkDetailTests(InspectorFixture):
         self.assertEqual(caught.exception.code, "INVALID_STORE")
 
 
+class EventsTests(InspectorFixture):
+    def many_events(self, count=210):
+        runtime = self.store()
+        plan = {"steps": ["verify"], "open_requirements": [], "replan_when": []}
+        for _ in range(count):
+            send(runtime, "demo", "revise_plan", plan)
+        return runtime
+
+    def all_events(self):
+        return self.raw_columns("events", ["seq", "version", "type", "body"], "seq")
+
+    def test_events_keyset_paging(self):
+        self.many_events()
+        inspector = ReadOnlyInspector(self.path)
+        stored = self.all_events()
+        self.assertGreater(len(stored), 200)
+        collected, after, has_more = [], 0, True
+        while has_more:
+            page = inspector.events("demo", after=after, limit=3)
+            self.assertEqual(len(page["events"]),
+                             3 if page["has_more"] else len(page["events"]))
+            self.assertIsInstance(page["next_after"], str)
+            collected.extend(page["events"])
+            self.assertEqual(page["next_after"],
+                             page["events"][-1]["seq"] if page["events"]
+                             else str(after))
+            after = int(page["next_after"])
+            has_more = page["has_more"]
+        self.assertEqual([int(e["seq"]) for e in collected],
+                         [row[0] for row in stored])
+        self.assertEqual([e["type"] for e in collected], [row[2] for row in stored])
+        self.assertFalse(has_more)
+        # Empty tail page keeps the cursor unchanged.
+        tail = inspector.events("demo", after=after, limit=3)
+        self.assertEqual(tail["events"], [])
+        self.assertFalse(tail["has_more"])
+        self.assertEqual(tail["next_after"], str(after))
+
+    def test_events_envelope_fields(self):
+        self.many_events()
+        page = ReadOnlyInspector(self.path).events("demo", after=0, limit=2)
+        event = page["events"][0]
+        self.assertEqual(set(event), {"seq", "work_id", "version", "type", "body_raw"})
+        self.assertIsInstance(event["seq"], str)
+        self.assertIsInstance(event["version"], str)
+        self.assertEqual(event["work_id"], "demo")
+        (seq, version, type_, body) = self.all_events()[0]
+        self.assertEqual(event["seq"], str(seq))
+        self.assertEqual(event["version"], str(version))
+        self.assertEqual(event["type"], type_)
+        self.assertEqual(event["body_raw"], body)
+
+    def test_events_default_limit_is_100(self):
+        self.many_events()
+        page = ReadOnlyInspector(self.path).events("demo")
+        self.assertEqual(len(page["events"]), 100)
+        self.assertTrue(page["has_more"])
+
+    def test_events_validation_and_unknown_work(self):
+        inspector = ReadOnlyInspector(self.store().path and self.path)
+        for after, limit in ((-1, 10), ("0", 10), (0, 0), (0, 201), (0, "10")):
+            with self.assertRaises(GuiReaderError) as caught:
+                inspector.events("demo", after=after, limit=limit)
+            self.assertEqual(caught.exception.code, "BAD_QUERY", (after, limit))
+        with self.assertRaises(GuiReaderError) as caught:
+            inspector.events("no-such-work")
+        self.assertEqual(caught.exception.code, "UNKNOWN_WORK")
+
+    def test_events_version_must_be_integer(self):
+        self.store()
+        db = self.read()
+        db.execute("INSERT INTO events(work_id, version, type, body) "
+                   "VALUES ('demo', 'abc', 'X', '{}')")
+        db.commit()
+        with self.assertRaises(GuiReaderError) as caught:
+            ReadOnlyInspector(self.path).events("demo")
+        self.assertEqual(caught.exception.code, "INVALID_STORE")
+
+    def test_events_malformed_body_raises_invalid_store(self):
+        self.store()
+        db = self.read()
+        db.execute("INSERT INTO events(work_id, version, type, body) "
+                   "VALUES ('demo', 1, 'X', '{bad')")
+        db.commit()
+        with self.assertRaises(GuiReaderError) as caught:
+            ReadOnlyInspector(self.path).events("demo")
+        self.assertEqual(caught.exception.code, "INVALID_STORE")
+
+
+class FailureModeTests(InspectorFixture):
+    def test_malformed_json_in_each_table_raises_invalid_store(self):
+        corruptions = [
+            ("UPDATE works SET state='{\"broken'", "list_works"),
+            ("UPDATE works SET state='[1,2]'", "work_detail"),
+            ("UPDATE operations SET body='nope'", "summary"),
+            ("UPDATE evidence SET body='nope'", "work_detail"),
+            ("UPDATE commands SET receipt='nope'", "work_detail"),
+        ]
+        for index, (statement, method) in enumerate(corruptions):
+            with self.subTest(statement=statement, method=method):
+                path = str(self.dir / ("corrupt-%d.sqlite" % index))
+                self.succeeded_store(path=path)
+                db = sqlite3.connect(path)
+                db.execute(statement)
+                db.commit()
+                inspector = ReadOnlyInspector(path)
+                with self.assertRaises(GuiReaderError) as caught:
+                    if method == "list_works":
+                        inspector.list_works()
+                    elif method == "work_detail":
+                        inspector.work_detail("demo")
+                    else:
+                        inspector.summary()
+                self.assertEqual(caught.exception.code, "INVALID_STORE")
+
+    def test_state_version_must_be_integer(self):
+        self.store()
+        state = json.loads(self.raw_columns("works", ["state"], "id")[0][0])
+        state["state_version"] = "seven"
+        db = self.read()
+        db.execute("UPDATE works SET state=?", (canonical(state),))
+        db.commit()
+        inspector = ReadOnlyInspector(self.path)
+        for reader in (inspector.list_works, lambda: inspector.work_detail("demo")):
+            with self.assertRaises(GuiReaderError) as caught:
+                reader()
+            self.assertEqual(caught.exception.code, "INVALID_STORE")
+
+    def test_db_busy_on_exclusive_lock(self):
+        self.succeeded_store()
+        inspector = ReadOnlyInspector(self.path)
+        writer = sqlite3.connect(self.path)
+        writer.execute("PRAGMA journal_mode=DELETE")
+        writer.execute("BEGIN EXCLUSIVE")
+        try:
+            with self.assertRaises(GuiReaderError) as caught:
+                inspector.summary()
+            self.assertEqual(caught.exception.code, "DB_BUSY")
+        finally:
+            writer.rollback()
+            writer.close()
+        self.assertEqual(inspector.summary()["counts"]["works"], 1)
+
+    def test_wal_reader_sees_commits_during_immediate_writer(self):
+        runtime = self.store()
+        inspector = ReadOnlyInspector(self.path)
+        before = inspector.summary()["counts"]["events"]
+        writer = sqlite3.connect(self.path)
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            during = inspector.summary()["counts"]["events"]
+            self.assertEqual(during, before)
+        finally:
+            writer.rollback()
+            writer.close()
+        send(runtime, "demo", "revise_plan",
+             {"steps": ["verify"], "open_requirements": [], "replan_when": []})
+        writer = sqlite3.connect(self.path)
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            after = inspector.summary()["counts"]["events"]
+            self.assertEqual(after, before + 1)
+        finally:
+            writer.rollback()
+            writer.close()
+
+    def test_full_read_pass_writes_nothing(self):
+        self.succeeded_store(work_id="w-a")
+        self.succeeded_store(work_id="w-b", path=str(self.dir / "unused.sqlite"))
+        # A second work in the main store: fresh runtime on the same path.
+        runtime = Runtime(self.path, ExpensePolicy(), demo_grants())
+        initialize(runtime, work_id="w-b")
+        inspector = ReadOnlyInspector(self.path)
+
+        def snapshot():
+            with sqlite3.connect(self.path) as db:
+                return {
+                    table: db.execute(
+                        "SELECT * FROM %s ORDER BY 1" % table).fetchall()
+                    for table in ("works", "commands", "evidence", "operations",
+                                  "events", "metadata")
+                }
+
+        before = snapshot()
+        inspector.summary()
+        listing = inspector.list_works()
+        for item in listing["works"]:
+            inspector.work_detail(item["id"])
+            page = inspector.events(item["id"])
+            self.assertIsInstance(page["next_after"], str)
+        self.assertEqual(snapshot(), before)
+
+    def test_read_only_file_permissions(self):
+        self.succeeded_store()
+        os.chmod(self.path, 0o444)
+        self.addCleanup(os.chmod, self.path, 0o644)
+        inspector = ReadOnlyInspector(self.path)
+        self.assertEqual(inspector.summary()["counts"]["works"], 1)
+        self.assertEqual(inspector.work_detail("demo")["work"]["id"], "demo")
+
+
 if __name__ == "__main__":
     unittest.main()

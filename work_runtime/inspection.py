@@ -67,6 +67,22 @@ def _entries(value, what: str) -> list:
     return value
 
 
+def _operational_error(error: sqlite3.OperationalError) -> GuiReaderError:
+    text = str(error).lower()
+    if "locked" in text or "busy" in text:
+        return GuiReaderError("DB_BUSY", "the store is locked by another writer")
+    if "unable to open" in text:
+        return GuiReaderError("DB_NOT_READABLE", "the store cannot be opened")
+    return GuiReaderError("INTERNAL", "the store could not be read")
+
+
+def _database_error(error: sqlite3.DatabaseError) -> GuiReaderError:
+    text = str(error).lower()
+    if "not a database" in text or "malformed" in text:
+        return GuiReaderError("NOT_A_DATABASE", "the file is not a readable SQLite store")
+    return GuiReaderError("INTERNAL", "the store could not be read")
+
+
 class ReadOnlyInspector:
     """Inspect one existing store; each call is a short read transaction."""
 
@@ -92,6 +108,10 @@ class ReadOnlyInspector:
             db.execute("BEGIN DEFERRED")
             yield db
             db.execute("COMMIT")
+        except sqlite3.OperationalError as error:
+            raise _operational_error(error) from error
+        except sqlite3.DatabaseError as error:
+            raise _database_error(error) from error
         finally:
             db.close()
 
@@ -195,6 +215,35 @@ class ReadOnlyInspector:
                 item["id"] = work_id
                 works.append(item)
         return {"total": total, "limit": limit, "offset": offset, "works": works}
+
+    def events(self, work_id: str, after: int = 0, limit: int = 100) -> dict:
+        if not isinstance(work_id, str) or not work_id:
+            raise GuiReaderError("BAD_QUERY", "work id must be a nonempty string")
+        if type(after) is not int or after < 0:
+            raise GuiReaderError("BAD_QUERY", "after must be a nonnegative integer")
+        self._validate_page(limit, 0)
+        with self._read_connection() as db:
+            if db.execute("SELECT 1 FROM works WHERE id=?",
+                          (work_id,)).fetchone() is None:
+                raise GuiReaderError("UNKNOWN_WORK", "no work with the given id")
+            rows = db.execute(
+                "SELECT seq, work_id, version, type, body FROM events "
+                "WHERE work_id=? AND seq>? ORDER BY seq LIMIT ?",
+                (work_id, after, limit + 1)).fetchall()
+        has_more = len(rows) > limit
+        events = []
+        for seq, stored_work_id, version, type_, body in rows[:limit]:
+            _stored_json(body, "event body")  # bounded failure, never a silent skip
+            events.append({
+                "seq": _decimal(seq, "event seq"),
+                "work_id": stored_work_id,
+                "version": _decimal(version, "event version"),
+                "type": type_,
+                "body_raw": body,
+            })
+        return {"events": events,
+                "next_after": events[-1]["seq"] if events else str(after),
+                "has_more": has_more}
 
     def work_detail(self, work_id: str) -> dict:
         if not isinstance(work_id, str) or not work_id:
