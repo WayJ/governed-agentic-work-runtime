@@ -43,10 +43,20 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     demo's printed inspect command verbatim.
 12. Run the `work-runtime adoption-demo` console entry point outside the
     checkout and apply the same independent enumeration/parse checks.
-13. Assert the packaged GUI web assets ship inside the (non-editable)
+13. Run `python -m work_runtime revocation-demo` outside the checkout and
+    verify it INDEPENDENTLY of the printed text: parse each of the three
+    scenario stores (hold, uncertain, publish) directly — revoked/verified
+    evidence statuses, preserved source-event fingerprints (recomputed with
+    the standard library), the readmitted operation's business key
+    (recomputed from the policy family, document id and revision/digest),
+    closed-work completion still citing the revoked acceptance, and each
+    external store holding exactly one accepted effect.
+14. Run the `work-runtime revocation-demo` console entry point outside the
+    checkout and apply the same independent store proof.
+15. Assert the packaged GUI web assets ship inside the (non-editable)
     install — `work_runtime/web/{index.html,app.js,app.css}` resolve inside
     the venv — so the read-only viewer is never served from this checkout.
-14. Installed UI (module AND console): when the read-only backend
+16. Installed UI (module AND console): when the read-only backend
     (`work_runtime.ui_server`) is present in the install, start `ui-demo` as
     a real subprocess outside the checkout, read the printed URL, fetch
     HTML/JS/CSS/summary/works/work/events over real HTTP (five seeded works),
@@ -82,6 +92,9 @@ DEMO_FINAL_LINE = "external applications created: 1"
 PUBLISH_FINAL_LINE = "published artifacts: 1"
 INTERVENTION_FINAL_LINE = "accepted applications: 3 (one per store)"
 ADOPTION_FINAL_LINE = "committed file artifacts: 1"
+REVOCATION_FINAL_LINE = ("retained external effects: 2 accepted applications, "
+                         "1 published artifact; effects reversed: 0")
+REVOCATION_SCENARIOS = ("hold", "uncertain", "publish")
 UI_WORK_IDS = {"wait-1", "uncertain-1", "transfer-1", "succeed-1", "cancel-1"}
 PINNED_PUBLISHING_DIGEST = ("56c85d32da9a9eee6330326e2d14ce0661dbc26d"
                             "782b13d0259c3f149e6be000")
@@ -275,6 +288,215 @@ def require_adoption_proof(stdout, source):
     require(artifact["document"] == work["document"],
             "%s artifact document differs from the work's document" % source)
     return artifact_path, runtime_db
+
+
+def local_digest(value):
+    """SHA-256 over canonical JSON, same parameters as the runtime's digest.
+
+    Implemented locally on purpose: this script never imports the product
+    package for its proofs.
+    """
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def db_rows(path, sql, args=(), source="store"):
+    db = sqlite3.connect(str(path))
+    try:
+        return db.execute(sql, args).fetchall()
+    finally:
+        db.close()
+
+
+def require_work_state(runtime_db, work_id, source):
+    rows = db_rows(runtime_db, "SELECT state FROM works WHERE id=?", (work_id,), source)
+    require(len(rows) == 1,
+            "%s store %s holds %d rows for work %s (expected exactly 1)"
+            % (source, runtime_db, len(rows), work_id))
+    return json.loads(rows[0][0])
+
+
+def require_operation(runtime_db, source, label, external_prefix):
+    """Exactly one confirmed operation with a stable business key; returns it."""
+    rows = db_rows(runtime_db, "SELECT body FROM operations", source=source)
+    require(len(rows) == 1,
+            "%s store %s holds %d operations (expected exactly 1: %s)"
+            % (source, runtime_db, len(rows), label))
+    operation = json.loads(rows[0][0])
+    require(operation["status"] == "confirmed_succeeded"
+            and operation["dispatch_state"] == "finished",
+            "%s %s operation is %s/%s (expected confirmed_succeeded/finished)"
+            % (source, label, operation.get("status"), operation.get("dispatch_state")))
+    require(len(operation.get("attempts", [])) == 1
+            and str(operation.get("external_id", "")).startswith(external_prefix),
+            "%s %s operation does not hold exactly one attempt with a retained "
+            "%s external id" % (source, label, external_prefix))
+    return operation
+
+
+def require_source_event_proof(runtime_db, work_id, source_row, event_id,
+                               expected_status, source):
+    """One record_evidence row: exact status and preserved source-event
+    fingerprint recomputed locally from (work id, event payload)."""
+    rows = db_rows(runtime_db,
+                   "SELECT body,fingerprint FROM evidence WHERE source=? AND event_id=?",
+                   (source_row, event_id), source)
+    require(len(rows) == 1,
+            "%s store %s holds %d rows for %s/%s (expected exactly 1)"
+            % (source, runtime_db, len(rows), source_row, event_id))
+    body = json.loads(rows[0][0])
+    require(body["status"] == expected_status,
+            "%s evidence %s/%s status is %r (expected %r)"
+            % (source, source_row, event_id, body["status"], expected_status))
+    require(rows[0][1] == local_digest(
+        [work_id, {"event_id": event_id, "kind": body["kind"], "data": body["data"]}]),
+        "%s evidence %s/%s fingerprint does not match its preserved source event"
+        % (source, source_row, event_id))
+    return body
+
+
+def require_accepted_proof(runtime_db, accepted_source, operation_id, source):
+    """One runtime-written acceptance row, revoked, its fingerprint still the
+    digest of the original (verified) acceptance — only the status changed."""
+    rows = db_rows(runtime_db,
+                   "SELECT body,fingerprint FROM evidence WHERE source=? AND event_id=?",
+                   (accepted_source, operation_id), source)
+    require(len(rows) == 1,
+            "%s store holds %d acceptance rows for %s/%s (expected exactly 1)"
+            % (source, len(rows), accepted_source, operation_id))
+    body = json.loads(rows[0][0])
+    require(body["status"] == "revoked" and body["kind"] == "accepted",
+            "%s acceptance %s/%s is %s/%s (expected revoked/accepted)"
+            % (source, accepted_source, operation_id, body["status"], body["kind"]))
+    require(rows[0][1] == local_digest(dict(body, status="verified")),
+            "%s acceptance %s/%s fingerprint is not the preserved original "
+            "acceptance digest" % (source, accepted_source, operation_id))
+    return body
+
+
+def require_revoked_event_sources(runtime_db, expected_sources, source):
+    rows = db_rows(runtime_db,
+                   "SELECT body FROM events WHERE type='EvidenceRevoked' ORDER BY seq",
+                   source=source)
+    sources = [json.loads(row[0])["source"] for row in rows]
+    require(sources == list(expected_sources),
+            "%s store %s EvidenceRevoked sources are %s (expected %s)"
+            % (source, runtime_db, sources, list(expected_sources)))
+    return [json.loads(row[0]) for row in rows]
+
+
+def require_revocation_hold(store, source):
+    runtime_db = Path(store)
+    oa_db = runtime_db.parent / "oa.sqlite"
+    require(oa_db.exists(),
+            "%s hold store has no external database at %s" % (source, oa_db))
+    state = require_work_state(runtime_db, "hold", source)
+    require_source_event_proof(runtime_db, "hold", "finance", "evt-hold-approval",
+                               "revoked", source)
+    require_source_event_proof(runtime_db, "hold", "finance", "evt-hold-approval-2",
+                               "verified", source)
+    operation = require_operation(runtime_db, source, "hold", "OA-")
+    require(operation["business_key"] == local_digest(
+        ["expense-submit", "expense.submit",
+         state["document"]["id"], state["document_revision"]]),
+        "%s hold operation business key does not equal the recomputed expense "
+        "operation key" % source)
+    require_revoked_event_sources(runtime_db, ("finance",), source)
+    require(db_rows(oa_db, "SELECT COUNT(*) FROM receipts")[0][0] == 1,
+            "%s hold external store holds %d receipts (expected exactly 1: zero "
+            "calls while held, one final acceptance)"
+            % (source, db_rows(oa_db, "SELECT COUNT(*) FROM receipts")[0][0]))
+    require(count_accepted(oa_db) == 1,
+            "%s hold external store does not hold exactly 1 accepted application"
+            % source)
+
+
+def require_revocation_uncertain(store, source):
+    runtime_db = Path(store)
+    oa_db = runtime_db.parent / "oa.sqlite"
+    require(oa_db.exists(),
+            "%s uncertain store has no external database at %s" % (source, oa_db))
+    state = require_work_state(runtime_db, "uncertain", source)
+    require_source_event_proof(runtime_db, "uncertain", "finance",
+                               "evt-uncertain-approval", "revoked", source)
+    operation = require_operation(runtime_db, source, "uncertain", "OA-")
+    require_accepted_proof(runtime_db, "oa", operation["id"], source)
+    fulfillment = {r["id"]: r["fulfillment"] for r in state["requirements"]}
+    require(fulfillment.get("E05:EXP-001") == "pending"
+            and fulfillment.get("E08:EXP-001") == "pending",
+            "%s uncertain requirements are %r (expected E05 and E08 pending)"
+            % (source, fulfillment))
+    require_revoked_event_sources(runtime_db, ("oa", "finance"), source)
+    require(db_rows(oa_db, "SELECT COUNT(*) FROM receipts")[0][0] == 1,
+            "%s uncertain external store does not hold exactly 1 receipt "
+            "(the uncertain effect must be retained exactly once, never resent)"
+            % source)
+    require(count_accepted(oa_db) == 1,
+            "%s uncertain external store does not hold exactly 1 accepted "
+            "application" % source)
+
+
+def require_revocation_publish(store, source):
+    runtime_db = Path(store)
+    publisher_db = runtime_db.parent / "publisher.sqlite"
+    require(publisher_db.exists(),
+            "%s publish store has no external database at %s" % (source, publisher_db))
+    state = require_work_state(runtime_db, "publish", source)
+    require((state["status"], state["outcome"]) == ("closed", "succeeded"),
+            "%s publish work is %s/%s (expected closed/succeeded)"
+            % (source, state.get("status"), state.get("outcome")))
+    require_source_event_proof(runtime_db, "publish", "reviewer", "evt-pub-approval",
+                               "revoked", source)
+    require_source_event_proof(runtime_db, "publish", "reviewer", "evt-pub-approval-2",
+                               "verified", source)
+    operation = require_operation(runtime_db, source, "publish", "PUB-")
+    require(operation["business_key"] == local_digest(
+        ["content-publish", "content.publish",
+         state["document"]["id"], state["document_digest"]]),
+        "%s publish operation business key does not equal the recomputed "
+        "publishing operation key" % source)
+    accepted = require_accepted_proof(runtime_db, "publisher", operation["id"], source)
+    require(accepted["id"] in state["completion"]["evidence"],
+            "%s publish completion no longer cites the (now revoked) acceptance "
+            "— the historical closure snapshot must stay byte-identical" % source)
+    fulfillment = {r["id"]: r["fulfillment"] for r in state["requirements"]}
+    require(fulfillment.get("C04:ART-001") == "pending",
+            "%s publish C04 fulfillment is %r (expected pending after the "
+            "closed-work correction)"
+            % (source, fulfillment.get("C04:ART-001")))
+    events = require_revoked_event_sources(runtime_db, ("reviewer", "publisher"), source)
+    require(events[1]["work_was_closed"] and events[1]["completion_cites_evidence"],
+            "%s closed-correction event flags are not work_was_closed/"
+            "completion_cites_evidence" % source)
+    require(count_publications(publisher_db) == 1,
+            "%s publish external store does not hold exactly 1 publication"
+            % source)
+
+
+def require_revocation_proof(stdout, source):
+    """Independent module/console revocation-demo proof, never stdout-only.
+
+    Requires the demo's exact final line and exactly three distinct printed
+    scenario stores (hold, uncertain, publish in order), then verifies each
+    store directly: evidence statuses, preserved fingerprints, the stable
+    business key of the single readmitted operation, closed-work correction
+    facts and one retained external effect per store. Returns the store paths.
+    """
+    require(REVOCATION_FINAL_LINE in stdout,
+            "%s output lacks %r" % (source, REVOCATION_FINAL_LINE))
+    stores = INSPECT_DB.findall(stdout)
+    require(len(stores) == 3,
+            "%s printed %d inspect databases (expected exactly 3: hold, "
+            "uncertain, publish)" % (source, len(stores)))
+    require(len(set(stores)) == 3,
+            "%s printed duplicate store paths: %s" % (source, stores))
+    names = [Path(store).parent.name for store in stores]
+    require(names == list(REVOCATION_SCENARIOS),
+            "%s printed scenario directories %s (expected hold, uncertain, "
+            "publish in order)" % (source, names))
+    require_revocation_hold(stores[0], source)
+    require_revocation_uncertain(stores[1], source)
+    require_revocation_publish(stores[2], source)
+    return stores
 
 
 def run_printed_inspect_command(stdout, venv_python, outside, source):
@@ -607,6 +829,18 @@ def main(argv=None):
         run_printed_inspect_command(console_adoption.stdout, venv_python, outside,
                                     "console adoption-demo")
 
+        print("=== module revocation-demo outside the checkout ===")
+        module_revocation = run([venv_python, "-m", "work_runtime", "revocation-demo"],
+                                outside, show=True)
+        require_revocation_proof(module_revocation.stdout, "module revocation-demo")
+        print("independent check: revoked statuses, preserved fingerprints, "
+              "business keys and one retained effect per store re-verified "
+              "from the three scenario databases")
+
+        print("=== console revocation-demo outside the checkout ===")
+        console_revocation = run([console, "revocation-demo"], outside, show=True)
+        require_revocation_proof(console_revocation.stdout, "console revocation-demo")
+
         print("=== packaged web assets ship with the install ===")
         for name in ("index.html", "app.js", "app.css"):
             require((package_dir / "web" / name).is_file(),
@@ -621,7 +855,10 @@ def main(argv=None):
               "dependencies; module and console demos outside the checkout with exactly "
               "one external application, one published artifact, one accepted "
               "application per intervention store and one independently parsed "
-              "committed file artifact per adoption entry point; packaged web assets "
+              "committed file artifact per adoption entry point; module and console "
+              "revocation-demo stores re-verified (revoked statuses, preserved "
+              "fingerprints, stable business keys, one retained effect per store); "
+              "packaged web assets "
               "shipped%s (%.1fs)"
               % ("; SKIPPED stages: " + ui_skip if ui_skip else "",
                  time.time() - started))

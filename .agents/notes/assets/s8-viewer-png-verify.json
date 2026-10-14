@@ -1,0 +1,103 @@
+{
+ "ok": true,
+ "results": {
+  "green-clean-closed-desktop.png": {
+   "size": [
+    1440,
+    900
+   ],
+   "pixels": 1296000,
+   "tokens": {
+    "canvas_#f7f7f4": 688052,
+    "notice_creamsoft_#fafaf7": 17804,
+    "white_card_#ffffff": 483762,
+    "ink_#26251e": 5112,
+    "chip_errorsoft_#f9e8ec": 0
+   }
+  },
+  "green-clean-closed-n390.png": {
+   "size": [
+    390,
+    844
+   ],
+   "pixels": 329160,
+   "tokens": {
+    "canvas_#f7f7f4": 94125,
+    "notice_creamsoft_#fafaf7": 18146,
+    "white_card_#ffffff": 176830,
+    "ink_#26251e": 5795,
+    "chip_errorsoft_#f9e8ec": 0
+   }
+  },
+  "green-succeed-closed-desktop.png": {
+   "size": [
+    1440,
+    900
+   ],
+   "pixels": 1296000,
+   "tokens": {
+    "canvas_#f7f7f4": 340188,
+    "notice_creamsoft_#fafaf7": 124471,
+    "white_card_#ffffff": 672438,
+    "ink_#26251e": 14863,
+    "chip_errorsoft_#f9e8ec": 0
+   }
+  },
+  "green-succeed-closed-evidence.png": {
+   "size": [
+    1440,
+    900
+   ],
+   "pixels": 1296000,
+   "tokens": {
+    "canvas_#f7f7f4": 315996,
+    "notice_creamsoft_#fafaf7": 124471,
+    "white_card_#ffffff": 713915,
+    "ink_#26251e": 12550,
+    "chip_errorsoft_#f9e8ec": 1035
+   }
+  },
+  "green-succeed-closed-n320.png": {
+   "size": [
+    320,
+    690
+   ],
+   "pixels": 220800,
+   "tokens": {
+    "canvas_#f7f7f4": 25117,
+    "notice_creamsoft_#fafaf7": 80478,
+    "white_card_#ffffff": 83506,
+    "ink_#26251e": 5563,
+    "chip_errorsoft_#f9e8ec": 0
+   }
+  },
+  "green-succeed-closed-n390.png": {
+   "size": [
+    390,
+    844
+   ],
+   "pixels": 329160,
+   "tokens": {
+    "canvas_#f7f7f4": 39345,
+    "notice_creamsoft_#fafaf7": 81853,
+    "white_card_#ffffff": 163611,
+    "ink_#26251e": 6894,
+    "chip_errorsoft_#f9e8ec": 0
+   }
+  },
+  "green-succeed-closed-zh.png": {
+   "size": [
+    1440,
+    900
+   ],
+   "pixels": 1296000,
+   "tokens": {
+    "canvas_#f7f7f4": 473982,
+    "notice_creamsoft_#fafaf7": 132925,
+    "white_card_#ffffff": 555130,
+    "ink_#26251e": 8037,
+    "chip_errorsoft_#f9e8ec": 0
+   }
+  }
+ }
+}

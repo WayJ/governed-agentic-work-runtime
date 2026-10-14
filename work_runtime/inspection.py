@@ -67,6 +67,11 @@ def _entries(value, what: str) -> list:
     return value
 
 
+def _valid_id(value):
+    """A derived record id: a nonempty string, else None (raw stays available)."""
+    return value if type(value) is str and value else None
+
+
 def _operational_error(error: sqlite3.OperationalError) -> GuiReaderError:
     text = str(error).lower()
     if "locked" in text or "busy" in text:
@@ -301,11 +306,14 @@ class ReadOnlyInspector:
                     else _reconstructed(state["completion"], "completion")),
             })
             evidence = []
+            revoked_evidence = []
             for source, event_id, body in db.execute(
                     "SELECT source, event_id, body FROM evidence "
                     "WHERE work_id=? ORDER BY source, event_id", (work_id,)):
                 proof = _stored_json(body, "evidence body")
+                proof_id = _valid_id(proof.get("id"))
                 evidence.append({
+                    "id": proof_id,
                     "source": source,
                     "event_id": event_id,
                     "kind": proof.get("kind"),
@@ -313,6 +321,31 @@ class ReadOnlyInspector:
                     "body_raw": body,
                     "data_raw": _reconstructed(proof.get("data"), "evidence data"),
                 })
+                if proof.get("status") == "revoked":
+                    revoked_evidence.append({
+                        "id": proof_id,
+                        "source": source,
+                        "event_id": event_id,
+                        "kind": proof.get("kind"),
+                        "status": proof.get("status"),
+                    })
+            # Completion-cited revoked ids, derived in this same snapshot from
+            # the parsed state and the revoked rows above: only valid string
+            # citations count, in stored citation order, deduplicated. A
+            # cancellation completion acknowledges operations instead and
+            # contributes nothing — citations are never invented.
+            revoked_ids = {entry["id"] for entry in revoked_evidence
+                           if entry["id"] is not None}
+            completion = state.get("completion")
+            cited = (completion.get("evidence")
+                     if isinstance(completion, dict) else None)
+            completion_revoked_evidence_ids = []
+            if isinstance(cited, list):
+                for citation in cited:
+                    if (_valid_id(citation) is not None
+                            and citation in revoked_ids
+                            and citation not in completion_revoked_evidence_ids):
+                        completion_revoked_evidence_ids.append(citation)
             operations = []
             for (body,) in db.execute(
                     "SELECT body FROM operations WHERE work_id=? ORDER BY id",
@@ -367,4 +400,5 @@ class ReadOnlyInspector:
                 })
             commands.sort(key=lambda command: command.pop("_sort"))
         return {"work": work, "evidence": evidence, "operations": operations,
-                "commands": commands}
+                "commands": commands, "revoked_evidence": revoked_evidence,
+                "completion_revoked_evidence_ids": completion_revoked_evidence_ids}

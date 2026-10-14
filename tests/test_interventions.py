@@ -565,6 +565,33 @@ class FinalizeCancelTests(unittest.TestCase):
                                               )["decision"], "accepted")
         self.assertEqual(self.finalize([], actor="root")["decision"], "accepted")
 
+    def test_finalize_cancel_on_unbound_work_persists_closed(self):
+        send(self.runtime, "unbound", "create_work",
+             {"document": document(document_id="UNB-001")})
+        proof(self.runtime, "unbound", "approval", "finance")
+        send(self.runtime, "unbound", "request_cancel", {"reason": "stop"})
+        receipt = self.finalize([], work_id="unbound")
+        self.assertEqual(receipt["decision"], "accepted")
+        work = self.runtime.get_work("unbound")
+        self.assertEqual(work["status"], "closed")
+        self.assertEqual(work["outcome"], "cancelled")
+        self.assertIn("cancellation", work["completion"])
+
+    def test_unbound_closed_work_stays_closed_under_late_verification_and_recovery(self):
+        send(self.runtime, "unbound", "create_work",
+             {"document": document(document_id="UNB-001")})
+        proof(self.runtime, "unbound", "approval", "finance")
+        send(self.runtime, "unbound", "request_cancel", {"reason": "stop"})
+        self.finalize([], work_id="unbound")
+        completion = self.runtime.get_work("unbound")["completion"]
+        restarted = Runtime(self.path, ExpensePolicy(), self.grants)
+        self.assertEqual(restarted.verify_pending("unbound"), 1)
+        restarted.recover(self.oa)
+        work = restarted.get_work("unbound")
+        self.assertEqual(work["status"], "closed")
+        self.assertEqual(work["outcome"], "cancelled")
+        self.assertEqual(work["completion"], completion)
+
 
 class OwnershipTests(unittest.TestCase):
     def setUp(self):

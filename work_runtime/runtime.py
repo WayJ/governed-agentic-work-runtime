@@ -182,7 +182,8 @@ class Runtime:
         policy = self._policy_for(work)
         work["requirements"] = policy.evaluate(work, self._proofs(db, work["id"]))
         if not work["contract"]:
-            work["status"] = "establishing"
+            if work["status"] != "closed":
+                work["status"] = "establishing"
             return
         if work["status"] != "closed":
             requirements = {r["id"]: r for r in work["requirements"]}
@@ -254,7 +255,8 @@ class Runtime:
             if old:
                 if old[0] != request_hash:
                     return {"decision": "rejected", "code": "COMMAND_ID_REUSED"}
-                denial = self._replay_denial(db, actor, work_id, kind, payload)
+                denial = self._replay_denial(db, actor, work_id, kind, payload,
+                                              json.loads(old[1]))
                 if denial is not None:
                     return denial  # Fresh, unpersisted; the stored receipt stays intact.
                 return json.loads(old[1])
@@ -268,6 +270,8 @@ class Runtime:
                     receipt = self._reject("STATE_VERSION_CONFLICT", version)
                 elif kind == "record_evidence":
                     receipt = self._receive(db, actor, work, payload)
+                elif kind == "revoke_evidence":
+                    receipt = self._revoke(db, actor, work, payload)
                 elif work["status"] == "closed":
                     receipt = self._reject("WORK_NOT_ACTIONABLE", version)
                 else:
@@ -281,7 +285,7 @@ class Runtime:
         row = db.execute("SELECT state FROM works WHERE id=?", (work_id,)).fetchone()
         return json.loads(row[0])["state_version"] if row else 0
 
-    def _replay_denial(self, db, actor, work_id, kind, payload):
+    def _replay_denial(self, db, actor, work_id, kind, payload, cached=None):
         """A stored receipt is replayed only while current authority holds.
 
         Returns None when the replay may return the stored receipt, or a
@@ -298,6 +302,17 @@ class Runtime:
             policy = self._policy_for(work)
             ok = (policy.evidence_sources.get(payload.get("kind")) == actor
                   and "evidence.write" in grants)
+        elif kind == "revoke_evidence":
+            # Rows are never deleted, so an accepted receipt's stored kind is
+            # still available. A receipt decided as an unknown proof keeps
+            # admission's conservative preliminary check on replay — it never
+            # acquires mutation rights from the later existence of a row.
+            row = None
+            if cached is None or cached.get("code") != "EVIDENCE_UNKNOWN":
+                row = db.execute(
+                    "SELECT body FROM evidence WHERE source=? AND event_id=?",
+                    (payload.get("source"), payload.get("event_id"))).fetchone()
+            ok = self._revoke_authority(actor, self._policy_for(work), row)
         elif kind == "propose_action":
             owner = work.get("owner")
             ok = (owner is None or actor == owner) and payload.get("capability") in grants
@@ -655,13 +670,96 @@ class Runtime:
         if old:
             if old[0] != fingerprint:
                 return self._reject("SOURCE_EVENT_CONFLICT", work["state_version"])
-            return self._accepted(work, evidence_id=json.loads(old[1])["id"])
+            # New-command resends state the candidate's current status; the
+            # original command's stored receipt stays verbatim.
+            return self._accepted(work, evidence_id=json.loads(old[1])["id"],
+                                  evidence_status=json.loads(old[1])["status"])
         candidate = {"id": uuid.uuid4().hex, "source": actor, "event_id": event_id,
                      "kind": kind, "data": payload["data"], "status": "pending_verification"}
         db.execute("INSERT INTO evidence VALUES (?,?,?,?,?)",
                    (actor, event_id, work["id"], fingerprint, canonical(candidate)))
         return self._accepted(work, evidence_id=candidate["id"],
                               evidence_status="pending_verification")
+
+    def _revoke_authority(self, actor: str, policy, row) -> bool:
+        """Revocation authority: a work.intervene administrator, or the
+        currently configured source for the stored proof kind holding
+        evidence.revoke. Without a row (unknown proof), membership in the
+        configured source set is the conservative preliminary check shared
+        by admission and replay — it never grants mutation rights."""
+        if self._is_admin(actor):
+            return True
+        if "evidence.revoke" not in self.grants[actor]:
+            return False
+        if row is None:
+            return actor in policy.evidence_sources.values()
+        return policy.evidence_sources.get(json.loads(row[0])["kind"]) == actor
+
+    def _revoke(self, db, actor, work, payload):
+        if (set(payload) != {"source", "event_id", "reason"}
+                or not all(isinstance(v, str) and v for v in payload.values())):
+            raise CommandError("revoke_evidence requires exactly source, "
+                               "event_id and reason strings")
+        version = work["state_version"]
+        policy = self._policy_for(work)
+        if not self._revoke_authority(actor, policy, None):
+            return self._reject("AUTHORITY_DENIED", version)
+        row = db.execute("SELECT body,work_id FROM evidence WHERE source=? AND event_id=?",
+                         (payload["source"], payload["event_id"])).fetchone()
+        if row is None:
+            return self._reject("EVIDENCE_UNKNOWN", version)
+        candidate = json.loads(row[0])
+        if row[1] != work["id"]:
+            return self._reject("EVIDENCE_SCOPE_MISMATCH", version)
+        if not self._revoke_authority(actor, policy, row):
+            return self._reject("AUTHORITY_DENIED", version)
+        if candidate["status"] == "revoked":
+            return self._reject("EVIDENCE_ALREADY_REVOKED", version)
+        if candidate["status"] not in ("pending_verification", "verified"):
+            return self._reject("EVIDENCE_NOT_REVOKABLE", version)
+        prior_status = candidate["status"]
+        before_requirements = {r["id"]: (r["applicability"], r["fulfillment"])
+                               for r in work["requirements"]}
+        before_waits = {w["id"]: w["status"] for w in work["waits"]}
+        completion = work.get("completion") or {}
+        cited = completion.get("evidence")
+        candidate["status"] = "revoked"
+        db.execute("UPDATE evidence SET body=? WHERE source=? AND event_id=?",
+                   (canonical(candidate), candidate["source"], candidate["event_id"]))
+        # _evaluate is pure over the already-updated store, so computing the
+        # after-state here and letting _save re-run it yields exactly one
+        # version bump and one event carrying the actual diffs.
+        self._evaluate(db, work)
+        after_requirements = {r["id"]: (r["applicability"], r["fulfillment"])
+                              for r in work["requirements"]}
+        after_waits = {w["id"]: w["status"] for w in work["waits"]}
+        affected = []
+        for rid in sorted(before_requirements.keys() | after_requirements.keys()):
+            before = before_requirements.get(rid)
+            after = after_requirements.get(rid)
+            if before != after:
+                affected.append({
+                    "id": rid,
+                    "before": None if before is None else
+                    {"applicability": before[0], "fulfillment": before[1]},
+                    "after": None if after is None else
+                    {"applicability": after[0], "fulfillment": after[1]}})
+        dispositions = [{"id": wid, "prior_status": before_waits[wid],
+                         "status": after_waits[wid],
+                         "disposition": "unchanged" if after_waits[wid] == before_waits[wid]
+                         else after_waits[wid]}
+                        for wid in before_waits]
+        self._save(db, work, "EvidenceRevoked", {
+            "actor": actor, "evidence_id": candidate["id"],
+            "source": candidate["source"], "event_id": candidate["event_id"],
+            "kind": candidate["kind"], "prior_status": prior_status,
+            "reason": payload["reason"],
+            "work_was_closed": work["status"] == "closed",
+            "completion_cites_evidence": isinstance(cited, list)
+            and candidate["id"] in cited,
+            "affected_requirements": affected, "wait_dispositions": dispositions})
+        return self._accepted(work, evidence_id=candidate["id"],
+                              evidence_status="revoked", prior_status=prior_status)
 
     def verify_pending(self, work_id: str, fault: Optional[Callable] = None) -> int:
         """Trusted verifier entry point; candidate validation and evaluation are atomic."""

@@ -144,7 +144,8 @@ each item (id-ascending, stable for immutable ids):
 before binding; `outcome` is `null` until closed.
 
 `GET /api/work?id=...` → `{"work": {}, "evidence": [], "operations": [],
-"commands": []}`. `work` extends the list item with `plan_revision`,
+"commands": [], "revoked_evidence": [], "completion_revoked_evidence_ids":
+[]}`. `work` extends the list item with `plan_revision`,
 `document_revision` (decimal strings), `document_digest`, `waits`
 (`[{id, requirement_id, owner, status, deadline}]`, deadline a decimal string),
 `cancellation` (`{reason, requested_by}` or `null`), `requirements`
@@ -152,8 +153,11 @@ before binding; `outcome` is `null` until closed.
 raw payloads `state_raw` (exact column), `document_raw`, `plan_raw`,
 `completion_raw` (reconstructed; `completion_raw` is `null` until closure —
 closure **is** `completion` + `outcome`, there is no separate closure key).
-`evidence` items are `{source, event_id, kind, status, body_raw, data_raw}` in
-(source, event_id) order. `operations` items are `{id, business_key, capability,
+`evidence` items are `{id, source, event_id, kind, status, body_raw,
+data_raw}` in (source, event_id) order: `id` is the stored record id as a
+nonempty string, or `null` when the stored body carries no valid string id —
+the raw text always remains available and nothing is fabricated.
+`operations` items are `{id, business_key, capability,
 actor, status, dispatch_state, reason, attempts: [{id, status}], external_id,
 document_digest, plan_revision, contract_revision, document_raw, body_raw}`
 (id-ascending); `reason`/`external_id` are `null` when never stored. `commands`
@@ -164,6 +168,26 @@ available decision version (`result_state_version`, else
 implies no wall-clock claim. Persisted receipts are **admissions, not external
 effects**; fresh unpersisted replay-denials are not in the store, and no command
 kind, creation actor or timestamp is invented.
+
+The two revocation fields (S8, [D37](superpowers/specs/2026-10-14-s8-evidence-revocation-design.md))
+are **derived inside the same read-only snapshot** as the rest of the payload —
+never persisted annotations:
+
+- `revoked_evidence`: `{id, source, event_id, kind, status}` for every stored
+  proof row of this work whose status is `revoked`, in the same
+  (source, event_id) order as `evidence`; `id` follows the same
+  valid-string-or-`null` rule.
+- `completion_revoked_evidence_ids`: the intersection of the **valid string**
+  entries of `completion.evidence` with the valid string ids of the revoked
+  rows above — stored citation order, deduplicated. A successful completion
+  cites verified proof ids; a cancellation completion records acknowledged
+  operations instead and never has citations, so this list is empty there and
+  citations are never invented. Ids stay exact strings; no numeric coercion.
+
+These fields report **current** stored status. They say nothing about the
+historical completion decision, which remains byte-stable in `completion_raw`;
+a viewer must keep the two distinctions separate (the reader never re-parses
+`completion_raw` to derive the count).
 
 `GET /api/events?work_id=...` →
 

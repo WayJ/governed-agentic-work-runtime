@@ -2,7 +2,9 @@
 
 This document is the reference for the four intervention commands in
 `work_runtime/runtime.py`: `request_cancel`, `finalize_cancel`,
-`transfer_owner` and `migrate_policy`. They ride the ordinary command
+`transfer_owner` and `migrate_policy`, plus the `revoke_evidence`
+correction command documented in full in
+[evidence-revocation.md](evidence-revocation.md). They ride the ordinary command
 protocol — compare-and-swap on `expected_version`, durable deduplication
 under `(actor, command_id)`, immutable receipts and the append-only event
 history — and their machine-level guarantees (dispatch, recovery,
@@ -18,6 +20,7 @@ trusted-local: principal names are configuration, **not authentication**.
 | `finalize_cancel` | `acknowledged_operations` (list of distinct nonempty operation ids) | same as `request_cancel` | `WorkCancelled` |
 | `transfer_owner` | `owner`, `reason` (nonempty strings) | current owner with `work.manage`, or `work.intervene` admin; ownerless legacy works: admin only | `OwnerTransferred` |
 | `migrate_policy` | `policy_id`, `policy_version`, `reason` (nonempty strings) | `work.intervene` admin exclusively | `PolicyMigrated` |
+| `revoke_evidence` | `source`, `event_id`, `reason` (nonempty strings) | `work.intervene` admin, or the currently configured source for the stored proof kind with `evidence.revoke` | `EvidenceRevoked` |
 
 Payloads are exact: extra keys or wrong types raise `CommandError` (API
 misuse) and persist nothing. Business refusals are persisted rejected
@@ -82,8 +85,10 @@ operation's disposition.
 **Acknowledgement is not compensation.** Closing as cancelled admits the
 listed external effects exist and will not be reversed by this runtime;
 effect reversal/compensation execution is deferred scope. Evidence
-revocation (un-verifying an accepted proof outside policy migration) is
-likewise not supported.
+revocation — durably withdrawing a proof's current validity without
+touching the closure snapshot or the retained effects — is supported since
+S8 and documented in [evidence-revocation.md](evidence-revocation.md); it,
+too, is never compensation.
 
 ## Ownership transfer
 
@@ -143,17 +148,19 @@ New in this slice: `CANCELLATION_ALREADY_REQUESTED`,
 `CANCELLATION_NOT_REQUESTED`, `CANCEL_ACKNOWLEDGEMENT_MISMATCH`,
 `CANCELLATION_ACTIVE`, `TRANSFER_SAME_OWNER`,
 `MIGRATION_TARGET_UNCHANGED`, `MIGRATION_TARGET_UNREGISTERED`,
-`MIGRATION_FAMILY_MISMATCH`. Reused from the core protocol:
-`AUTHORITY_DENIED`, `WORK_NOT_ACTIONABLE`, `OUTCOME_UNRESOLVED`,
+`MIGRATION_FAMILY_MISMATCH`. From S8 evidence revocation:
+`EVIDENCE_UNKNOWN`, `EVIDENCE_SCOPE_MISMATCH`,
+`EVIDENCE_ALREADY_REVOKED`, `EVIDENCE_NOT_REVOKABLE`. Reused from the core
+protocol: `AUTHORITY_DENIED`, `WORK_NOT_ACTIONABLE`, `OUTCOME_UNRESOLVED`,
 `CONTRACT_NOT_ACTIVE`, `COMMAND_UNSUPPORTED`, `COMMAND_ID_REUSED`,
 `STATE_VERSION_CONFLICT` and the contract/plan/scope revision codes.
 
 ## Limits (honest boundaries)
 
 - No compensation or reversal execution; acknowledgement records effects,
-  it does not undo them.
-- No evidence revocation status; proof invalidation exists only through
-  policy migration revalidation.
+  it does not undo them. Revocation withdraws current validity only —
+  see [evidence-revocation.md](evidence-revocation.md) for its boundaries
+  (no external fencing, no retroactive history edits, TD-1 deferred).
 - One coordinator, local process, no distributed leases or fencing; an
   in-flight external call cannot be revoked.
 - One policy family per database; cross-domain registries are rejected.

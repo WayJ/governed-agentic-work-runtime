@@ -1,0 +1,184 @@
+{
+ "phase": "green",
+ "checks": [
+  {
+   "name": "green: five seeded works settle in the list",
+   "ok": true,
+   "observed": "{\"items\": 5, \"status\": \"共 5 项工作中的 5 项\", \"lang\": \"zh\"}"
+  },
+  {
+   "name": "green: /api/work carries revoked_evidence + cited ids",
+   "ok": true,
+   "observed": "{\"revoked\": 1, \"cited\": [\"e95552287f904c6fb9ef102b18ae2e2b\"]}"
+  },
+  {
+   "name": "green: notice shown on succeed-closed",
+   "ok": true,
+   "observed": "present=True"
+  },
+  {
+   "name": "green: EN notice distinguishes history/current on succeed-closed",
+   "ok": true,
+   "observed": "'Revoked evidence on a closed workThe historical closure and its outcome stay exactly as recorded — this correction does not reopen or rewrit'"
+  },
+  {
+   "name": "green: derived citation count + exact id text",
+   "ok": true,
+   "observed": "'The completion record cites 1 now-revoked evidence id(s):e95552287f904c6fb9ef102b18ae2e2b'"
+  },
+  {
+   "name": "green: notice shown on cancel-closed",
+   "ok": true,
+   "observed": "present=True"
+  },
+  {
+   "name": "green: EN notice distinguishes history/current on cancel-closed",
+   "ok": true,
+   "observed": "'Revoked evidence on a closed workThe historical closure and its outcome stay exactly as recorded — this correction does not reopen or rewrit'"
+  },
+  {
+   "name": "green: no fabricated citation line on cancel-closed",
+   "ok": true,
+   "observed": "None"
+  },
+  {
+   "name": "green: notice shown on unbound-closed",
+   "ok": true,
+   "observed": "present=True"
+  },
+  {
+   "name": "green: EN notice distinguishes history/current on unbound-closed",
+   "ok": true,
+   "observed": "'Revoked evidence on a closed workThe historical closure and its outcome stay exactly as recorded — this correction does not reopen or rewrit'"
+  },
+  {
+   "name": "green: no fabricated citation line on unbound-closed",
+   "ok": true,
+   "observed": "None"
+  },
+  {
+   "name": "green: notice absent on open-revoked",
+   "ok": true,
+   "observed": "present=False"
+  },
+  {
+   "name": "green: notice absent on clean-closed",
+   "ok": true,
+   "observed": "present=False"
+  },
+  {
+   "name": "green: notice uses cream-soft card tokens (12px radius, hairline, no shadow)",
+   "ok": true,
+   "observed": "{\"bg\": \"rgb(250, 250, 247)\", \"border\": \"1px solid rgb(207, 205, 196)\", \"radius\": \"12px\", \"shadow\": \"none\", \"display\": \"block\", \"titleColor\": \"rgb(38, 37, 30)\", \"bodyColor\": \"rgb(90, 88, 82)\", \"buttons\": 2}"
+  },
+  {
+   "name": "contrast notice-title >= 4.50",
+   "ok": true,
+   "observed": "rgb(38, 37, 30) on rgba(0, 0, 0, 0) = 15.38"
+  },
+  {
+   "name": "contrast notice-body >= 4.50",
+   "ok": true,
+   "observed": "rgb(90, 88, 82) on rgba(0, 0, 0, 0) = 7.11"
+  },
+  {
+   "name": "green: revoked chip on measured error tokens",
+   "ok": true,
+   "observed": "{\"className\": \"chip chip-st-revoked\", \"background\": \"rgb(249, 232, 236)\", \"color\": \"rgb(179, 36, 73)\"}"
+  },
+  {
+   "name": "contrast revoked-chip >= 4.50",
+   "ok": true,
+   "observed": "rgb(179, 36, 73) on rgb(249, 232, 236) = 5.45"
+  },
+  {
+   "name": "green: huge integer survives as exact text in documents",
+   "ok": true,
+   "observed": "looking for 10000000000000001"
+  },
+  {
+   "name": "green: Enter on the first notice button opens Evidence",
+   "ok": true,
+   "observed": "tab=evidence focused='Evidence'"
+  },
+  {
+   "name": "green: Enter on the second notice button opens Events",
+   "ok": true,
+   "observed": "events"
+  },
+  {
+   "name": "green: tab ArrowRight navigation intact",
+   "ok": true,
+   "observed": "documents"
+  },
+  {
+   "name": "green: poll refresh keeps the notice and list focus",
+   "ok": true,
+   "observed": "present=True focus='succeed-closed'"
+  },
+  {
+   "name": "green: server loss raises the disconnected banner",
+   "ok": true,
+   "observed": "banner hidden?"
+  },
+  {
+   "name": "green: recovery clears the banner, notice intact",
+   "ok": true,
+   "observed": "recovered=True present=True"
+  },
+  {
+   "name": "green: ZH notice distinguishes history/current",
+   "ok": true,
+   "observed": "'已关闭工作上的被撤销证据历史关闭及其结果保持原记录不变 —— 本次更正不会重新打开或改写它们。被撤销的证据仅改变其当前状态：不再作为当前要求的有效证明。完成记录引用了 1 个现已撤销的证据编号：e95552287f904c6fb9ef102b18ae2e2b存储记录：证据事件'"
+  },
+  {
+   "name": "green: no horizontal overflow at 1440px",
+   "ok": true,
+   "observed": "scrollWidth exceeds clientWidth"
+  },
+  {
+   "name": "green: no horizontal overflow at 390px",
+   "ok": true,
+   "observed": "scrollWidth exceeds clientWidth"
+  },
+  {
+   "name": "green: no horizontal overflow at 320px",
+   "ok": true,
+   "observed": "scrollWidth exceeds clientWidth"
+  },
+  {
+   "name": "green: all six store tables byte-identical after the session",
+   "ok": true,
+   "observed": "af4064293d7f… vs af4064293d7f…"
+  }
+ ],
+ "measurements": {
+  "green: notice computed styles": {
+   "bg": "rgb(250, 250, 247)",
+   "border": "1px solid rgb(207, 205, 196)",
+   "radius": "12px",
+   "shadow": "none",
+   "display": "block",
+   "titleColor": "rgb(38, 37, 30)",
+   "bodyColor": "rgb(90, 88, 82)",
+   "buttons": 2
+  },
+  "contrast notice-title": {
+   "fg": "rgb(38, 37, 30)",
+   "bg": "rgba(0, 0, 0, 0)",
+   "ratio": 15.375734110443723
+  },
+  "contrast notice-body": {
+   "fg": "rgb(90, 88, 82)",
+   "bg": "rgba(0, 0, 0, 0)",
+   "ratio": 7.112711555021926
+  },
+  "contrast revoked-chip": {
+   "fg": "rgb(179, 36, 73)",
+   "bg": "rgb(249, 232, 236)",
+   "ratio": 5.445692851854061
+  }
+ },
+ "ok": true,
+ "store": "/var/folders/1s/bdlcfsrx5s304d3w201q4djc0000gn/T/s8-viewer-stores-s0vzzj_j/runtime.sqlite"
+}

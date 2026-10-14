@@ -1,6 +1,6 @@
 # Local operations GUI
 
-Updated: 2026-10-14 (S7 visual alignment) · The read-only HTTP API the GUI consumes is documented by the backend owner in `docs/gui-api.md`.
+Updated: 2026-10-15 (S8 revoked-evidence notice) · The read-only HTTP API the GUI consumes is documented by the backend owner in `docs/gui-api.md`.
 
 An offline, dependency-free browser interface over the durable records of an existing store. It displays what the runtime actually recorded — states, obligations, evidence, decisions, operations and events — and never writes to the store. There is no CDN, framework, build step or network access: the HTML/CSS/JS assets ship inside the package and are served from the same loopback origin as the API.
 
@@ -47,6 +47,7 @@ Every run seeds a brand-new folder under `--directory` (or the system temporary 
 - **Metric tiles** (with their definitions shown under each): open works; closed·succeeded; closed·cancelled; uncertain operations (dispatched + outcome-unknown); pending evidence. The chip row below lists raw record counts (works, events, operations, evidence, commands, attempts) straight from the summary.
 - **Work list**: search by id or owner, filter by status, and select with the keyboard (`↑`/`↓` to move, `Enter` to select; `/` focuses search).
 - **Detail sections**: overview (status, contract, waits, cancellation), current requirements, evidence, operations with attempts, persisted command decisions, the event timeline (keyset-paginated with *load more*), and the exact stored documents as text.
+- **Revoked-evidence notice** (S8): when a **closed** work currently has revoked evidence, a neutral bilingual notice appears under the detail header. It keeps the two truths separate: the historical closure and its outcome stay exactly as recorded (nothing is reopened or rewritten), while the revoked evidence only changes *current* status — it no longer counts as valid proof for current requirements. When the completion record actually cited now-revoked proof ids, the notice shows that derived count and the exact ids; a cancelled closure acknowledged operations instead and never shows an invented citation count. Its two buttons jump to the Evidence and Events tabs, where the revoked chip renders the stored status text on the measured error tokens.
 - **Language**: English/Chinese with the browser language as default and an explicit toggle.
 - **Refresh**: manual refresh always works; automatic polling every 5 seconds can be paused and resumed. The header shows the store basename, schema version and the sampling time — when the page last read the store, which is an observation time, never a business-event time.
 - **States**: loading, empty, error and disconnected are shown explicitly; after a disconnect the viewer keeps retrying.
@@ -55,6 +56,7 @@ Every run seeds a brand-new folder under `--directory` (or the system temporary 
 
 - **It never interprets stored payloads for you.** Document, plan, completion, evidence-data, event-body and receipt fields are shown as the exact stored JSON text. The page renders them as text only (no `innerHTML`, no re-parsing of raw payload strings), so stored content can never execute and integers beyond the JavaScript safe range survive exactly.
 - **It never confuses current obligations with history.** The requirements section shows the *current* contract requirements; the decisions section shows *persisted command receipts* — admissions of decisions at their time, not external effects — including their historical blockers. External ids are displayed as text, never as clickable links.
+- **It never parses the closure record to count citations.** The revoked-evidence notice reads only the API's derived `revoked_evidence` / `completion_revoked_evidence_ids` fields; `completion_raw` stays exact stored text on the Documents tab.
 - **It never claims cancellation reverses anything.** A cancelled closure shows the acknowledged external effects that remain in place.
 - **It is a local trust tool, not a service.** Binding to loopback is convenience, not authentication; there is no tenant model, no write API and no remote hosting. The server opens the store read-only.
 

@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-14 (S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-15 (S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -21,6 +21,7 @@ python3 -m work_runtime demo                      # demo gate (real crash recove
 python3 -m work_runtime publish-demo              # demo gate (signed-evidence publication)
 python3 -m work_runtime intervention-demo         # demo gate (transfer, cancel, migrate)
 python3 -m work_runtime adoption-demo             # demo gate (lint + file-adapter adoption)
+python3 -m work_runtime revocation-demo           # demo gate (evidence revocation, both families)
 python3 -m compileall -q work_runtime tests scripts  # syntax gate
 python3 scripts/verify_install.py                 # fresh-venv install + demos outside the checkout
 ```
@@ -92,6 +93,101 @@ The S5 frontend slice added the five-work sample seed, the `ui`/`ui-demo` CLI su
 
 
 
+## S8 coverage — evidence revocation core
+
+The S8 core wave added the trusted-local `revoke_evidence` command and the
+permanent `revoked` proof status on the unchanged Runtime and both demo
+policies (`tests/test_evidence_revocation.py`, 55 tests, plus the D-1 pair
+appended to `tests/test_interventions.py`). Semantics and boundaries:
+[evidence-revocation.md](evidence-revocation.md); the command rides the same
+deduplicating command path as every other command, so no protocol matrix row
+is added.
+
+- **Command authority and codes (D33)**: exact `{source, event_id, reason}`
+  payload (`CommandError` with nothing persisted on malformed input),
+  version binding, admin/current-source-with-`evidence.revoke` authority
+  (owner/`work.manage`/`evidence.write` alone denied), retired-source loss
+  after a relabeling migration, `EVIDENCE_UNKNOWN`/`EVIDENCE_SCOPE_MISMATCH`/
+  `EVIDENCE_ALREADY_REVOKED`/`EVIDENCE_NOT_REVOKABLE`, pending+verified
+  eligibility, one-version/one-event/one-receipt atomicity with preserved
+  candidate identity and source-event fingerprint. Named:
+  `test_malformed_payloads_raise_and_persist_nothing`,
+  `test_stale_version_is_rejected_before_any_work`,
+  `test_owner_and_write_grant_alone_cannot_revoke`,
+  `test_current_source_and_admin_may_revoke`,
+  `test_retired_source_loses_revoke_right_after_migration`,
+  `test_accepted_receipt_and_atomic_single_version_single_event`,
+  `test_revocation_preserves_candidate_identity_and_fingerprint`.
+- **Replay reauthorization and permanence (D33/D36)**: stored receipts
+  replay verbatim while authority holds; grant/admin/source-retirement loss
+  yields a fresh unpersisted `AUTHORITY_DENIED` with the stored receipt
+  immutable; cached unknown rejections never acquire mutation rights;
+  revoked proofs skip `verify_pending`, migration (revoked→revoked
+  disposition) and restart/recover; new-command resends report the current
+  `evidence_status` while original receipts stay verbatim and changed
+  content stays `SOURCE_EVENT_CONFLICT`; replacement proofs use a new event
+  id and confirmed operations never re-execute or regenerate their accepted
+  proof. Named: the `RevokeReplayTests` and `RevokePermanenceTests` classes
+  (test-name table in [evidence-revocation.md](evidence-revocation.md)).
+- **Closure, waits, effects and crashes (D34/D35)**: actual
+  requirement/wait dispositions in the single `EvidenceRevoked` event;
+  closed bound (succeeded), cancelled-closure and unbound-closed correction
+  with byte-identical completion snapshots and no invented citations; no
+  cancelled/expired wait resurrection or deadline reset; prepared intents
+  held at dispatch/recover with `REQUIREMENT_UNSATISFIED` and **counted**
+  zero external calls in both families (expense `FakeOA` receipts,
+  publishing `FakePublisher.published_count()`); replacement readmission on
+  the same business key; in-flight reconciliation and confirmed-effect
+  retention with exactly one effect; transaction-exception and real
+  process-death rollback by store snapshot equality. Named: the
+  `RevokeEventTests`, `ClosedWorkCorrectionTests`, `RevokeWaitsTests`,
+  `RevokeDispatchTests`, `PublishingRevokeTests` and `RevokeCrashTests`
+  classes.
+- **D-1 fix**: `test_finalize_cancel_on_unbound_work_persists_closed` and
+  `test_unbound_closed_work_stays_closed_under_late_verification_and_recovery`
+  (both RED on the pre-S8 store: `establishing` != `closed`).
+
+### S8 demo wave — demonstration and installed verification
+
+The demo wave (this slice) added the public no-credentials demonstration
+and the installed-verifier stages on top of the accepted core
+(`tests/test_revocation_demo.py`, 12 tests; `work_runtime/revocation_demo.py`,
+the `revocation-demo` CLI subcommand, `scripts/verify_install.py` stages
+13–14; reference in [evidence-revocation.md](evidence-revocation.md)):
+
+- **Deterministic scenarios on fresh stores**: three scenarios (expense
+  hold/readmission, expense uncertain-retained-effect with two revoked
+  proofs, publishing hold/readmission/closed-work correction), each owning
+  its own store pair, every state built through public commands and real
+  adapters, every printed count asserted in-module and re-asserted by the
+  tests against the SQLite stores and external databases — never from
+  stdout (`RevocationDemoTests`: separate fresh stores, revoked approval +
+  verified replacement + single-call hold store, one retained effect with
+  E05/E08 pending, closed completion preserving the cited revoked
+  acceptance, exact final line, three printed inspect commands, repeatable
+  runs).
+- **CLI surface**: `python3 -m work_runtime revocation-demo` runs the
+  harness end to end (exit 0, final line asserted —
+  `RevocationDemoCliTests`); the installed `work-runtime revocation-demo`
+  console entry point ships through the existing packaging.
+- **Installed verification**: `scripts/verify_install.py` runs the module
+  and console `revocation-demo` entry points outside the checkout in a
+  fresh venv and proves them independently of printed text — revoked/
+  verified statuses, preserved source-event fingerprints recomputed with
+  the standard library (acceptance fingerprints still match the original
+  verified acceptance), the stable business key of the single readmitted
+  operation recomputed per policy family, the closed completion still
+  citing the revoked acceptance, and exactly one retained external effect
+  per store; rejection paths (missing final line, swapped store order,
+  deleted external receipt, flipped revoked status) are pinned by
+  `VerifyInstallRevocationProofTests`. The full script (all stages
+  including the installed UI over real HTTP) passed end to end on this
+  slice's checkout.
+
+The read-only viewer surfaces (derived revoked identities, closed-work
+notice) remain the later S8 owner wave recorded in the sprint plan; this
+slice adds no viewer claim.
+
 ## RFC-001 acceptance behaviors (R1–R7)
 
 R1 restart/persistence — `test_prepared_intent_survives_restart`, `test_wait_expiry_survives_restart`, P07/P15 tests. R2 plan edits cannot delete requirements — P10 test. R3 unknown conditions block — P14 tests. R4 timeouts are not failures — `test_timeout_after_commit_then_reconcile`, `test_unknown_without_query_result_requires_attention` (no query result → `needs_attention`, no blind retry). R5 content change invalidates old confirmations — `test_existing_invoice_proof_reused_after_document_change`, `test_invoice_revision_invalidates_old_verification`, `test_unknown_old_content_blocks_new_submission`. R6 duplicate/late callbacks — P08/P09 tests. R7 no success without goal evidence — P12 tests.
@@ -104,7 +200,7 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 
 - Remote or multi-tenant authentication and authorization (local principal names only). Owner, delegate and `work.intervene` administrator grants are trusted-local configuration, not authenticated identities; replay protection rechecks this local authority, it is not a distributed security boundary.
 - Policy/SOP publication, author review workflow, and policy migration beyond the explicit same-family command above. Cross-domain policy registries are rejected; there is no implicit upgrade on restart or recovery. Static SOP lint is structural review only: no textual-predicate execution, no provenance verification, no authority approval, and no link from a linted card to an executing Python policy.
-- Compensation (effect reversal) execution and evidence revocation: `finalize_cancel` acknowledges external effects with their external ids and records every disposition — it never claims to reverse an effect, and verified evidence cannot yet be revoked.
+- Compensation (effect reversal) execution: `finalize_cancel` acknowledges external effects with their external ids and records every disposition — it never claims to reverse an effect. Evidence revocation (S8) withdraws a proof's current validity durably but is likewise not compensation, does not fence an in-flight external call, and does not rewrite historical receipts, closure snapshots or confirmed effects.
 - Distributed execution: worker leases, fencing, cross-node coordination (P13). An attempt already durable when cancellation is requested remains uncertain until reconciled; there is no external fence. `FilePublisher`'s per-key artifact uniqueness is adapter-local, not a distributed exactly-once claim.
 - Any real external system adapter beyond the local filesystem; `FakeOA` and `FakePublisher` are local demonstrations, and `FilePublisher` targets trusted local directories only (hardlink support required, best-effort directory fsync, no power-loss/hostile-filesystem/symlink guarantee).
 - General natural-language rule formalization.
