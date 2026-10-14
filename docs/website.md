@@ -61,6 +61,43 @@ These are structural checks. They do **not** prove browser behavior,
 contrast, keyboard access or visual layout — those require actual browser
 verification, which stays part of acceptance.
 
+## Showcase screenshot provenance
+
+The four `assets/gui-{en,zh}-{desktop,390}.png` images are actual captures
+of the real operations viewer, not mockups. Current set:
+
+- **Rendered source:** the accepted S7 GUI — design-token restyle
+  `41bae0e`, carried through merge `c8138fe` — captured at source tree
+  `600c7aa` on 2026-10-14 with headless Chrome over CDP (capture artifact:
+  [`.agents/notes/2026-10-14-S7-task2-website-capture.py`](../.agents/notes/2026-10-14-S7-task2-website-capture.py),
+  72/72 assertions; local pixel verification:
+  [`.agents/notes/2026-10-14-S7-task2-png-verify.py`](../.agents/notes/2026-10-14-S7-task2-png-verify.py)).
+- **Sample data:** a fresh store seeded by `python3 -m work_runtime
+  ui-demo` — the five-work sample (waiting, needs-attention, transferred,
+  succeeded, cancelled) built by real runtime commands, never fabricated
+  rows. The desktop shots select `cancel-1` so the detail pane shows a
+  real record, including the banner that acknowledges the confirmed
+  external effect is retained, not reversed.
+- **Viewports:** 1280×900 and 390×844 at deviceScaleFactor 1, matching the
+  `width`/`height` attributes on the page's `img` elements; language is
+  set through the viewer's own toggle (headless Chrome follows the OS
+  locale on first load).
+- **Transient content:** the sampling-time chip shows the capture
+  moment's clock (the live viewer refreshes it) and the store chip shows
+  only the demo database's basename (`runtime.sqlite`); no user-specific
+  paths, timestamps beyond that chip, or private data appear. At the
+  top-of-page framing, the accepted design's denser metric tiles mean the
+  1280×900 viewport shows the first three to four of the five works and
+  the 390×844 viewport shows the wrapped topbar/controls, tiles, filters
+  and the start of the list — the full list is one scroll away in the
+  real viewer.
+
+[DESIGN.md](../DESIGN.md) governs the GUI's visual contract from S7
+onward, and these screenshots are the first set captured under it. The
+S5-era GUI (and the screenshot set S6 shipped with) predates that
+specification; nothing on this site claims retroactive S5/DESIGN
+compliance for it.
+
 ## Publishing
 
 The website is published by [`.github/workflows/pages.yml`](../.github/workflows/pages.yml),
