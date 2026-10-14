@@ -21,3 +21,7 @@ work-runtime = "work_runtime.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["work_runtime*"]
+
+# Packaged single-source SOP example cards (read via importlib.resources).
+[tool.setuptools.package-data]
+work_runtime = ["data/sop/*.json"]

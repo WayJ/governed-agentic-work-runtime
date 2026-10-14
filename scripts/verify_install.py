@@ -29,14 +29,30 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
 9. Run the `work-runtime intervention-demo` console entry point outside the
    checkout and assert the same printed result and the same independent
    per-store counts as stage 7.
+10. Assert the packaged SOP example cards ship inside the (non-editable)
+    install — `importlib.resources.files("work_runtime")` resolves inside the
+    venv and both data/sop cards are present — and the installed `lint-sop`
+    on an extracted copy of publishing.json exits 0 with the pinned digest.
+11. Run `python -m work_runtime adoption-demo` outside the checkout and verify
+    it INDEPENDENTLY of the printed text: enumerate the printed artifact
+    directory (exactly one hash-named committed .json, zero .stage leftovers),
+    parse the artifact with the standard library only (exact keys, version 1,
+    key equal to the operation's business key, recomputed document digest,
+    accepted FILE- receipt), read the runtime database directly (work
+    article-1 closed/succeeded, operation confirmed_succeeded), and re-run the
+    demo's printed inspect command verbatim.
+12. Run the `work-runtime adoption-demo` console entry point outside the
+    checkout and apply the same independent enumeration/parse checks.
 
 Usage: python3 scripts/verify_install.py [--python INTERP] [--repo PATH] [--keep]
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -49,7 +65,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEMO_FINAL_LINE = "external applications created: 1"
 PUBLISH_FINAL_LINE = "published artifacts: 1"
 INTERVENTION_FINAL_LINE = "accepted applications: 3 (one per store)"
+ADOPTION_FINAL_LINE = "committed file artifacts: 1"
+PINNED_PUBLISHING_DIGEST = ("56c85d32da9a9eee6330326e2d14ce0661dbc26d"
+                            "782b13d0259c3f149e6be000")
 INSPECT_DB = re.compile(r'--db "([^"]+)"')
+INSPECT_COMMAND = re.compile(r'^  (python3 -m work_runtime inspect .+)$', re.MULTILINE)
+COMMITTED_ARTIFACT = re.compile(r'committed artifact: "([^"]+)"')
+HASH_NAMED = re.compile(r"^[0-9a-f]{64}\.json$")
 # pkg-resources appears as a virtual entry on some Debian-derived pips.
 ALLOWED_PACKAGES = {"pip", "setuptools", "wheel", "pkg-resources", "governed-work-runtime"}
 
@@ -121,6 +143,127 @@ def require_intervention_store_counts(stdout, source):
                 "%s store %s holds %d accepted applications (expected exactly 1)"
                 % (source, store, accepted))
     return stores
+
+
+def canonical_json(value):
+    """Canonical JSON with the same parameters the runtime uses.
+
+    Implemented locally on purpose: this script never imports the product
+    package for its proofs.
+    """
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False)
+
+
+def parse_committed_artifact(path, source):
+    """Parse and validate one committed FilePublisher artifact, stdlib only."""
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    require(isinstance(artifact, dict) and set(artifact) == {
+        "artifact_version", "key", "content_digest", "document", "receipt"},
+        "%s artifact %s does not have the exact expected keys" % (source, path))
+    require(type(artifact["artifact_version"]) is int
+            and artifact["artifact_version"] == 1,
+            "%s artifact_version is %r (expected integer 1)"
+            % (source, artifact["artifact_version"]))
+    require(isinstance(artifact["key"], str) and artifact["key"],
+            "%s artifact key is not a nonempty string" % source)
+    document = artifact["document"]
+    require(isinstance(document, dict),
+            "%s artifact document is not an object" % source)
+    recomputed = hashlib.sha256(
+        canonical_json(document).encode("utf-8")).hexdigest()
+    require(artifact["content_digest"] == recomputed,
+            "%s artifact content digest does not match its document" % source)
+    receipt = artifact["receipt"]
+    require(isinstance(receipt, dict)
+            and set(receipt) == {"status", "external_id", "digest"},
+            "%s artifact receipt does not have the exact expected keys" % source)
+    require(receipt["status"] == "accepted",
+            "%s artifact receipt status is %r" % (source, receipt["status"]))
+    require(isinstance(receipt["external_id"], str)
+            and receipt["external_id"].startswith("FILE-"),
+            "%s artifact receipt external_id is %r (expected FILE-...)"
+            % (source, receipt.get("external_id")))
+    require(receipt["digest"] == artifact["content_digest"],
+            "%s artifact receipt digest does not match the content digest" % source)
+    return artifact
+
+
+def require_adoption_proof(stdout, source):
+    """Independent module/console adoption-demo proof, never stdout-only.
+
+    Enumerates the printed artifact directory (exactly one hash-named
+    committed .json, zero .stage leftovers), validates the artifact with the
+    standard library only, reads the runtime database directly (work
+    article-1 closed/succeeded, one confirmed_succeeded operation whose
+    business key equals the artifact key), and re-runs the printed inspect
+    command verbatim against the installed entry point. Returns
+    (artifact_path, runtime_db_path).
+    """
+    require(ADOPTION_FINAL_LINE in stdout,
+            "%s output lacks %r" % (source, ADOPTION_FINAL_LINE))
+    artifact_match = COMMITTED_ARTIFACT.search(stdout)
+    require(artifact_match is not None,
+            "%s printed no committed artifact path" % source)
+    artifact_path = Path(artifact_match.group(1))
+    require(artifact_path.exists(),
+            "%s printed artifact %s does not exist" % (source, artifact_path))
+    directory = artifact_path.parent
+    hash_named = sorted(path for path in directory.iterdir()
+                        if HASH_NAMED.match(path.name))
+    require(len(hash_named) == 1,
+            "%s directory %s holds %d hash-named artifacts (expected exactly 1)"
+            % (source, directory, len(hash_named)))
+    require(hash_named[0] == artifact_path,
+            "%s printed artifact %s is not the committed file %s"
+            % (source, artifact_path, hash_named[0]))
+    leftovers = [path for path in directory.iterdir() if path.suffix == ".stage"]
+    require(not leftovers,
+            "%s left staging files: %s" % (source, leftovers))
+    artifact = parse_committed_artifact(artifact_path, source)
+
+    db_match = INSPECT_DB.search(stdout)
+    require(db_match is not None, "%s printed no inspect --db path" % source)
+    runtime_db = Path(db_match.group(1))
+    require(runtime_db.exists(),
+            "%s runtime database %s does not exist" % (source, runtime_db))
+    db = sqlite3.connect(str(runtime_db))
+    try:
+        works = {row[0]: json.loads(row[1])
+                 for row in db.execute("SELECT id, state FROM works")}
+        operations = [json.loads(row[0])
+                      for row in db.execute("SELECT body FROM operations")]
+    finally:
+        db.close()
+    require(set(works) == {"article-1"},
+            "%s works are %s (expected exactly article-1)" % (source, sorted(works)))
+    work = works["article-1"]
+    require((work["status"], work["outcome"]) == ("closed", "succeeded"),
+            "%s work article-1 is %s/%s (expected closed/succeeded)"
+            % (source, work["status"], work["outcome"]))
+    require(len(operations) == 1,
+            "%s hold %d operations (expected exactly 1)" % (source, len(operations)))
+    operation = operations[0]
+    require(operation["status"] == "confirmed_succeeded",
+            "%s operation is %s (expected confirmed_succeeded)"
+            % (source, operation["status"]))
+    require(artifact["key"] == operation["business_key"],
+            "%s artifact key does not equal the operation business key" % source)
+    require(artifact["document"] == work["document"],
+            "%s artifact document differs from the work's document" % source)
+    return artifact_path, runtime_db
+
+
+def run_printed_inspect_command(stdout, venv_python, outside, source):
+    """Re-run the demo's printed inspect command verbatim (python3 swapped)."""
+    command = INSPECT_COMMAND.search(stdout)
+    require(command is not None, "%s printed no inspect command" % source)
+    words = shlex.split(command.group(1))
+    require(words[0] == "python3", "%s inspect command is not python3-based" % source)
+    words[0] = str(venv_python)
+    result = run(words, outside)
+    require('"outcome": "succeeded"' in result.stdout,
+            "%s installed inspect did not report the succeeded work" % source)
 
 
 def main(argv=None):
@@ -223,11 +366,51 @@ def main(argv=None):
         require_intervention_store_counts(console_intervention.stdout,
                                           "console intervention-demo")
 
+        print("=== packaged SOP resources and installed lint-sop ===")
+        probe = run([venv_python, "-c",
+                     "import importlib.resources, os, sys; "
+                     "sys.stdout.write(os.fspath("
+                     "importlib.resources.files('work_runtime')))"], outside)
+        package_dir = Path(probe.stdout)
+        require(package_dir.resolve().is_relative_to(venv.resolve()),
+                "work_runtime package resolves to %s (expected inside %s); "
+                "the SOP data files would not ship with a real install"
+                % (package_dir, venv))
+        for name in ("expense.json", "publishing.json"):
+            require((package_dir / "data" / "sop" / name).is_file(),
+                    "the install ships no packaged SOP card %s" % name)
+        sample = workspace / "publishing-sample.json"
+        sample.write_bytes((package_dir / "data" / "sop" / "publishing.json")
+                           .read_bytes())
+        lint = run([console, "lint-sop", str(sample), "--json"], outside)
+        lint_result = json.loads(lint.stdout)
+        require(lint_result == {"valid": True,
+                                "digest": PINNED_PUBLISHING_DIGEST,
+                                "diagnostics": [], "scope": "static-only"},
+                "installed lint-sop reported %r (expected clean with the pinned "
+                "digest)" % lint_result)
+
+        print("=== module adoption-demo outside the checkout ===")
+        module_adoption = run([venv_python, "-m", "work_runtime", "adoption-demo"],
+                              outside, show=True)
+        require_adoption_proof(module_adoption.stdout, "module adoption-demo")
+        run_printed_inspect_command(module_adoption.stdout, venv_python, outside,
+                                    "module adoption-demo")
+        print("independent check: one hash-named committed artifact, digest/"
+              "receipt/business key verified, work closed succeeded")
+
+        print("=== console adoption-demo outside the checkout ===")
+        console_adoption = run([console, "adoption-demo"], outside, show=True)
+        require_adoption_proof(console_adoption.stdout, "console adoption-demo")
+        run_printed_inspect_command(console_adoption.stdout, venv_python, outside,
+                                    "console adoption-demo")
+
         print("=== PASS ===")
         print("fresh venv install; import origin inside the venv; no third-party runtime "
               "dependencies; module and console demos outside the checkout with exactly "
-              "one external application, one published artifact and one accepted "
-              "application per intervention store (%.1fs)"
+              "one external application, one published artifact, one accepted "
+              "application per intervention store and one independently parsed "
+              "committed file artifact per adoption entry point (%.1fs)"
               % (time.time() - started))
         return 0
     finally:
