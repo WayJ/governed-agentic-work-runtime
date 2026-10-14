@@ -1,24 +1,36 @@
 """Tests for work_runtime.ui_server — the loopback read-only HTTP boundary."""
 
 import http.client
+import importlib.util
 import io
 import json
+import shutil
 import socket
 import sqlite3
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
 from urllib.parse import quote
 
+import work_runtime
 from work_runtime.demo import demo_grants, initialize, send
 from work_runtime.inspection import GuiReaderError
 from work_runtime.policy import ExpensePolicy
 from work_runtime.runtime import Runtime
-from work_runtime.ui_server import make_ui_server
 
+# The backend module is imported lazily: merely importing this test module
+# must not load work_runtime.ui_server, because the sibling CLI test suite
+# asserts the backend is absent from sys.modules until its own subprocess
+# checks have run (unittest discovery imports every test module first).
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; "
        "base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'")
+
+
+def _make_ui_server(*args, **kwargs):
+    from work_runtime.ui_server import make_ui_server
+    return make_ui_server(*args, **kwargs)
 
 
 class UiServerFixture(unittest.TestCase):
@@ -34,7 +46,7 @@ class UiServerFixture(unittest.TestCase):
         plan = {"steps": ["verify"], "open_requirements": [], "replan_when": []}
         send(runtime, "demo", "revise_plan", plan)
         send(runtime, "demo", "revise_plan", plan)
-        self.server = make_ui_server(self.path, 0)
+        self.server = _make_ui_server(self.path, 0)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever,
                                        kwargs={"poll_interval": 0.05}, daemon=True)
@@ -80,7 +92,7 @@ class ServerCoreTests(UiServerFixture):
 
     def test_startup_invalid_store_raises(self):
         with self.assertRaises(GuiReaderError) as caught:
-            make_ui_server(str(self.dir / "absent.sqlite"), 0)
+            _make_ui_server(str(self.dir / "absent.sqlite"), 0)
         self.assertEqual(caught.exception.code, "DB_NOT_FOUND")
 
     def test_api_routes_json_and_security_headers(self):
@@ -150,16 +162,6 @@ class ServerCoreTests(UiServerFixture):
                 self.assertEqual(response.status, 404, target)
                 self.assertEqual(self.error_code(body), "UNKNOWN_ROUTE")
 
-    def test_static_assets_bounded_404_without_files(self):
-        web_dir = Path(__file__).resolve().parents[1] / "work_runtime" / "web"
-        for target in ("/", "/app.js", "/app.css"):
-            with self.subTest(target=target):
-                response, body = self.request("GET", target)
-                self.assertEqual(response.status, 404)
-                self.assertEqual(self.error_code(body), "UNKNOWN_ROUTE")
-                self.assertNotIn(str(self.dir), body.decode("utf-8"))
-        self.assertFalse(web_dir.exists())
-
     def test_query_validation_400(self):
         cases = (
             "/api/summary?x=1",
@@ -214,7 +216,7 @@ class ServerCoreTests(UiServerFixture):
         self.assertEqual(len(set(seqs)), len(seqs))
 
     def test_shutdown_clean(self):
-        server = make_ui_server(self.path, 0)
+        server = _make_ui_server(self.path, 0)
         thread = threading.Thread(target=server.serve_forever,
                                   kwargs={"poll_interval": 0.05}, daemon=True)
         thread.start()
@@ -389,6 +391,119 @@ class BoundaryTests(UiServerFixture):
         self.assertEqual(response.status, 500)
         self.assertEqual(self.error_code(body), "INVALID_STORE")
         self.assertNotIn(str(self.dir), body.decode("utf-8"))
+
+
+class StaticAssetServingTests(unittest.TestCase):
+    """Static-asset boundary proven independently of this checkout's assets.
+
+    The missing-asset case serves an isolated package copy that ships no
+    ``web/`` directory at all, so the bounded 404 proof holds whether or not
+    the frontend owner's assets are present in this tree. The present-asset
+    case exercises the real packaged files when they exist and skips with a
+    precise reason only in a pre-assembly tree.
+    """
+
+    PROBE_PREFIX = "work_runtime_probe_"
+    ASSET_ROUTES = {
+        "/": ("index.html", "text/html; charset=utf-8"),
+        "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+        "/app.css": ("app.css", "text/css; charset=utf-8"),
+    }
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        initialize(Runtime(self.path, ExpensePolicy(), demo_grants()))
+        self.addCleanup(self._unload_probes)
+
+    def _unload_probes(self):
+        for name in [name for name in sys.modules
+                     if name.startswith(self.PROBE_PREFIX)]:
+            del sys.modules[name]
+
+    def _ui_module_without_assets(self):
+        """Load work_runtime.ui_server from a copy with no web directory."""
+        probe = self.PROBE_PREFIX + "absent"
+        package_dir = Path(self.temp.name) / "package-absent" / "work_runtime"
+        shutil.copytree(Path(work_runtime.__file__).resolve().parent, package_dir,
+                        ignore=shutil.ignore_patterns("__pycache__", "web"))
+        self._load_probe(probe, package_dir)
+        return importlib.import_module(probe + ".ui_server")
+
+    def _load_probe(self, probe, package_dir):
+        spec = importlib.util.spec_from_file_location(
+            probe, package_dir / "__init__.py",
+            submodule_search_locations=[str(package_dir)])
+        package = importlib.util.module_from_spec(spec)
+        sys.modules[probe] = package
+        spec.loader.exec_module(package)
+
+    def _serve(self, ui_module=None):
+        factory = (ui_module or importlib.import_module(
+            "work_runtime.ui_server")).make_ui_server
+        server = factory(self.path, 0)
+        thread = threading.Thread(target=server.serve_forever,
+                                  kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 5)
+        return server.server_address[1]
+
+    def _get(self, port, target, method="GET"):
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        connection.request(method, target)
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+        return response, body
+
+    def test_missing_assets_answer_bounded_404(self):
+        port = self._serve(self._ui_module_without_assets())
+        for target in ("/", "/app.js", "/app.css"):
+            with self.subTest(target=target):
+                response, body = self._get(port, target)
+                self.assertEqual(response.status, 404, target)
+                self.assertEqual(json.loads(body)["error"]["code"],
+                                 "UNKNOWN_ROUTE")
+                text = body.decode("utf-8")
+                self.assertNotIn(str(self.temp.name), text)
+                self.assertNotIn("/Users/", text)
+                self.assertEqual(int(response.getheader("Content-Length")),
+                                 len(body))
+                self.assertEqual(response.getheader("X-Content-Type-Options"),
+                                 "nosniff")
+                self.assertEqual(response.getheader("Cache-Control"), "no-store")
+                self.assertEqual(response.getheader("Content-Security-Policy"),
+                                 CSP)
+
+    def test_packaged_assets_served_byte_equal_when_present(self):
+        web_dir = Path(work_runtime.__file__).resolve().parent / "web"
+        expected = {}
+        for name, _ in self.ASSET_ROUTES.values():
+            asset = web_dir / name
+            if not asset.is_file():
+                self.skipTest(
+                    "packaged frontend asset absent in this tree (pre-assembly): "
+                    + name)
+            expected[name] = asset.read_bytes()
+        port = self._serve()
+        for target, (name, content_type) in self.ASSET_ROUTES.items():
+            with self.subTest(target=target):
+                response, body = self._get(port, target)
+                self.assertEqual(response.status, 200, target)
+                self.assertEqual(response.getheader("Content-Type"), content_type)
+                self.assertEqual(body, expected[name])
+                self.assertEqual(int(response.getheader("Content-Length")),
+                                 len(expected[name]))
+                head_response, head_body = self._get(port, target, method="HEAD")
+                self.assertEqual(head_response.status, 200)
+                self.assertEqual(head_body, b"")
+                self.assertEqual(head_response.getheader("Content-Length"),
+                                 str(len(expected[name])))
+                self.assertEqual(head_response.getheader("Content-Type"),
+                                 content_type)
 
 
 if __name__ == "__main__":
