@@ -106,15 +106,32 @@ be a nonnegative integer.
 
 - Generate one distinct random secret per source (`secrets.token_bytes(32)` or
   equivalent); 32 bytes is the enforced minimum. Duplicate key material
-  across source identities is rejected at construction.
+  across the entire configuration — every source, every keyring entry — is
+  rejected at construction.
 - Keys live outside this repository and outside the runtime database; the
-  gateway copies the key map at construction and never persists, logs or
+  gateway copies the configuration at construction and never persists, logs or
   echoes key material. Rejection receipts contain no secret, signature or
   candidate content.
 - There is **no default or global secret**: an empty key map simply fails all
   authentication.
-- Rotation/revocation is out of scope: replacing a key takes effect for new
-  envelopes only and there is no key id or revocation list.
+
+### Source keyrings (S11)
+
+Each source is configured either as legacy `bytes` (unchanged single-key
+semantics) or as a keyring — a nonempty `list`/`tuple` of
+`work_runtime.ingress.SourceKey` entries (`key_id`, `secret`, `current`,
+`not_before`, `not_after`), never both shapes for one source. Construction
+validation is exact (D50): `key_id` a nonempty `str`, `secret` `bytes` of at
+least 32 bytes, `current` exactly `bool`, validity bounds each `None` or an
+integer epoch second (bools rejected) with `not_before <= not_after` when both
+are present; `key_id`s unique within the ring; exactly one `current` entry; and
+secret material distinct across the whole configuration. The ring is
+normalized to an immutable per-source tuple copied at construction: mutating
+the caller's dict or list afterwards changes nothing, and rotation means
+constructing a new gateway from new configuration — there is no in-process
+rotation surface. Verification-key selection and validity-window semantics for
+keyring sources are specified under [Gateway checks](#gateway-checks-and-receipts)
+and land with the S11 selector and clock work on this branch.
 
 ## Limitations
 

@@ -291,6 +291,35 @@ row is added.
   `proof_conflict` without reader changes and without writes. Named: the
   `PreservationAndIdempotenceTests` class.
 
+## S11 coverage — configured source signing-key rotation (core wave)
+
+The S11 core wave adds per-source `SourceKey` keyrings, the optional
+authenticated `key_id` envelope field, strict verification-key selection,
+inclusive key validity windows on a single finite clock sample, and
+cache-first replay pins on the unchanged Runtime (`tests/test_key_rotation.py`,
+real SQLite stores; `tests/test_ingress.py` stays the untouched legacy pin).
+Semantics and boundaries: [signed-evidence](signed-evidence.md); the ratification
+is the D49–D53 section of the
+[S11 design](superpowers/specs/2026-10-15-source-key-rotation-design.md).
+
+- **Keyring configuration (D50)**: exact ring types (list/tuple of `SourceKey`
+  only; str/bytes/generator/set values are shape errors, never iterated),
+  nonempty rings, `SourceKey`-only entries, exact field types (`key_id`
+  nonempty str, `secret` bytes ≥32, `current` exactly bool, bounds `None` or
+  exact int — bool traps rejected), `not_before <= not_after`, unique key ids
+  per ring, exactly one `current` entry, secret material distinct across the
+  entire configuration (ring-vs-ring and ring-vs-legacy), normalized immutable
+  per-source tuples immune to caller dict/list mutation after construction, and
+  legacy bytes validation unchanged beside rings. Named:
+  `test_valid_rings_and_mixed_configs_construct`, `test_ring_must_be_list_or_tuple`,
+  `test_ring_must_not_be_empty`, `test_ring_entries_must_be_sourcekey_instances`,
+  `test_ring_entry_field_types_are_exact`, `test_ring_key_ids_unique_within_source`,
+  `test_ring_requires_exactly_one_current_entry`, `test_ring_window_order_validated`,
+  `test_secret_material_distinct_across_entire_config`,
+  `test_configuration_is_copied_at_construction`,
+  `test_legacy_bytes_validation_is_unchanged_beside_rings`
+  (all in `tests/test_key_rotation.py`, class `KeyringConfigTests`).
+
 ## RFC-001 acceptance behaviors (R1–R7)
 
 R1 restart/persistence — `test_prepared_intent_survives_restart`, `test_wait_expiry_survives_restart`, P07/P15 tests. R2 plan edits cannot delete requirements — P10 test. R3 unknown conditions block — P14 tests. R4 timeouts are not failures — `test_timeout_after_commit_then_reconcile`, `test_unknown_without_query_result_requires_attention` (no query result → `needs_attention`, no blind retry). R5 content change invalidates old confirmations — `test_existing_invoice_proof_reused_after_document_change`, `test_invoice_revision_invalidates_old_verification`, `test_unknown_old_content_blocks_new_submission`. R6 duplicate/late callbacks — P08/P09 tests. R7 no success without goal evidence — P12 tests.
