@@ -1,0 +1,81 @@
+PASS EN required section ids present — [True, True, True, True, True, True]
+PASS EN six stages in static DOM — stages=6
+PASS EN all top sections visible — True
+PASS EN language crosslink 'zh/index.html' present — True
+PASS EN every image carries alt text — missing=0
+PASS EN no leading-slash local URLs — []
+PASS EN external URLs are https-only — []
+PASS ZH required section ids present — [True, True, True, True, True, True]
+PASS ZH six stages in static DOM — stages=6
+PASS ZH all top sections visible — True
+PASS ZH language crosslink '../index.html' present — True
+PASS ZH every image carries alt text — missing=0
+PASS ZH no leading-slash local URLs — []
+PASS ZH external URLs are https-only — []
+PASS EN 1280px canvas token on body — rgb(247, 247, 244)
+PASS EN 1280px hero size token (72px) — 72px
+PASS EN 1280px primary CTA is ink/canvas — rgb(247, 247, 244) on rgb(38, 37, 30)
+PASS EN 1280px control radius 8px — 8px
+PASS EN 1280px card radius 12px, no shadow — radius=12px shadow=none
+PASS EN 1280px no horizontal overflow — 0
+PASS EN 1280px all images loaded — 4
+PASS EN 1280px body contrast 6.63 >= 4.5 — fg=(90, 88, 82) bg=(247, 247, 244) ratio=6.63
+PASS EN 1280px .footer-links a contrast 6.63 >= 4.5 — fg=(90, 88, 82) bg=(247, 247, 244) ratio=6.63
+PASS EN 1280px .stage h3 contrast 15.38 >= 4.5 — fg=(38, 37, 30) bg=(255, 255, 255) ratio=15.38
+PASS EN 1280px .badge contrast 12.19 >= 4.5 — fg=(38, 37, 30) bg=(230, 229, 224) ratio=12.19
+PASS EN 1280px CTA contrast 14.33 — 14.325401476463416
+SHOT /tmp/s7img-site-shots/s6-en-1280.png
+PASS EN 390px canvas token on body — rgb(247, 247, 244)
+PASS EN 390px hero size token (32px) — 32px
+PASS EN 390px primary CTA is ink/canvas — rgb(247, 247, 244) on rgb(38, 37, 30)
+PASS EN 390px control radius 8px — 8px
+PASS EN 390px card radius 12px, no shadow — radius=12px shadow=none
+PASS EN 390px no horizontal overflow — 0
+PASS EN 390px all images loaded — 4
+SHOT /tmp/s7img-site-shots/s6-en-390.png
+PASS EN 320px canvas token on body — rgb(247, 247, 244)
+PASS EN 320px hero size token (32px) — 32px
+PASS EN 320px primary CTA is ink/canvas — rgb(247, 247, 244) on rgb(38, 37, 30)
+PASS EN 320px control radius 8px — 8px
+PASS EN 320px card radius 12px, no shadow — radius=12px shadow=none
+PASS EN 320px no horizontal overflow — 0
+PASS EN 320px all images loaded — 4
+SHOT /tmp/s7img-site-shots/s6-en-320.png
+PASS ZH 1280px canvas token on body — rgb(247, 247, 244)
+PASS ZH 1280px hero size token (52px) — 52px
+PASS ZH 1280px primary CTA is ink/canvas — rgb(247, 247, 244) on rgb(38, 37, 30)
+PASS ZH 1280px control radius 8px — 8px
+PASS ZH 1280px card radius 12px, no shadow — radius=12px shadow=none
+PASS ZH 1280px no horizontal overflow — 0
+PASS ZH 1280px all images loaded — 4
+PASS ZH 1280px body contrast 6.63 >= 4.5 — fg=(90, 88, 82) bg=(247, 247, 244) ratio=6.63
+PASS ZH 1280px .footer-links a contrast 6.63 >= 4.5 — fg=(90, 88, 82) bg=(247, 247, 244) ratio=6.63
+PASS ZH 1280px .stage h3 contrast 15.38 >= 4.5 — fg=(38, 37, 30) bg=(255, 255, 255) ratio=15.38
+PASS ZH 1280px .badge contrast 12.19 >= 4.5 — fg=(38, 37, 30) bg=(230, 229, 224) ratio=12.19
+PASS ZH 1280px CTA contrast 14.33 — 14.325401476463416
+SHOT /tmp/s7img-site-shots/s6-zh-1280.png
+PASS ZH 390px canvas token on body — rgb(247, 247, 244)
+PASS ZH 390px hero size token (30px) — 30px
+PASS ZH 390px primary CTA is ink/canvas — rgb(247, 247, 244) on rgb(38, 37, 30)
+PASS ZH 390px control radius 8px — 8px
+PASS ZH 390px card radius 12px, no shadow — radius=12px shadow=none
+PASS ZH 390px no horizontal overflow — 0
+PASS ZH 390px all images loaded — 4
+SHOT /tmp/s7img-site-shots/s6-zh-390.png
+PASS ZH 320px canvas token on body — rgb(247, 247, 244)
+PASS ZH 320px hero size token (30px) — 30px
+PASS ZH 320px primary CTA is ink/canvas — rgb(247, 247, 244) on rgb(38, 37, 30)
+PASS ZH 320px control radius 8px — 8px
+PASS ZH 320px card radius 12px, no shadow — radius=12px shadow=none
+PASS ZH 320px no horizontal overflow — 0
+PASS ZH 320px all images loaded — 4
+SHOT /tmp/s7img-site-shots/s6-zh-320.png
+PASS EN noJS: no injected controls — 0
+PASS EN noJS: all six stages visible — True
+PASS EN noJS: all top sections visible — True
+PASS EN noJS: stylesheet still applied — rgb(247, 247, 244)
+PASS ZH noJS: no injected controls — 0
+PASS ZH noJS: all six stages visible — True
+PASS ZH noJS: all top sections visible — True
+PASS ZH noJS: stylesheet still applied — rgb(247, 247, 244)
+website regression: 74 checks, 0 failed

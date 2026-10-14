@@ -1,0 +1,405 @@
+{
+ "capture": "S7 Task2 website images",
+ "demo_root": "/tmp/s7img-gui-store",
+ "demo_url": "http://127.0.0.1:62069/",
+ "shots": {
+  "desktop-en": {
+   "tag": "desktop-en",
+   "width": 1280,
+   "height": 900,
+   "detail": {
+    "title": "cancel-1",
+    "banner": "Cancellation requested by agent: wrong invoice discoveredClosed cancelled — the acknowledged external effect is retained, not reversed:65820dc90f45451e8b1b7cf119c1de2b → OA-57b3d782e601",
+    "bannerVisible": true,
+    "tab": "Overview",
+    "bodyVisible": true
+   },
+   "controls": {
+    "refresh": {
+     "h": 44,
+     "top": 12,
+     "shadow": "none",
+     "background": "rgb(38, 37, 30)",
+     "color": "rgb(247, 247, 244)"
+    },
+    "poll": {
+     "h": 44,
+     "top": 12,
+     "shadow": "none",
+     "background": "rgb(255, 255, 255)",
+     "color": "rgb(38, 37, 30)"
+    },
+    "lang": {
+     "h": 44,
+     "top": 12,
+     "shadow": "none",
+     "background": "rgb(255, 255, 255)",
+     "color": "rgb(38, 37, 30)"
+    }
+   },
+   "meta": {
+    "source": "runtime.sqlite",
+    "schema": "schema 1",
+    "sampledAt": "Sampling time 22:13:38 — observation, not business-event time",
+    "pollHidden": true
+   },
+   "frame": {
+    "vh": 900,
+    "items": [
+     [
+      "cancel-1",
+      659,
+      719
+     ],
+     [
+      "succeed-1",
+      725,
+      784
+     ],
+     [
+      "transfer-1",
+      790,
+      850
+     ],
+     [
+      "uncertain-1",
+      856,
+      915
+     ],
+     [
+      "wait-1",
+      921,
+      981
+     ]
+    ]
+   },
+   "png": "s7img-en-desktop.png",
+   "png_bytes": 157042,
+   "works": {
+    "works": [
+     {
+      "id": "cancel-1",
+      "status": "closed",
+      "selected": "false"
+     },
+     {
+      "id": "succeed-1",
+      "status": "closed",
+      "selected": "false"
+     },
+     {
+      "id": "transfer-1",
+      "status": "active",
+      "selected": "false"
+     },
+     {
+      "id": "uncertain-1",
+      "status": "needs_attention",
+      "selected": "false"
+     },
+     {
+      "id": "wait-1",
+      "status": "waiting",
+      "selected": "false"
+     }
+    ],
+    "status": "Showing 5 of 5 works"
+   }
+  },
+  "desktop-zh": {
+   "tag": "desktop-zh",
+   "width": 1280,
+   "height": 900,
+   "detail": {
+    "title": "cancel-1",
+    "banner": "agent 申请取消：wrong invoice discovered已关闭并取消 —— 已确认的外部效果被如实记录保留，并未被撤销：65820dc90f45451e8b1b7cf119c1de2b → OA-57b3d782e601",
+    "bannerVisible": true,
+    "tab": "概览",
+    "bodyVisible": true
+   },
+   "controls": {
+    "refresh": {
+     "h": 44,
+     "top": 12,
+     "shadow": "none",
+     "background": "rgb(38, 37, 30)",
+     "color": "rgb(247, 247, 244)"
+    },
+    "poll": {
+     "h": 44,
+     "top": 12,
+     "shadow": "none",
+     "background": "rgb(255, 255, 255)",
+     "color": "rgb(38, 37, 30)"
+    },
+    "lang": {
+     "h": 44,
+     "top": 12,
+     "shadow": "none",
+     "background": "rgb(255, 255, 255)",
+     "color": "rgb(38, 37, 30)"
+    }
+   },
+   "meta": {
+    "source": "runtime.sqlite",
+    "schema": "schema 1",
+    "sampledAt": "采样时间 22:13:39 —— 观察时间，不是业务事件时间",
+    "pollHidden": true
+   },
+   "frame": {
+    "vh": 900,
+    "items": [
+     [
+      "cancel-1",
+      616,
+      675
+     ],
+     [
+      "succeed-1",
+      681,
+      741
+     ],
+     [
+      "transfer-1",
+      747,
+      806
+     ],
+     [
+      "uncertain-1",
+      812,
+      872
+     ],
+     [
+      "wait-1",
+      878,
+      937
+     ]
+    ]
+   },
+   "png": "s7img-zh-desktop.png",
+   "png_bytes": 157036,
+   "works": {
+    "works": [
+     {
+      "id": "cancel-1",
+      "status": "closed",
+      "selected": "false"
+     },
+     {
+      "id": "succeed-1",
+      "status": "closed",
+      "selected": "false"
+     },
+     {
+      "id": "transfer-1",
+      "status": "active",
+      "selected": "false"
+     },
+     {
+      "id": "uncertain-1",
+      "status": "needs_attention",
+      "selected": "false"
+     },
+     {
+      "id": "wait-1",
+      "status": "waiting",
+      "selected": "false"
+     }
+    ],
+    "status": "共 5 项工作中的 5 项"
+   }
+  },
+  "390-en": {
+   "tag": "390-en",
+   "width": 390,
+   "height": 844,
+   "controls": {
+    "refresh": {
+     "h": 44,
+     "top": 110,
+     "shadow": "none",
+     "background": "rgb(38, 37, 30)",
+     "color": "rgb(247, 247, 244)"
+    },
+    "poll": {
+     "h": 44,
+     "top": 110,
+     "shadow": "none",
+     "background": "rgb(255, 255, 255)",
+     "color": "rgb(38, 37, 30)"
+    },
+    "lang": {
+     "h": 44,
+     "top": 110,
+     "shadow": "none",
+     "background": "rgb(255, 255, 255)",
+     "color": "rgb(38, 37, 30)"
+    }
+   },
+   "meta": {
+    "source": "runtime.sqlite",
+    "schema": "schema 1",
+    "sampledAt": "Sampling time 22:13:40 — observation, not business-event time",
+    "pollHidden": true
+   },
+   "frame": {
+    "vh": 844,
+    "items": [
+     [
+      "cancel-1",
+      801,
+      861
+     ],
+     [
+      "succeed-1",
+      867,
+      926
+     ],
+     [
+      "transfer-1",
+      932,
+      992
+     ],
+     [
+      "uncertain-1",
+      998,
+      1057
+     ],
+     [
+      "wait-1",
+      1063,
+      1123
+     ]
+    ]
+   },
+   "png": "s7img-en-390.png",
+   "png_bytes": 62162,
+   "works": {
+    "works": [
+     {
+      "id": "cancel-1",
+      "status": "closed",
+      "selected": "false"
+     },
+     {
+      "id": "succeed-1",
+      "status": "closed",
+      "selected": "false"
+     },
+     {
+      "id": "transfer-1",
+      "status": "active",
+      "selected": "false"
+     },
+     {
+      "id": "uncertain-1",
+      "status": "needs_attention",
+      "selected": "false"
+     },
+     {
+      "id": "wait-1",
+      "status": "waiting",
+      "selected": "false"
+     }
+    ],
+    "status": "Showing 5 of 5 works"
+   }
+  },
+  "390-zh": {
+   "tag": "390-zh",
+   "width": 390,
+   "height": 844,
+   "controls": {
+    "refresh": {
+     "h": 44,
+     "top": 92,
+     "shadow": "none",
+     "background": "rgb(38, 37, 30)",
+     "color": "rgb(247, 247, 244)"
+    },
+    "poll": {
+     "h": 44,
+     "top": 92,
+     "shadow": "none",
+     "background": "rgb(255, 255, 255)",
+     "color": "rgb(38, 37, 30)"
+    },
+    "lang": {
+     "h": 44,
+     "top": 92,
+     "shadow": "none",
+     "background": "rgb(255, 255, 255)",
+     "color": "rgb(38, 37, 30)"
+    }
+   },
+   "meta": {
+    "source": "runtime.sqlite",
+    "schema": "schema 1",
+    "sampledAt": "采样时间 22:13:41 —— 观察时间，不是业务事件时间",
+    "pollHidden": true
+   },
+   "frame": {
+    "vh": 844,
+    "items": [
+     [
+      "cancel-1",
+      740,
+      799
+     ],
+     [
+      "succeed-1",
+      805,
+      865
+     ],
+     [
+      "transfer-1",
+      871,
+      930
+     ],
+     [
+      "uncertain-1",
+      936,
+      996
+     ],
+     [
+      "wait-1",
+      1002,
+      1061
+     ]
+    ]
+   },
+   "png": "s7img-zh-390.png",
+   "png_bytes": 63273,
+   "works": {
+    "works": [
+     {
+      "id": "cancel-1",
+      "status": "closed",
+      "selected": "false"
+     },
+     {
+      "id": "succeed-1",
+      "status": "closed",
+      "selected": "false"
+     },
+     {
+      "id": "transfer-1",
+      "status": "active",
+      "selected": "false"
+     },
+     {
+      "id": "uncertain-1",
+      "status": "needs_attention",
+      "selected": "false"
+     },
+     {
+      "id": "wait-1",
+      "status": "waiting",
+      "selected": "false"
+     }
+    ],
+    "status": "共 5 项工作中的 5 项"
+   }
+  }
+ }
+}

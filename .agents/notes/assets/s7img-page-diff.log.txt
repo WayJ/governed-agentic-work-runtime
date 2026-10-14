@@ -1,0 +1,4 @@
+s6-en-1280.png dims (1280, 6628) changed rows 3431 .. 5097 count 1605 of 6628
+s6-zh-1280.png dims (1280, 6210) changed rows 1902 .. 4805 count 1699 of 6210
+s6-en-390.png dims (390, 9693) changed rows 4605 .. 7566 count 1998 of 9693
+s6-zh-390.png dims (390, 8638) changed rows 3881 .. 6682 count 2228 of 8638
