@@ -13,6 +13,8 @@ import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 
+from .policy import canonical
+
 
 class GuiReaderError(Exception):
     """Bounded reader failure: code plus message, never file contents."""
@@ -43,6 +45,25 @@ def _stored_json(text: str, what: str) -> dict:
                              "stored %s is not valid JSON" % what) from error
     if not isinstance(value, dict):
         raise GuiReaderError("INVALID_STORE", "stored %s is not an object" % what)
+    return value
+
+
+def _reconstructed(value, what: str) -> str:
+    """Canonical Python re-serialization: exact integers, honestly not verbatim."""
+    try:
+        return canonical(value)
+    except (TypeError, ValueError) as error:
+        raise GuiReaderError("INVALID_STORE",
+                             "stored %s cannot be serialized" % what) from error
+
+
+def _entries(value, what: str) -> list:
+    if not isinstance(value, list):
+        raise GuiReaderError("INVALID_STORE", "stored %s is not a list" % what)
+    for entry in value:
+        if not isinstance(entry, dict):
+            raise GuiReaderError("INVALID_STORE",
+                                 "stored %s entry is not an object" % what)
     return value
 
 
@@ -174,3 +195,119 @@ class ReadOnlyInspector:
                 item["id"] = work_id
                 works.append(item)
         return {"total": total, "limit": limit, "offset": offset, "works": works}
+
+    def work_detail(self, work_id: str) -> dict:
+        if not isinstance(work_id, str) or not work_id:
+            raise GuiReaderError("BAD_QUERY", "work id must be a nonempty string")
+        with self._read_connection() as db:
+            row = db.execute("SELECT state FROM works WHERE id=?",
+                             (work_id,)).fetchone()
+            if row is None:
+                raise GuiReaderError("UNKNOWN_WORK", "no work with the given id")
+            state_text = row[0]
+            state = _stored_json(state_text, "work state")
+            work = self._work_envelope(state)
+            waits = []
+            for wait in _entries(state.get("waits", []), "waits"):
+                waits.append({
+                    "id": wait.get("id"),
+                    "requirement_id": wait.get("requirement_id"),
+                    "owner": wait.get("owner"),
+                    "status": wait.get("status"),
+                    "deadline": _decimal(wait.get("deadline"), "wait deadline"),
+                })
+            requirements = []
+            for requirement in _entries(state.get("requirements", []),
+                                         "requirements"):
+                requirements.append({
+                    "id": requirement.get("id"),
+                    "rule_id": requirement.get("rule_id"),
+                    "subject": requirement.get("subject"),
+                    "applicability": requirement.get("applicability"),
+                    "fulfillment": requirement.get("fulfillment"),
+                    "explanation": requirement.get("explanation"),
+                })
+            work.update({
+                "plan_revision": _decimal(state.get("plan_revision"),
+                                          "plan revision"),
+                "document_revision": _decimal(state.get("document_revision"),
+                                              "document revision"),
+                "document_digest": state.get("document_digest"),
+                "waits": waits,
+                "cancellation": state.get("cancellation"),
+                "requirements": requirements,
+                "state_raw": state_text,
+                "document_raw": _reconstructed(state.get("document"), "document"),
+                "plan_raw": _reconstructed(state.get("plan"), "plan"),
+                "completion_raw": (
+                    None if state.get("completion") is None
+                    else _reconstructed(state["completion"], "completion")),
+            })
+            evidence = []
+            for source, event_id, body in db.execute(
+                    "SELECT source, event_id, body FROM evidence "
+                    "WHERE work_id=? ORDER BY source, event_id", (work_id,)):
+                proof = _stored_json(body, "evidence body")
+                evidence.append({
+                    "source": source,
+                    "event_id": event_id,
+                    "kind": proof.get("kind"),
+                    "status": proof.get("status"),
+                    "body_raw": body,
+                    "data_raw": _reconstructed(proof.get("data"), "evidence data"),
+                })
+            operations = []
+            for (body,) in db.execute(
+                    "SELECT body FROM operations WHERE work_id=? ORDER BY id",
+                    (work_id,)):
+                operation = _stored_json(body, "operation body")
+                operations.append({
+                    "id": operation.get("id"),
+                    "business_key": operation.get("business_key"),
+                    "capability": operation.get("capability"),
+                    "actor": operation.get("actor"),
+                    "status": operation.get("status"),
+                    "dispatch_state": operation.get("dispatch_state"),
+                    "reason": operation.get("reason"),
+                    "attempts": [{"id": attempt.get("id"), "status": attempt.get("status")}
+                                 for attempt in _entries(operation.get("attempts", []),
+                                                         "operation attempts")],
+                    "external_id": operation.get("external_id"),
+                    "document_digest": operation.get("document_digest"),
+                    "plan_revision": _decimal(operation.get("plan_revision"),
+                                              "operation plan revision"),
+                    "contract_revision": _decimal(operation.get("contract_revision"),
+                                                  "operation contract revision"),
+                    "document_raw": _reconstructed(operation.get("document"),
+                                                   "operation document"),
+                    "body_raw": body,
+                })
+            commands = []
+            for actor, command_id, receipt_text in db.execute(
+                    "SELECT actor, id, receipt FROM commands WHERE work_id=?",
+                    (work_id,)):
+                receipt = _stored_json(receipt_text, "command receipt")
+                result_version = receipt.get("result_state_version")
+                observed_version = receipt.get("observed_state_version")
+                commands.append({
+                    "actor": actor,
+                    "id": command_id,
+                    "decision": receipt.get("decision"),
+                    "code": receipt.get("code"),
+                    "result_state_version": (
+                        None if result_version is None
+                        else _decimal(result_version, "receipt result_state_version")),
+                    "observed_state_version": (
+                        None if observed_version is None
+                        else _decimal(observed_version, "receipt observed_state_version")),
+                    "receipt_raw": receipt_text,
+                    "blockers_raw": (
+                        None if "blockers" not in receipt
+                        else _reconstructed(receipt["blockers"], "receipt blockers")),
+                    "_sort": (result_version if type(result_version) is int
+                              else observed_version if type(observed_version) is int
+                              else -1, actor, command_id),
+                })
+            commands.sort(key=lambda command: command.pop("_sort"))
+        return {"work": work, "evidence": evidence, "operations": operations,
+                "commands": commands}

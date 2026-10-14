@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 
 from work_runtime.adapters import FakeOA
-from work_runtime.demo import action, demo_grants, initialize, prerequisites, send
-from work_runtime.policy import ExpensePolicy
+from work_runtime.demo import action, demo_grants, document, initialize, prerequisites, send
+from work_runtime.policy import ExpensePolicy, canonical
 from work_runtime.runtime import Runtime
 from work_runtime.inspection import GuiReaderError, ReadOnlyInspector
 
@@ -38,18 +38,35 @@ class InspectorFixture(unittest.TestCase):
                 "SELECT %s FROM %s ORDER BY %s" % (",".join(columns), table, order)
             ).fetchall()
 
-    def succeeded_store(self, work_id="demo"):
+    def succeeded_store(self, work_id="demo", amount=120000, path=None):
         """Drive a real expense work to closed/succeeded plus one rejection."""
-        runtime = self.store(work_id=work_id)
+        runtime = Runtime(path or self.path, ExpensePolicy(), demo_grants())
+        initialize(runtime, work_id=work_id, doc=document(amount=amount))
         rejected = send(runtime, work_id, "request_completion")
         assert rejected["decision"] == "rejected", rejected
         assert rejected["blockers"], "rejection fixture needs blockers"
         prerequisites(runtime, work_id=work_id)
+        send(runtime, work_id, "register_wait", {
+            "requirement_id": "E05:EXP-001",
+            "deadline": 2000000000, "owner": "finance"})
         receipt = action(runtime, work_id=work_id)
         assert receipt["decision"] == "accepted", receipt
         runtime.dispatch(receipt["operation_id"], FakeOA(str(self.dir / "oa.sqlite")))
         accepted = send(runtime, work_id, "request_completion")
         assert accepted["decision"] == "accepted", accepted
+        return runtime
+
+    def cancelled_store(self, work_id="demo"):
+        """Drive a real work to closed/cancelled with an acknowledged effect."""
+        runtime = self.store(work_id=work_id)
+        prerequisites(runtime, work_id=work_id)
+        receipt = action(runtime, work_id=work_id)
+        operation_id = receipt["operation_id"]
+        runtime.dispatch(operation_id, FakeOA(str(self.dir / "oa.sqlite")))
+        send(runtime, work_id, "request_cancel", {"reason": "business closed"})
+        final = send(runtime, work_id, "finalize_cancel",
+                     {"acknowledged_operations": [operation_id]})
+        assert final["decision"] == "accepted", final
         return runtime
 
 
@@ -247,6 +264,169 @@ class ListWorksTests(InspectorFixture):
             with self.assertRaises(GuiReaderError) as caught:
                 inspector.list_works(limit=limit, offset=offset)
             self.assertEqual(caught.exception.code, "BAD_QUERY", (limit, offset))
+
+
+class WorkDetailTests(InspectorFixture):
+    def test_work_detail_full_shape(self):
+        self.succeeded_store(amount=10000000000000001)
+        detail = ReadOnlyInspector(self.path).work_detail("demo")
+        work = detail["work"]
+        self.assertEqual(set(work), {
+            "id", "status", "state_version", "owner", "outcome", "contract",
+            "cancellation_requested", "plan_revision", "document_revision",
+            "document_digest", "waits", "cancellation", "requirements",
+            "state_raw", "document_raw", "plan_raw", "completion_raw"})
+        self.assertEqual(work["status"], "closed")
+        self.assertEqual(work["outcome"], "succeeded")
+        self.assertIsNone(work["cancellation"])
+        self.assertIsInstance(work["plan_revision"], str)
+        self.assertIsInstance(work["document_revision"], str)
+        (state_column,) = self.raw_columns("works", ["state"], "id")[0]
+        self.assertEqual(work["state_raw"], state_column)
+        # Huge integers survive exactly in raw text; JS Number would round them.
+        self.assertIn("10000000000000001", work["document_raw"])
+        self.assertIn("10000000000000001", work["state_raw"])
+        state = json.loads(state_column)
+        self.assertEqual(work["document_raw"], canonical(state["document"]))
+        self.assertEqual(work["plan_raw"], canonical(state["plan"]))
+        self.assertEqual(work["completion_raw"], canonical(state["completion"]))
+        self.assertEqual(len(work["waits"]), 1)
+        wait = work["waits"][0]
+        self.assertEqual(set(wait),
+                         {"id", "requirement_id", "owner", "status", "deadline"})
+        self.assertEqual(wait["requirement_id"], "E05:EXP-001")
+        self.assertEqual(wait["deadline"], "2000000000")
+        self.assertEqual(wait["status"], "triggered")
+        requirements = {r["id"]: r for r in work["requirements"]}
+        e05 = requirements["E05:EXP-001"]
+        self.assertEqual(set(e05), {"id", "rule_id", "subject", "applicability",
+                                    "fulfillment", "explanation"})
+        self.assertEqual(e05["rule_id"], "E05")
+        self.assertEqual(e05["subject"], "EXP-001")
+        self.assertEqual(e05["fulfillment"], "satisfied")
+
+        evidence = detail["evidence"]
+        self.assertEqual(len(evidence), 5)
+        accepted = [e for e in evidence if e["kind"] == "accepted"][0]
+        self.assertEqual(set(accepted), {"source", "event_id", "kind", "status",
+                                         "body_raw", "data_raw"})
+        self.assertEqual(accepted["source"], "oa")
+        self.assertEqual(accepted["status"], "verified")
+        evidence_columns = {(row[0], row[1]): row[2] for row in
+                            self.raw_columns("evidence", ["source", "event_id", "body"],
+                                             "source, event_id")}
+        for proof in evidence:
+            self.assertEqual(proof["body_raw"],
+                             evidence_columns[(proof["source"], proof["event_id"])])
+        self.assertEqual(accepted["data_raw"],
+                         canonical(json.loads(accepted["body_raw"])["data"]))
+
+        operations = detail["operations"]
+        self.assertEqual(len(operations), 1)
+        operation = operations[0]
+        self.assertEqual(set(operation), {
+            "id", "business_key", "capability", "actor", "status", "dispatch_state",
+            "reason", "attempts", "external_id", "document_digest", "plan_revision",
+            "contract_revision", "document_raw", "body_raw"})
+        self.assertEqual(operation["status"], "confirmed_succeeded")
+        self.assertEqual(operation["dispatch_state"], "finished")
+        self.assertIsNone(operation["reason"])
+        self.assertEqual(len(operation["attempts"]), 1)
+        self.assertEqual(set(operation["attempts"][0]), {"id", "status"})
+        self.assertEqual(operation["attempts"][0]["status"], "confirmed_succeeded")
+        self.assertIsInstance(operation["external_id"], str)
+        self.assertIsInstance(operation["plan_revision"], str)
+        self.assertIsInstance(operation["contract_revision"], str)
+        self.assertIn("10000000000000001", operation["document_raw"])
+        (operation_body,) = self.raw_columns("operations", ["body"], "id")[0]
+        self.assertEqual(operation["body_raw"], operation_body)
+
+    def test_work_detail_commands_sorted_with_raws(self):
+        self.succeeded_store()
+        rows = self.raw_columns("commands", ["actor", "id", "receipt"], "actor, id")
+        expected = []
+        for actor, command_id, receipt_text in rows:
+            receipt = json.loads(receipt_text)
+            version = receipt.get("result_state_version")
+            if version is None:
+                version = receipt.get("observed_state_version")
+            expected.append((version if type(version) is int else -1,
+                             actor, command_id, receipt_text))
+        expected.sort(key=lambda item: item[:3])
+        commands = ReadOnlyInspector(self.path).work_detail("demo")["commands"]
+        self.assertEqual([c["id"] for c in commands], [item[2] for item in expected])
+        self.assertEqual([c["actor"] for c in commands], [item[1] for item in expected])
+        rejected_seen = accepted_seen = 0
+        for command, (_, _, _, receipt_text) in zip(commands, expected):
+            receipt = json.loads(receipt_text)
+            self.assertEqual(set(command), {
+                "actor", "id", "decision", "code", "result_state_version",
+                "observed_state_version", "receipt_raw", "blockers_raw"})
+            self.assertEqual(command["receipt_raw"], receipt_text)
+            self.assertEqual(command["decision"], receipt["decision"])
+            if receipt["decision"] == "rejected":
+                rejected_seen += 1
+                self.assertEqual(command["code"], receipt["code"])
+                self.assertIsInstance(command["observed_state_version"], str)
+                self.assertIsNone(command["result_state_version"])
+                self.assertEqual(command["blockers_raw"],
+                                 canonical(receipt.get("blockers")))
+            else:
+                accepted_seen += 1
+                self.assertIsNone(command["code"])
+                self.assertIsInstance(command["result_state_version"], str)
+                self.assertIsNone(command["blockers_raw"])
+        self.assertGreater(rejected_seen, 0)
+        self.assertGreater(accepted_seen, 0)
+
+    def test_work_detail_cancelled_work(self):
+        self.cancelled_store()
+        work = ReadOnlyInspector(self.path).work_detail("demo")["work"]
+        self.assertEqual(work["status"], "closed")
+        self.assertEqual(work["outcome"], "cancelled")
+        self.assertTrue(work["cancellation_requested"])
+        self.assertEqual(work["cancellation"],
+                         {"reason": "business closed", "requested_by": "agent"})
+        completion = json.loads(work["completion_raw"])
+        self.assertEqual(set(completion), {"cancellation", "acknowledged_operations",
+                                           "operation_dispositions"})
+        self.assertEqual(completion["cancellation"], work["cancellation"])
+        self.assertEqual(len(completion["acknowledged_operations"]), 1)
+        self.assertEqual(set(completion["acknowledged_operations"][0]),
+                         {"operation_id", "external_id"})
+        self.assertEqual([d["status"] for d in completion["operation_dispositions"]],
+                         ["confirmed_succeeded"])
+
+    def test_unicode_slash_quote_id_roundtrip(self):
+        work_id = '订单/"A"&1'
+        self.succeeded_store(work_id=work_id)
+        inspector = ReadOnlyInspector(self.path)
+        self.assertIn(work_id, [w["id"] for w in inspector.list_works()["works"]])
+        detail = inspector.work_detail(work_id)
+        self.assertEqual(detail["work"]["id"], work_id)
+
+    def test_work_detail_unknown_raises(self):
+        self.store()
+        with self.assertRaises(GuiReaderError) as caught:
+            ReadOnlyInspector(self.path).work_detail("no-such-work")
+        self.assertEqual(caught.exception.code, "UNKNOWN_WORK")
+
+    def test_work_detail_malformed_records_raise_invalid_store(self):
+        self.succeeded_store()
+        db = self.read()
+        db.execute("UPDATE evidence SET body='{bad'")
+        db.commit()
+        with self.assertRaises(GuiReaderError) as caught:
+            ReadOnlyInspector(self.path).work_detail("demo")
+        self.assertEqual(caught.exception.code, "INVALID_STORE")
+        other = str(self.dir / "second.sqlite")
+        self.succeeded_store(path=other)
+        db = sqlite3.connect(other)
+        db.execute("UPDATE commands SET receipt='[1]'")
+        db.commit()
+        with self.assertRaises(GuiReaderError) as caught:
+            ReadOnlyInspector(other).work_detail("demo")
+        self.assertEqual(caught.exception.code, "INVALID_STORE")
 
 
 if __name__ == "__main__":
