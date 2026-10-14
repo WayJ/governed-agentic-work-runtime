@@ -158,3 +158,58 @@ the request-Host match and cross-alias rejection) and this addendum. Branch
 this addendum commit. No engine/frontend/masterdoc edits, no nested agents, no local
 approval UI, no merges or pushes. Sprint acceptance remains with integration; the
 prior report's claims above describe the pre-correction tip and stand only as history.
+
+## Addendum 2 — 2026-10-14 test correction: static-asset boundary (assembly failures)
+
+Integration's immutable carrier `dd4b00e` (merge of `60311fb` + `fad5e01` + `138d6b4`)
+discovered **602 tests, 5 failures, 1 skipped**. Four failures were mine:
+`test_static_assets_bounded_404_without_files` asserted bounded 404s plus
+`work_runtime/web` absence — an environmental assumption that inverts once the frontend
+owner ships assets (observed RED on the assembled scratch: 3 × `200 != 404` for `/`,
+`/app.js`, `/app.css`, plus `True is not false` from the web-dir assertion). The fifth
+failure (`test_ui_cli.StartupValidationTests.test_port_out_of_range_exits_2_before_any_backend_import`)
+was caused from **my** side: my test module imported `work_runtime.ui_server` at module
+level, and unittest discovery imports every test module before running any test, so the
+CLI suite's `assertNotIn("work_runtime.ui_server", sys.modules)` could never hold under
+discovery.
+
+**Correction** (commit `7b6281c`, only `tests/test_ui_server.py`): the old test is
+replaced by `StaticAssetServingTests`. The missing-asset case serves the boundary from
+an isolated package copy that ships no `web/` directory at all (real file I/O, no
+mocks, independent of whether this checkout carries assets — nothing renamed or
+deleted); it keeps the full bounded proof (404, `UNKNOWN_ROUTE` code, no path leaks,
+accurate `Content-Length`, nosniff/no-store/CSP). The present-asset case exercises the
+real packaged `work_runtime/web` files when they exist — actual HTTP 200, exact MIME per
+route, byte-equal bodies, accurate GET/HEAD `Content-Length` — and skips with a precise
+per-file reason only in a pre-assembly tree. The backend import moved from module level
+into the serving helper, so merely importing the test module loads no backend module.
+
+**Evidence** (disposable scratch extracted from `dd4b00e` via `git archive` inside the
+owned checkout; no dev merge, no carrier mutation):
+
+- RED, assembled `dd4b00e` as-is: `Ran 602 tests ... FAILED (failures=5, skipped=1)`;
+  my four failures listed above, fifth as described.
+- GREEN, same assembled files with only `tests/test_ui_server.py` replaced by the
+  corrected file: `Ran 603 tests ... OK (skipped=1)` — 602 − 1 removed + 2 new tests;
+  the single skip is the frontend's own precise
+  `test_absent_backend_is_a_bounded_startup_error` ("backend assembled"); my
+  present-asset test **ran** there (real `GET 200` logged), it does not count as
+  skipped.
+- Isolated backend tree (`fad5e01` + `7b6281c`): `Ran 576 tests ... OK (skipped=1)` —
+  the skip is mine, `test_packaged_assets_served_byte_equal_when_present` pre-assembly;
+  a skipped test is **not** tested: the 200/MIME/byte-equal proof has no coverage in
+  isolation and is only exercised in assembly.
+- Import hygiene: `import tests.test_ui_server` leaves
+  `work_runtime.ui_server` out of `sys.modules` (checked: `False`); `python3 -m
+  compileall -q work_runtime tests scripts` clean in both trees.
+
+**Routed to master, not self-fixed (other owner's file)**:
+`test_ui_cli.py:94` asserts global `sys.modules` purity inside the shared discovery
+process, so `python3 -m unittest tests.test_ui_server tests.test_ui_cli` (explicit
+non-alphabetical order) still fails that one test even after my deferral — alphabetical
+discovery, the condition integration actually runs, passes. Hardening that assertion
+(e.g. subprocess isolation) belongs to the frontend owner.
+
+**Corrected tip for integration route-back**: `7b6281c` on `WayJ/s5-readonly-backend`
+(base `fad5e01`; test file + this addendum only). Production files, baseline and other
+owners' files untouched; `work_runtime/ui_server.py` not edited in this task.
