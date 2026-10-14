@@ -26,7 +26,7 @@ date: 2026-10-14
 
 | sprint | state | note |
 |---|---|---|
-| S6 | ready | 2026-10-14 user explicitly requests a developer-facing showcase website. 2026-10-14 strategic ready: S5 published8db405a CI38515090420 verified; independent builder3673b44 and master ratification settle architecture/contrast/checker. Materialize after saved DESIGN/AGENTS published and synced; WIP1. [Design](../specs/2026-10-14-s6-developer-website-design.md). |
+| S6 | started | 2026-10-14 user explicitly requests a developer-facing showcase website. 2026-10-14 strategic ready: S5 published8db405a CI38515090420 verified; independent builder3673b44 and master ratification settle architecture/contrast/checker. Materialized 2026-10-14 after published UI agreement sync eff84d8; [S6](../sprints/2026-10-14-S6-plan.md), WIP1. [Design](../specs/2026-10-14-s6-developer-website-design.md). |
 
 ## Decisions (ADR)
 
