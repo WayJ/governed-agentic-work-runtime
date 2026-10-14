@@ -179,6 +179,7 @@
     detailForId: null,
     detailJson: "",
     worksJson: "",
+    listError: false,
     activeTab: "overview",
     filterText: "",
     filterStatus: "",
@@ -322,17 +323,27 @@
   }
 
   function renderList() {
+    renderFilterOptions();
+    renderListItems();
+  }
+
+  function renderListItems() {
     var box = document.getElementById("work-list");
     var statusLine = document.getElementById("list-status");
+    /* Remember list focus across the rebuild so a poll refresh never
+       interrupts keyboard navigation. */
+    var focusId = document.activeElement && document.activeElement.dataset
+      && document.activeElement.dataset.workId;
     while (box.firstChild) { box.removeChild(box.firstChild); }
-    renderStatusFilter();
     if (!state.loadedOnce) {
-      statusLine.textContent = t("list.loading");
+      statusLine.textContent = state.listError
+        ? t("detail.error") : t("list.loading");
       return;
     }
     var shown = visibleWorks();
     if (!state.works.length) {
-      statusLine.textContent = t("list.empty");
+      statusLine.textContent = state.listError
+        ? t("detail.error") : t("list.empty");
       return;
     }
     shown.forEach(function (work) {
@@ -359,25 +370,31 @@
     if (state.total > state.works.length) { text += t("list.capped"); }
     statusLine.textContent = state.works.length && !shown.length
       ? t("list.noMatch") : text;
+    if (focusId) {
+      Array.prototype.forEach.call(
+        box.querySelectorAll(".work-item"), function (item) {
+          if (item.dataset.workId === focusId) { item.focus(); }
+        });
+    }
   }
 
-  function renderStatusFilter() {
+  function renderFilterOptions() {
     var select = document.getElementById("status-filter");
+    /* Never rebuild the dropdown while the user is interacting with it. */
+    if (document.activeElement === select) { return; }
     var current = state.filterStatus;
     while (select.firstChild) { select.removeChild(select.firstChild); }
     var statuses = {};
     state.works.forEach(function (work) { statuses[work.status] = true; });
-    if (state.summary && state.summary.work_statuses) {
-      Object.keys(state.summary.work_statuses).forEach(function (name) {
-        statuses[name] = true;
-      });
-    }
+    var summaryStatuses = (state.summary && state.summary.work_statuses) || {};
+    Object.keys(summaryStatuses).forEach(function (name) {
+      statuses[name] = true;
+    });
     var all = el("option", "", t("filter.allStatuses"));
     all.value = "";
     select.appendChild(all);
     Object.keys(statuses).sort().forEach(function (name) {
-      var option = el("option", "", name + " (" +
-        state.summary.work_statuses[name] + ")");
+      var option = el("option", "", name + " (" + (summaryStatuses[name] || "–") + ")");
       option.value = name;
       select.appendChild(option);
     });
@@ -410,7 +427,7 @@
 
   function resetEvents(workId) {
     state.events = { loadedFor: null, after: "0", hasMore: false,
-                     rows: [], error: false };
+                     rows: [], error: false, json: "" };
   }
 
   function loadDetail() {
@@ -749,9 +766,21 @@
               + "&limit=" + EVENTS_PAGE_LIMIT)
       .then(function (payload) {
         if (token !== state.detailEpoch || state.selectedId !== workId) { return; }
+        var serialized = JSON.stringify(payload);
+        var replacing = reset || !append;
+        /* An unchanged first page must not re-render the open detail view
+           (and so must not steal focus) on every poll. */
+        if (replacing && state.events.loadedFor === workId && !state.events.error
+            && serialized === state.events.json) {
+          state.events.after = payload.next_after !== undefined
+            && payload.next_after !== null ? String(payload.next_after) : "0";
+          state.events.hasMore = !!payload.has_more;
+          return;
+        }
         state.events.loadedFor = workId;
         state.events.error = false;
-        state.events.rows = reset || !append ? payload.events || []
+        state.events.json = serialized;
+        state.events.rows = replacing ? payload.events || []
           : state.events.rows.concat(payload.events || []);
         state.events.after = payload.next_after !== undefined
           && payload.next_after !== null ? String(payload.next_after) : "0";
@@ -845,9 +874,11 @@
 
   /* ---------- connection state ---------- */
 
-  function markDisconnected() {
+  function markDisconnected(error) {
     var banner = document.getElementById("connection-banner");
-    banner.textContent = t("banner.disconnected");
+    banner.textContent = error instanceof ApiError
+      ? t("detail.error") + " (" + error.code + ")"
+      : t("banner.disconnected");
     banner.classList.remove("hidden");
   }
 
@@ -863,29 +894,33 @@
       .then(function (summary) {
         if (token !== state.refreshEpoch) { return; }
         state.summary = summary;
-        renderStoreMeta(); renderTiles(); renderCounts(); renderList();
+        renderStoreMeta(); renderTiles(); renderCounts(); renderFilterOptions();
         clearDisconnected();
       })
       .catch(function (error) {
         if (token !== state.refreshEpoch) { return; }
-        if (!(error instanceof ApiError)) { markDisconnected(); }
+        markDisconnected(error);
       });
     fetchJSON("/api/works?limit=" + WORKS_PAGE_LIMIT + "&offset=0")
       .then(function (payload) {
         if (token !== state.refreshEpoch) { return; }
         var serialized = JSON.stringify(payload);
+        state.listError = false;
         if (serialized !== state.worksJson) {
           state.works = payload.works || [];
           state.total = Number(payload.total || 0);
           state.worksJson = serialized;
-          renderList();  /* skipped when unchanged, to keep list focus stable */
+          renderListItems();  /* skipped when unchanged, to keep list focus */
+          renderFilterOptions();
         }
         state.loadedOnce = true;
         clearDisconnected();
       })
       .catch(function (error) {
         if (token !== state.refreshEpoch) { return; }
-        if (!(error instanceof ApiError)) { markDisconnected(); }
+        state.listError = true;
+        renderListItems();
+        markDisconnected(error);
       });
     if (state.selectedId) { loadDetail(); }
   }
