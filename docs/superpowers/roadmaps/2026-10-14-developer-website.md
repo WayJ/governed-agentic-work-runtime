@@ -26,7 +26,7 @@ date: 2026-10-14
 
 | sprint | state | note |
 |---|---|---|
-| S6 | planned | 2026-10-14 user explicitly requests a developer-facing showcase website. Start only after S5 publication completes and draft builder review is ratified; WIP1. [Design](../specs/2026-10-14-s6-developer-website-design.md). |
+| S6 | ready | 2026-10-14 user explicitly requests a developer-facing showcase website. 2026-10-14 strategic ready: S5 published8db405a CI38515090420 verified; independent builder3673b44 and master ratification settle architecture/contrast/checker. Materialize after saved DESIGN/AGENTS published and synced; WIP1. [Design](../specs/2026-10-14-s6-developer-website-design.md). |
 
 ## Decisions (ADR)
 
@@ -35,6 +35,8 @@ date: 2026-10-14
 | D26 | Prioritize developer website after S5 | User explicitly asks for introduction/showcase site; open-source adoption needs a public understandable entry point. | 2026-10-14 | [Scope](../specs/2026-10-14-s6-developer-website-design.md) |
 | D27 | Repository-owned static bilingual pages with GitHub Pages target | Works with Orca worktree ownership and no runtime dependencies; avoid unnecessary hosted app/server stack. Pages not yet enabled: actual public repo has_pages=false at planning time. | 2026-10-14 | [Hosting design](../specs/2026-10-14-s6-developer-website-design.md) |
 | D28 | Apply DESIGN visual grammar while preserving real project semantics | Imported Cursor reference defines visual tokens, not brand identity, imagined agent stages or production guarantees. | 2026-10-14 | [Design adaptation](../specs/2026-10-14-s6-developer-website-design.md) |
+
+| D29 | Ratify builder defaults and accessible design adaptations | Computed contrast, deterministic checker/subpath handling and real screenshot/browser/deployment proof pinned before code. | 2026-10-14 | [Ratification](../specs/2026-10-14-s6-developer-website-design.md#builder-ratification--2026-10-14-before-code) |
 
 ## Asset Disposition
 
