@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-15 (S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-15 (S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -188,6 +188,61 @@ The read-only viewer surfaces (derived revoked identities, closed-work
 notice) remain the later S8 owner wave recorded in the sprint plan; this
 slice adds no viewer claim.
 
+## S9 coverage — accepted-evidence collision prevention and recovery
+
+The S9 core wave added the accepted-source operation-id reservation and
+acceptance-proof conflict resolution on the unchanged Runtime, schema 1 and
+both demo policy families (`tests/test_accepted_evidence_collision.py`,
+24 tests). Semantics and boundaries:
+[runtime boundaries](runtime-boundaries.md); the reservation rides the same
+deduplicating command path as every other command, so no protocol matrix
+row is added.
+
+- **Intake reservation (D39)**: `OPERATION_ID_RESERVED` persisted rejection
+  with `blockers == [operation_id]` after unchanged authority and old-row
+  dedup/conflict precedence; the accepted-source union is recomputed per
+  intake across loaded policy versions (renamed accepted source across a
+  migration, mutated live policy object, missing-version fail-closed
+  unchanged); reservation is global across works and kinds
+  (overlapping-mapping poison), unrelated sources are never blocked and
+  fresh-id imports stay valid; publishing-family mirror. Named: the
+  `IntakeReservationTests` and `PublishingReservationTests` classes.
+- **Legacy conflict resolution (D40/D41)**: pre-fix poisoned stores, built
+  only by clearly labelled direct-SQL fixtures with the canonical
+  `_receive` row shape from accepted original inputs (no product bypass),
+  resolve to the actual accepted external result
+  (`confirmed_succeeded`/`finished`/`external_id`/existing attempt status,
+  exactly one retained external effect) plus the exact nine-field
+  `proof_conflict` snapshot and eleven-field `AcceptanceProofConflict`
+  event replacing `OperationResolved` on that path only; the conflicting
+  row stays byte-identical across pending/verified/invalid/revoked and
+  malformed-body variants (null snapshots, nothing coerced from candidate
+  data); closed custom stores keep `status`/`outcome`/`completion` with
+  `work_was_closed: true`; publishing-family mirror. Named: the
+  `LegacyConflictTests` and `PublishingLegacyConflictTests` classes.
+- **Crashes, lost responses and liveness**: the resolution is one
+  transaction — exception injection and a real `os._exit(76)` child dying
+  inside the conflict transaction roll back and redo deterministically with
+  one external effect; a lost accepted response
+  (`timeout_after_commit`) recovers exactly once through lookup;
+  `recover()` reaches later operations after a conflict instead of
+  aborting on the poisoned one.
+- **Preservation and idempotence pins**: an exact resend of a pre-fix
+  poisoning payload dedups with the candidate's current status and changed
+  content stays `SOURCE_EVENT_CONFLICT`; post-confirmation imports keep
+  conflict semantics; stored rejections replay verbatim with unchanged
+  replay reauthorization (fresh `AUTHORITY_DENIED` on authority loss);
+  completion gains no new blocker (a verified conflicting import satisfies
+  the acceptance rule like any trusted import, an unverified one blocks on
+  the normal requirements), replacement proofs work through new events,
+  and `finalize_cancel` acknowledges the confirmed conflict effect with
+  its real external id; repeated `recover()` is operation-scoped
+  idempotent (zero writes and zero adapter calls for the settled
+  operation while other records still verify/expire and later operations
+  dispatch); the generic read-only inspector exposes the event and
+  `proof_conflict` without reader changes and without writes. Named: the
+  `PreservationAndIdempotenceTests` class.
+
 ## RFC-001 acceptance behaviors (R1–R7)
 
 R1 restart/persistence — `test_prepared_intent_survives_restart`, `test_wait_expiry_survives_restart`, P07/P15 tests. R2 plan edits cannot delete requirements — P10 test. R3 unknown conditions block — P14 tests. R4 timeouts are not failures — `test_timeout_after_commit_then_reconcile`, `test_unknown_without_query_result_requires_attention` (no query result → `needs_attention`, no blind retry). R5 content change invalidates old confirmations — `test_existing_invoice_proof_reused_after_document_change`, `test_invoice_revision_invalidates_old_verification`, `test_unknown_old_content_blocks_new_submission`. R6 duplicate/late callbacks — P08/P09 tests. R7 no success without goal evidence — P12 tests.
@@ -202,6 +257,7 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 - Policy/SOP publication, author review workflow, and policy migration beyond the explicit same-family command above. Cross-domain policy registries are rejected; there is no implicit upgrade on restart or recovery. Static SOP lint is structural review only: no textual-predicate execution, no provenance verification, no authority approval, and no link from a linted card to an executing Python policy.
 - Compensation (effect reversal) execution: `finalize_cancel` acknowledges external effects with their external ids and records every disposition — it never claims to reverse an effect. Evidence revocation (S8) withdraws a proof's current validity durably but is likewise not compensation, does not fence an in-flight external call, and does not rewrite historical receipts, closure snapshots or confirmed effects.
 - Distributed execution: worker leases, fencing, cross-node coordination (P13). An attempt already durable when cancellation is requested remains uncertain until reconciled; there is no external fence. `FilePublisher`'s per-key artifact uniqueness is adapter-local, not a distributed exactly-once claim.
+- Automatic repair of corrupted stores. Conflict recovery degrades malformed-but-valid-JSON evidence bodies to `null` snapshot fields; a body that is not valid JSON aborts only that operation's resolution (rolled back, retried) and is never repaired by the runtime.
 - Any real external system adapter beyond the local filesystem; `FakeOA` and `FakePublisher` are local demonstrations, and `FilePublisher` targets trusted local directories only (hardlink support required, best-effort directory fsync, no power-loss/hostile-filesystem/symlink guarantee).
 - General natural-language rule formalization.
 - Collected external human adoption feedback: the planned guide-only rehearsal is an AI-agent exercise recorded as such, not human validation.

@@ -21,7 +21,7 @@ from pathlib import Path
 from work_runtime import CommandError, ExpensePolicy, Runtime
 from work_runtime.adapters import FakeOA
 from work_runtime.demo import (action, demo_grants, document, initialize,
-                               prerequisites, send)
+                               prerequisites, proof, send)
 from work_runtime.policy import canonical, digest
 from work_runtime.publishing import FakePublisher, PublishingPolicy
 from work_runtime.publishing_demo import article, publishing_grants
@@ -596,6 +596,212 @@ class PublishingLegacyConflictTests(PublishingCollisionCase):
         self.assertFalse(body["work_was_closed"])
         self.assertEqual(evidence_row(self.path, "publisher", op), before)
         self.assertEqual(self.publisher.published_count(), 1)
+
+
+class CountingAdapter:
+    """Wraps an adapter, recording execute/lookup calls by business key."""
+
+    def __init__(self, inner):
+        self.inner, self.executes, self.lookups = inner, [], []
+
+    def execute(self, key, document, content_digest):
+        self.executes.append(key)
+        return self.inner.execute(key, document, content_digest)
+
+    def lookup(self, key):
+        self.lookups.append(key)
+        return self.inner.lookup(key)
+
+
+class PreservationAndIdempotenceTests(CollisionCase):
+    """Post-fix pins: precedence, replay, closure boundary, op-scoped recovery."""
+
+    def test_exact_resend_of_legacy_poisoning_payload_dedups(self):
+        op = self.submit_other()
+        demo_digest = self.runtime.get_work("demo")["document_digest"]
+        payload = {"event_id": op, "kind": "accepted", "data": {"digest": demo_digest}}
+        candidate = legacy_poison(self.path, "demo", op, data=payload["data"])
+        # The old-row branch answers first: an exact resend is a dedup
+        # receipt with the candidate's current status — never a reservation.
+        resend = self.runtime.command("oa", "resend-1", "demo",
+                                      "record_evidence", payload)
+        self.assertEqual(resend["decision"], "accepted")
+        self.assertEqual(resend["evidence_id"], candidate["id"])
+        self.assertEqual(resend["evidence_status"], "pending_verification")
+        # Changed content under the same id is still SOURCE_EVENT_CONFLICT.
+        changed = self.runtime.command(
+            "oa", "resend-2", "demo", "record_evidence",
+            {**payload, "data": {"digest": "different"}})
+        self.assertEqual(changed["decision"], "rejected")
+        self.assertEqual(changed["code"], "SOURCE_EVENT_CONFLICT")
+
+    def test_post_confirmation_import_keeps_conflict_semantics(self):
+        op = self.submit_other()
+        resolved = self.runtime.dispatch(op, self.oa)
+        self.assertNotIn("proof_conflict", resolved)  # normal path unchanged
+        # The runtime-written proof row exists: any import under that id is
+        # SOURCE_EVENT_CONFLICT, even the near-identical payload.
+        near = {"digest": resolved["document_digest"],
+                "external_id": resolved["external_id"]}
+        receipt = self.record(self.runtime, "oa", "demo", "accepted", near, op)
+        self.assertEqual(receipt["decision"], "rejected")
+        self.assertEqual(receipt["code"], "SOURCE_EVENT_CONFLICT")
+
+    def test_reserved_rejection_replay_reauthorization(self):
+        op = self.submit_other()
+        payload = {"event_id": op, "kind": "accepted",
+                   "data": {"digest": self.runtime.get_work("demo")["document_digest"]}}
+        stored = self.runtime.command("oa", "reserved-once", "demo",
+                                      "record_evidence", payload)
+        self.assertEqual(stored["code"], "OPERATION_ID_RESERVED")
+        self.assertEqual(self.runtime.command("oa", "reserved-once", "demo",
+                                              "record_evidence", payload), stored)
+        # Authority lost: a fresh unpersisted AUTHORITY_DENIED; the stored
+        # rejection is never rewritten.
+        self.grants["oa"].discard("evidence.write")
+        self.assertEqual(
+            self.runtime.command("oa", "reserved-once", "demo",
+                                 "record_evidence", payload)["code"],
+            "AUTHORITY_DENIED")
+        self.grants["oa"].add("evidence.write")
+        self.assertEqual(self.runtime.command("oa", "reserved-once", "demo",
+                                              "record_evidence", payload), stored)
+        self.assertEqual(self.runtime.get_command("oa", "reserved-once"), stored)
+
+    def test_completion_after_conflict_cites_verified_conflicting_row(self):
+        op = self.submit_other()
+        demo_digest = self.runtime.get_work("demo")["document_digest"]
+        candidate = legacy_poison(self.path, "demo", op,
+                                  data={"digest": demo_digest, "external_id": "OA-x"})
+        self.runtime.verify_pending("demo")
+        self.runtime.dispatch(op, self.oa)
+        # No new blocker (D41): the verified import satisfies E08 exactly as
+        # any trusted accepted import would, and completion cites it.
+        receipt = send(self.runtime, "demo", "request_completion")
+        self.assertEqual(receipt["decision"], "accepted")
+        self.assertIn(candidate["id"],
+                      self.runtime.get_work("demo")["completion"]["evidence"])
+
+    def test_completion_with_unverified_conflict_blocked_by_requirements(self):
+        op = self.submit_other()
+        demo_digest = self.runtime.get_work("demo")["document_digest"]
+        legacy_poison(self.path, "demo", op, data={"digest": demo_digest})
+        self.runtime.dispatch(op, self.oa)
+        receipt = send(self.runtime, "demo", "request_completion")
+        self.assertEqual(receipt["decision"], "rejected")
+        self.assertEqual(receipt["code"], "REQUIREMENT_UNSATISFIED")
+        self.assertEqual({b["rule_id"] for b in receipt["blockers"]}, {"E08"})
+
+    def test_replacement_proof_via_new_event_satisfies_requirements(self):
+        op = self.submit_other()
+        other_digest = self.runtime.get_work("other")["document_digest"]
+        legacy_poison(self.path, "demo", op,
+                      data={"digest": self.runtime.get_work("demo")["document_digest"]})
+        self.runtime.dispatch(op, self.oa)
+        replacement = self.record(self.runtime, "oa", "other", "accepted",
+                                  {"digest": other_digest, "external_id": "OA-y"},
+                                  "replacement-1")
+        self.assertEqual(replacement["decision"], "accepted")
+        self.runtime.verify_pending("other")
+        receipt = send(self.runtime, "other", "request_completion")
+        self.assertEqual(receipt["decision"], "accepted")
+        self.assertIn(replacement["evidence_id"],
+                      self.runtime.get_work("other")["completion"]["evidence"])
+
+    def test_finalize_cancel_acknowledges_confirmed_conflict_effect(self):
+        op = self.submit_other()
+        legacy_poison(self.path, "demo", op,
+                      data={"digest": self.runtime.get_work("demo")["document_digest"]})
+        resolved = self.runtime.dispatch(op, self.oa)
+        self.grants["root"] = {"work.intervene"}
+        send(self.runtime, "other", "request_cancel",
+             {"reason": "superseded"}, actor="root")
+        receipt = send(self.runtime, "other", "finalize_cancel",
+                       {"acknowledged_operations": [op]}, actor="root")
+        self.assertEqual(receipt["decision"], "accepted")
+        completion = self.runtime.get_work("other")["completion"]
+        self.assertEqual(completion["acknowledged_operations"],
+                         [{"operation_id": op,
+                           "external_id": resolved["external_id"]}])
+
+    def test_repeated_recover_is_operation_scoped_idempotent(self):
+        counting = CountingAdapter(self.oa)
+        op = self.submit_other()
+        legacy_poison(self.path, "demo", op,
+                      data={"digest": self.runtime.get_work("demo")["document_digest"]})
+
+        def explode():
+            raise RuntimeError("resolution pending recovery")
+
+        with self.assertRaises(RuntimeError):
+            self.runtime.dispatch(op, counting, fault=explode)
+        op_key = self.runtime.get_operation(op)["business_key"]
+        self.assertEqual(counting.executes, [op_key])
+        # Other records recover must still reach: an unverified proof, an
+        # expired wait (on the poisoned work, whose E08 stays unsatisfied —
+        # the conflicting row is shape-invalid) and a later ready operation.
+        initialize(self.runtime, "third",
+                   document(document_id="EXP-003", invoice_id="INV-003"))
+        prerequisites(self.runtime, "third")
+        proof(self.runtime, "third", "approval", "finance",
+              event_id="late-approval")
+        send(self.runtime, "demo", "register_wait", {
+            "requirement_id": "E08:EXP-001", "deadline": 100, "owner": "agent"})
+        later = action(self.runtime, "third")["operation_id"]
+        later_key = self.runtime.get_operation(later)["business_key"]
+
+        first = self.runtime.recover(counting, now=2000000000)
+        by_id = {r["id"]: r for r in first}
+        self.assertEqual(by_id[op]["status"], "confirmed_succeeded")
+        self.assertEqual(by_id[later]["status"], "confirmed_succeeded")
+        self.assertEqual(len(conflict_events(self.path, "other")), 1)
+        self.assertEqual(self.runtime.get_work("demo")["waits"][0]["status"],
+                         "expired")
+        db = sqlite3.connect(self.path)
+        types_by_work = {}
+        for work_id in ("demo", "third"):
+            types_by_work[work_id] = [row[0] for row in db.execute(
+                "SELECT type FROM events WHERE work_id=?", (work_id,))]
+        db.close()
+        self.assertIn("EvidenceEvaluated", types_by_work["demo"])
+        self.assertIn("WaitExpired", types_by_work["demo"])
+        self.assertIn("EvidenceEvaluated", types_by_work["third"])
+        settled = store_snapshot(self.path)
+
+        # Two more cycles: zero writes anywhere, zero adapter calls for the
+        # settled operation — op-scoped idempotence, not a whole-store claim
+        # (the other-record events above were this same recover's work).
+        self.runtime.recover(counting, now=2000000000)
+        self.runtime.recover(counting, now=2000000000)
+        self.assertEqual(store_snapshot(self.path), settled)
+        self.assertEqual(len(conflict_events(self.path, "other")), 1)
+        self.assertEqual(counting.executes.count(op_key), 1)
+        self.assertEqual(counting.executes.count(later_key), 1)
+        self.assertEqual(counting.lookups.count(op_key), 1)
+        self.assertEqual(counting.lookups.count(later_key), 0)
+
+    def test_inspector_exposes_conflict_read_only(self):
+        from work_runtime.inspection import ReadOnlyInspector
+        op = self.submit_other()
+        legacy_poison(self.path, "demo", op,
+                      data={"digest": self.runtime.get_work("demo")["document_digest"]})
+        self.runtime.dispatch(op, self.oa)
+        before = store_snapshot(self.path)
+        inspector = ReadOnlyInspector(self.path)
+        self.assertIn("AcceptanceProofConflict",
+                      inspector.summary()["event_types"])
+        rows = [e for e in inspector.events("other")["events"]
+                if e["type"] == "AcceptanceProofConflict"]
+        self.assertEqual(len(rows), 1)
+        body = json.loads(rows[0]["body_raw"])
+        self.assertEqual(set(body), SNAPSHOT_FIELDS | {"operation_id",
+                                                       "work_was_closed"})
+        operations = inspector.work_detail("other")["operations"]
+        raw = [json.loads(o["body_raw"]) for o in operations if o["id"] == op]
+        self.assertEqual(len(raw), 1)
+        self.assertIn("proof_conflict", raw[0])
+        # Reads never write: the store is byte-identical after inspection.
+        self.assertEqual(store_snapshot(self.path), before)
 
 
 if __name__ == "__main__":
