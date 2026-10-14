@@ -324,7 +324,9 @@ is the D49–D53 section of the
   downgrade), unknown `key_id` and wrong-secret-with-known-`key_id` rejected
   with zero writes, `key_id` envelopes against legacy `bytes` sources
   rejected, legacy-format envelopes authenticating against the `current`
-  entry only (non-current key never silently serves the legacy path),
+  entry only in **both** directions (non-current key under the old
+  configuration, and the retained old key under a rotated configuration —
+  never silently served on the legacy path),
   current-entry happy path accepted, record-level immunity to caller
   dict/list mutation after construction, cross-material impersonation across
   sources rejected, signer round-trip of the optional field with

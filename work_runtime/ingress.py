@@ -13,7 +13,7 @@ import hmac
 import json
 import math
 import time
-from typing import Callable, Dict, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, NamedTuple, Optional
 
 from .policy import canonical
 

@@ -189,7 +189,10 @@ secret material distinct across the whole configuration. The ring is
 normalized to an immutable per-source tuple copied at construction: mutating
 the caller's dict or list afterwards changes nothing, and rotation means
 constructing a new gateway from new configuration — there is no in-process
-rotation surface. Verification-key selection and validity-window semantics
+rotation surface. That copy discipline covers the **caller-supplied
+configuration**; it is not a protection boundary against directly mutating
+the gateway's own attributes in process, which is unsupported trusted-local
+misuse like mutating any other runtime object. Verification-key selection and validity-window semantics
 for keyring sources are specified under
 [Gateway checks](#gateway-checks-and-receipts) above; the documented rollover
 ladder is: add the new key (both valid, signers cite it by `key_id`), switch

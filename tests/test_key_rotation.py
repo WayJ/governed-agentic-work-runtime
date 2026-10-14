@@ -266,6 +266,19 @@ class KeySelectionTests(unittest.TestCase):
         self.assertEqual(self.gateway.record(envelope),
                          {"decision": "rejected", "code": "EVIDENCE_AUTHENTICATION_FAILED"})
         self.assertEqual(self.table_counts(), before)
+        # Rotated direction (design §4.5 step 3, D51): with K2 current, a
+        # legacy-format envelope signed with the retained, still-valid K1
+        # fails HMAC against K2 — explicit, never silently accepted.
+        rotated = SignedEvidenceGateway(
+            self.runtime,
+            {"finance": [SourceKey(self.k1.key_id, self.k1.secret),
+                         SourceKey(self.k2.key_id, self.k2.secret, current=True)],
+             "ledger": self.ledger},
+            clock=lambda: self.now)
+        old_key_envelope = self.signed(secret=self.k1.secret)
+        self.assertEqual(rotated.record(old_key_envelope),
+                         {"decision": "rejected", "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(self.table_counts(), before)
 
     def test_legacy_envelope_current_entry_happy_path_accepted(self):
         receipt = self.gateway.record(self.signed())
