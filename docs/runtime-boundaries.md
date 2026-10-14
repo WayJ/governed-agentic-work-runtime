@@ -133,6 +133,62 @@ An adapter exception during `execute` or `lookup` never fabricates a business
 rejection; it records `outcome_unknown` with the exception's type name as the
 reason.
 
+## Accepted-evidence reservation (operation-id intake)
+
+`record_evidence` admission gains one persisted rejection, placed after the
+unchanged shape, source+kind authority and existing-row branches:
+
+```text
+shape/identity checks → source+kind authority → existing row
+(fingerprint match → dedup resend with current status; mismatch →
+SOURCE_EVENT_CONFLICT) → OPERATION_ID_RESERVED → insert pending candidate
+```
+
+A fresh `record_evidence` whose `event_id` exactly equals a stored operation
+id is rejected `OPERATION_ID_RESERVED` — a persisted business rejection with
+`blockers == [operation_id]` that replays verbatim under the stored command
+id while current authority holds (a new command id gets a fresh rejection) —
+**when the actor is the configured accepted source of any currently loaded
+policy version**. The union is recomputed on every intake from the live
+registry: never cached at construction, never assuming a policy-object
+default fallback or immutability, so a renamed accepted source travels with
+configuration. A runtime serving both V1 (`oa`) and V2 (`oa2`) reserves both
+actors, because V1-pinned works still resolve — and insert accepted proofs —
+under `oa`; a registry that does not load V1 keeps the existing fail-closed
+rule for V1-pinned works. No source authority is broadened or reduced, and
+command CAS/fingerprint/version mechanics and replay reauthorization are
+untouched.
+
+Why this predicate: `_resolve` inserts accepted proofs only under the
+accepted source of a loaded policy, so every source in the union could
+otherwise create a row occupying the `(source, event_id)` primary key the
+runtime itself must later write under that operation id — the collision
+would fail every later `reconcile`/`recover` of the operation forever. The
+reservation is therefore global: any stored operation id, across works and
+across proof kinds, permanently (operations rows are permanent, so a
+reservation never expires). It is scoped to the accepted-source union, not
+to kind `accepted` (an overlapping kind mapping lets the same actor poison
+through an ordinary kind) and not to the same work (the stored id is
+store-global).
+
+Disclosed consequences:
+
+- **Conservative over-block:** an accepted source importing an operation id
+  that belongs to a work whose own policy resolves under a *different*
+  accepted source is still rejected. The rejection receipt says why; such
+  content would be dubious anyway.
+- **Unrelated sources are never blocked** — only an accepted source of a
+  loaded version can ever occupy a future proof identity, so no one else is
+  checked, and fresh-event imports by accepted sources remain valid. Real
+  external event ids are externally generated and never alias runtime
+  `uuid4` operation ids except by 2^-122 coincidence (stated, not handled).
+- **Dedup/conflict precedence is unchanged:** an *existing* row under the
+  same `(source, event_id)` is answered by the old-row branch first — an
+  exact resend still returns the candidate's current status and changed
+  content is still `SOURCE_EVENT_CONFLICT`, including rows that predate
+  this guard.
+- Signed ingress already excludes kind `accepted` and is untouched.
+
 ## Cancellation boundary
 
 Full command reference, authority matrix and rejection codes:
@@ -400,3 +456,14 @@ Evidence-revocation guarantees (authority/codes/atomicity, replay
 reauthorization, permanence, closed-work correction, crash rollback, both
 policy families) are pinned in `tests/test_evidence_revocation.py`; the
 test-name table lives in [evidence-revocation.md](evidence-revocation.md).
+
+Accepted-evidence collision guarantees are pinned in
+`tests/test_accepted_evidence_collision.py`:
+
+| guarantee | test |
+|---|---|
+| accepted-source operation-id intake rejected with blockers | `test_operation_id_intake_rejected_for_accepted_source` |
+| reservation is global across works | `test_reservation_is_global_across_works` |
+| reservation is source-scoped, not kind-scoped | `test_reservation_is_source_scoped_not_kind_scoped` |
+| union spans loaded versions and follows reconfiguration | `test_registry_union_spans_loaded_versions`, `test_reservation_union_recomputed_per_intake` |
+| publishing family reservation mirror | `test_publishing_operation_id_intake_rejected` |

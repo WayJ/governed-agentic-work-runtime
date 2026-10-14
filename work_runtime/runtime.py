@@ -654,6 +654,23 @@ class Runtime:
         self._save(db, work, "OperationPrepared", {"operation_id": operation["id"]})
         return self._accepted(work, operation_id=operation["id"], operation_status_at_decision="prepared")
 
+    def _reserved_accepted_sources(self) -> set:
+        """Accepted sources of every loaded policy version, per intake.
+
+        Recomputed on every record_evidence so trusted-local registry and
+        policy reconfiguration travel with configuration; no default
+        fallback and no policy-object immutability is assumed. Any stored
+        operation id is reserved for every source in this union, across
+        works and proof kinds, because _resolve inserts accepted proofs
+        only under a loaded policy's accepted source.
+        """
+        reserved = set()
+        for policy in self.policies.values():
+            source = policy.evidence_sources.get("accepted")
+            if isinstance(source, str) and source:
+                reserved.add(source)
+        return reserved
+
     def _receive(self, db, actor, work, payload):
         required = {"event_id", "kind", "data"}
         if set(payload) != required or not isinstance(payload["data"], dict):
@@ -674,6 +691,16 @@ class Runtime:
             # original command's stored receipt stays verbatim.
             return self._accepted(work, evidence_id=json.loads(old[1])["id"],
                                   evidence_status=json.loads(old[1])["status"])
+        # Operation-id reservation (D39): after unchanged authority and the
+        # old-row dedup/conflict branch, an accepted source of any loaded
+        # policy version can never import an event id that aliases a stored
+        # operation — the later acceptance-proof INSERT would collide. The
+        # over-block on another version's accepted source is intended.
+        if (actor in self._reserved_accepted_sources()
+                and db.execute("SELECT 1 FROM operations WHERE id=?",
+                               (event_id,)).fetchone()):
+            return self._reject("OPERATION_ID_RESERVED",
+                                work["state_version"], [event_id])
         candidate = {"id": uuid.uuid4().hex, "source": actor, "event_id": event_id,
                      "kind": kind, "data": payload["data"], "status": "pending_verification"}
         db.execute("INSERT INTO evidence VALUES (?,?,?,?,?)",
