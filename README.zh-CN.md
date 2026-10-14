@@ -4,7 +4,7 @@
 
 面向长期业务工作的持久运行时：Agent 提议行动，规则决定能否执行，证据证明是否完成。
 
-[English](README.md) · [核心语义](docs/RFC-001-core-semantics.md) · [交互协议](docs/RFC-003-runtime-protocol.md) · [验证覆盖](docs/verification.md) · [贡献指南](CONTRIBUTING.md)
+[English](README.md) · [网站](docs/website.md) · [核心语义](docs/RFC-001-core-semantics.md) · [交互协议](docs/RFC-003-runtime-protocol.md) · [验证覆盖](docs/verification.md) · [贡献指南](CONTRIBUTING.md)
 
 当前是本地参考原型，使用 Python 3.9+ 和标准库，Apache-2.0 许可证，无第三方运行依赖。报销与内容发布两个业务域及其 OA/发布服务适配器均为演示，不需要模型 API Key。
 
