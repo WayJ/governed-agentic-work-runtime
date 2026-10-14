@@ -20,7 +20,7 @@ The initial implementation provides this local slice. Publication and CI results
 - Demonstrate a second business domain and one harness integration through the same command protocol.
 - A new contributor can implement an adapter using documentation without modifying lifecycle internals.
 
-The S2 wave provides this as a local, test-gated slice: HMAC-signed evidence intake with per-source keys ([signed evidence](signed-evidence.md)), declared adapter contracts with a reusable conformance mixin ([adapter contract](adapter-contract.md)), and the content-publication domain with its no-credentials harness (`python3 -m work_runtime publish-demo`). "Trustworthy" still owes external review, real adapter experience and key-rotation/revocation semantics — none of which a local prototype can claim.
+The S2 wave provides this as a local, test-gated slice: HMAC-signed evidence intake with per-source keys ([signed evidence](signed-evidence.md)), declared adapter contracts with a reusable conformance mixin ([adapter contract](adapter-contract.md)), and the content-publication domain with its no-credentials harness (`python3 -m work_runtime publish-demo`). The S4 wave adds the adapter-authoring half of the last bullet: a real third adapter (`FilePublisher`, [file adapter](file-adapter.md)) passed through the same public conformance tests without lifecycle edits, a [contributor guide](contributor-guide.md) with worked adapter and rule-card tutorials, and an inspectable adoption harness (`python3 -m work_runtime adoption-demo`). A guide-only AI-agent rehearsal exercises the guide without reading internals and is reported separately; it is an agent rehearsal, not collected external human feedback. "Trustworthy" still owes external review, real adapter experience beyond the local filesystem, and key-rotation/revocation semantics — none of which a local prototype can claim.
 
 ## 0.3 — Change and intervention
 
@@ -34,7 +34,7 @@ The S3 wave provides part of this as a local, test-gated slice: cancellation tha
 
 ## 0.4 — Authoring and execution at scale
 
-- Use real author feedback to validate the rule-card model and publication process.
+- Use real author feedback to validate the rule-card model and publication process. The S4 slice delivers static rule-card linting with exact content digests and packaged examples ([SOP authoring](sop-authoring.md)); the publication process itself — authority approvals, an immutable publication store — is not implemented, and external author feedback remains uncollected (the recorded guide-only exercise is an agent rehearsal).
 - Measure concurrent-work needs before choosing distributed storage and scheduling.
 - Add worker leases and fencing only with external-system enforcement and dedicated race tests.
 - Provide an inspectable timeline and operational metrics grounded in business events.

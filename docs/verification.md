@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-13 (S3 interventions, ownership transfer and pinned policy versions) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-14 (S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -8,7 +8,7 @@ This report states what the local reference prototype actually verifies, and wha
 
 - A **local, single-process reference prototype**: an in-process Python library over SQLite. There is no server, no remote protocol transport, and no multi-tenant authorization; protocol commands are library calls.
 - **Local trust, not authentication.** Actor names (`agent`, `finance`, …) come from a grants map supplied by the embedding application. They distinguish trusted local principals; they do not authenticate remote callers. RFC-003 §2.1 (identity from trusted connections) is deferred. The S2 signed ingress (`work_runtime/ingress.py`) authenticates *evidence sources* with per-source HMAC keys within a configured shared-key boundary — it is not transport security, tenant authorization, or proof of business truth, and the reserved `accepted` receipt kind cannot be supplied through it. Direct Runtime methods remain trusted-local.
-- **The external systems are stand-ins.** `FakeOA` is a separate local SQLite database modeling an external service with idempotent submit, lookup, and invoice uniqueness; `FakePublisher` likewise models a publishing service with idempotent submit, lookup, and one artifact per `(document id, content digest)`. No real external system integration exists yet. Adapter contracts are declared claims for trusted local configuration, not remotely verified guarantees.
+- **The external systems are stand-ins — plus one real local adapter.** `FakeOA` is a separate local SQLite database modeling an external service with idempotent submit, lookup, and invoice uniqueness; `FakePublisher` likewise models a publishing service with idempotent submit, lookup, and one artifact per `(document id, content digest)`. The S4 `FilePublisher` is a real effect, not a stand-in: one immutable hash-named JSON artifact per idempotency key on a trusted local directory. No remote or networked external system integration exists yet. Adapter contracts are declared claims for trusted local configuration, not remotely verified guarantees.
 - **One policy family per runtime database, with an explicit version registry.** A runtime may additionally load same-family policy versions through the keyword-only `policies` registry; every Work stays pinned to its bound version (no implicit upgrade), a restart fails closed until the pinned version is loaded, and `migrate_policy` is the only explicit, transactional, evidence-revalidating migration path. Cross-family registries are rejected; the expense and content-publication domains still run the same `Runtime` class in separate databases.
 - **Concurrency model**: SQLite serializes command submission across multiple `Runtime` instances sharing one work database (verified by concurrent duplicate-command tests), while operation dispatch assumes a single coordinator. Distributed worker leases are not implemented (P13 below).
 
@@ -20,6 +20,7 @@ python3 scripts/check_docs.py                     # contracts gate (local doc li
 python3 -m work_runtime demo                      # demo gate (real crash recovery)
 python3 -m work_runtime publish-demo              # demo gate (signed-evidence publication)
 python3 -m work_runtime intervention-demo         # demo gate (transfer, cancel, migrate)
+python3 -m work_runtime adoption-demo             # demo gate (lint + file-adapter adoption)
 python3 -m compileall -q work_runtime tests scripts  # syntax gate
 python3 scripts/verify_install.py                 # fresh-venv install + demos outside the checkout
 ```
@@ -69,6 +70,17 @@ The S3 wave added the intervention lifecycle on the runtime (`tests/test_interve
 
 The P01–P15 matrix above is unchanged by this wave: intervention behaviors are deliberately not blanket-mapped onto protocol acceptance cases, and the matrix still names only its own evidence. Intervention commands travel the same deduplicating command path as every other command (`test_duplicate_cancel_commands_share_one_receipt`, `test_cancel_intent_is_immutable_and_replay_returns_original`), which is protocol machinery, not a new matrix row.
 
+## S4 coverage — static SOP lint, file adapter, adoption harness
+
+The S4 wave added two foundations (authoring, file adapter) with their own reviewed evidence — `tests/test_authoring.py` (146 tests: exactly-14 diagnostics, iterative preflight/SCC graph boundary, digest key-order neutrality) and `tests/test_file_adapter.py` (50 tests: conformance over real directories, corruption matrix, subprocess races and real process death) — and the dependent adoption surface in `tests/test_adoption_demo.py` (this wave). Semantics and boundaries: [SOP authoring](sop-authoring.md), [file adapter](file-adapter.md), [contributor guide](contributor-guide.md).
+
+- **Strict `lint-sop` CLI loader** (`LintCleanTests`, `LintDefectTests`, `LoaderExit2Tests`, `SecretEchoTests`): exit 0 clean with the exact `{valid, digest, diagnostics, scope:"static-only"}` JSON envelope and pinned packaged-card digests; exit 1 for lint diagnostics incl. syntactically valid escaped-surrogate **values and keys** (`INVALID_UNICODE`), with JSON output ASCII-escaped so diagnostics can never crash stdout and human lines surrogate-safe; exit 2 for duplicate object keys (top-level and nested), `NaN`/`Infinity` literals, malformed JSON, invalid UTF-8 bytes, unreadable files/directories, files strictly over 1 MiB and unparseably deep nesting (caught `RecursionError`, no traceback) — with bounded static messages that never echo file contents or secrets (planted-marker tests). Exactly-1 MiB files still load (boundary pinned).
+- **Packaged single-source cards** (`PackagedResourceTests`): `work_runtime/data/sop/{expense,publishing}.json` read via `importlib.resources.files`, lint-clean with the recorded digests; `pyproject.toml` ships them as package data, and a fresh non-editable install is verified below.
+- **Adoption demo** (`ResponseLossWrapperTests`, `AdoptionDemoTests`, `AdoptionDemoHygieneTests`, `AdoptionCliTests`): the composition wrapper delegates to the real `FilePublisher` (contract surfaced, `TimeoutError` raised only after the durable commit); the demo blocks on C02, rejects a tampered signed approval before any intake write, keeps valid candidates pending until verification, commits exactly one hash-named artifact, recovers the lost response by reconciling the original business key after restart (one attempt, nothing resent) and closes the work `succeeded` — asserted against the artifact file itself, the runtime database and the printed `inspect`/artifact paths run verbatim. Fresh stores per run; parent-directory contents survive; runs work with the working directory outside the checkout.
+- **Installed verification** (`scripts/verify_install.py` stages, exercised fresh per run): the packaged cards resolve inside the venv and the installed `lint-sop` reproduces the pinned digest; module AND console `adoption-demo` entry points run outside the checkout with the artifact directory independently enumerated (exactly one hash-named `.json`, zero `.stage` leftovers) and the artifact independently parsed with the standard library only — exact keys, `artifact_version` 1, key equal to the operation's business key, recomputed document digest, accepted `FILE-` receipt — plus the work read directly from SQLite as `closed/succeeded` and the printed inspect command re-run verbatim. CI additionally runs the exit-0/1/2 `lint-sop` trio.
+
+The adoption harness adds no protocol matrix row: it reuses the same command/dispatch/reconcile machinery already covered above, on the unchanged Runtime and `PublishingPolicy`.
+
 ## RFC-001 acceptance behaviors (R1–R7)
 
 R1 restart/persistence — `test_prepared_intent_survives_restart`, `test_wait_expiry_survives_restart`, P07/P15 tests. R2 plan edits cannot delete requirements — P10 test. R3 unknown conditions block — P14 tests. R4 timeouts are not failures — `test_timeout_after_commit_then_reconcile`, `test_unknown_without_query_result_requires_attention` (no query result → `needs_attention`, no blind retry). R5 content change invalidates old confirmations — `test_existing_invoice_proof_reused_after_document_change`, `test_invoice_revision_invalidates_old_verification`, `test_unknown_old_content_blocks_new_submission`. R6 duplicate/late callbacks — P08/P09 tests. R7 no success without goal evidence — P12 tests.
@@ -80,15 +92,19 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 ## Explicitly out of scope
 
 - Remote or multi-tenant authentication and authorization (local principal names only). Owner, delegate and `work.intervene` administrator grants are trusted-local configuration, not authenticated identities; replay protection rechecks this local authority, it is not a distributed security boundary.
-- Policy/SOP publication, author review workflow, and policy migration beyond the explicit same-family command above. Cross-domain policy registries are rejected; there is no implicit upgrade on restart or recovery.
+- Policy/SOP publication, author review workflow, and policy migration beyond the explicit same-family command above. Cross-domain policy registries are rejected; there is no implicit upgrade on restart or recovery. Static SOP lint is structural review only: no textual-predicate execution, no provenance verification, no authority approval, and no link from a linted card to an executing Python policy.
 - Compensation (effect reversal) execution and evidence revocation: `finalize_cancel` acknowledges external effects with their external ids and records every disposition — it never claims to reverse an effect, and verified evidence cannot yet be revoked.
-- Distributed execution: worker leases, fencing, cross-node coordination (P13). An attempt already durable when cancellation is requested remains uncertain until reconciled; there is no external fence.
-- Any real external system adapter; `FakeOA` is a local demonstration.
+- Distributed execution: worker leases, fencing, cross-node coordination (P13). An attempt already durable when cancellation is requested remains uncertain until reconciled; there is no external fence. `FilePublisher`'s per-key artifact uniqueness is adapter-local, not a distributed exactly-once claim.
+- Any real external system adapter beyond the local filesystem; `FakeOA` and `FakePublisher` are local demonstrations, and `FilePublisher` targets trusted local directories only (hardlink support required, best-effort directory fsync, no power-loss/hostile-filesystem/symlink guarantee).
 - General natural-language rule formalization.
+- Collected external human adoption feedback: the planned guide-only rehearsal is an AI-agent exercise recorded as such, not human validation.
 
 ## Related
 
 - [Runtime boundaries](runtime-boundaries.md) — transaction and dispatch boundary internals, produced by the parallel S1 runtime work and integrated with this document in the S1 carrier. Before that integration this link was the one recorded pending link in the contracts gate; with both branches assembled the gate requires zero broken links.
 - [Adapter contract](adapter-contract.md) — declared adapter metadata, receipt validation and the reusable conformance mixin.
 - [Signed evidence](signed-evidence.md) — ingress trust model, envelope semantics, replay handling and key guidance.
+- [SOP authoring](sop-authoring.md) — rule-card schema, the exactly-14 diagnostic codes and digest semantics.
+- [File adapter](file-adapter.md) — `FilePublisher` contract, artifact shape and platform boundaries.
+- [Contributor guide](contributor-guide.md) — adapter and rule-card tutorials over the public interfaces.
 - [RFC-001](RFC-001-core-semantics.md) · [RFC-002](RFC-002-sop-authoring-and-binding.md) · [RFC-003](RFC-003-runtime-protocol.md) · [Reference scenarios](reference-scenarios.md) · [Roadmap](roadmap.md)
