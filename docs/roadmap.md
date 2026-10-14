@@ -10,7 +10,7 @@ Status: proposed milestones, not delivery commitments. The aim is a useful open-
 - Publish actual verification coverage, including deferred guarantees.
 - Provide English and Chinese entry points, contribution guidance and CI.
 
-The initial implementation provides this local slice. Publication and CI results still require the repository to be pushed and the workflow to run.
+This reference slice has been published on GitHub. At the S6 release (`7931cc6`), [CI](https://github.com/WayJ/governed-agentic-work-runtime/actions/runs/38528039775) and [Pages deployment](https://github.com/WayJ/governed-agentic-work-runtime/actions/runs/38528125321) succeeded at the same published commit. The [developer website](https://wayj.github.io/governed-agentic-work-runtime/) provides English and Chinese entry points and real sample GUI images. This is a pre-alpha local reference implementation; publication is not production validation.
 
 ## 0.2 — Trustworthy integration boundaries
 
@@ -37,7 +37,7 @@ The S3 wave provides part of this as a local, test-gated slice: cancellation tha
 - Use real author feedback to validate the rule-card model and publication process. The S4 slice delivers static rule-card linting with exact content digests and packaged examples ([SOP authoring](sop-authoring.md)); the publication process itself — authority approvals, an immutable publication store — is not implemented, and external author feedback remains uncollected (the recorded guide-only exercise is an agent rehearsal).
 - Measure concurrent-work needs before choosing distributed storage and scheduling.
 - Add worker leases and fencing only with external-system enforcement and dedicated race tests.
-- Provide an inspectable timeline and operational metrics grounded in business events.
+- Provide an inspectable timeline and operational metrics grounded in business events. S5 delivers an offline, bilingual [read-only operations viewer](gui.md) over actual SQLite snapshots, evidence, command decisions, logical operations and event sequence. Counts describe persisted records, not agent-session telemetry; no lifecycle controls, tenant authentication or distributed timing guarantees are implied. S7 is applying the subsequently supplied visual specification and remains in development until independently accepted and released.
 
 ## How we judge progress
 
