@@ -136,3 +136,20 @@ Delivery-owner scope complete: checker + meaningful failing-first tests,
 CI/Pages wiring, honest preview/publish docs, AGENTS gate/doc-sync rows in
 the same commit as the checker. Nothing claims the site itself is built,
 deployed or visually verified.
+
+## Addendum — 2026-10-14 README gate-list follow-up (task_be26affa69e9)
+
+Coordinator-ordered docs-only closeout of this report's remaining item 4:
+`python3 scripts/check_site.py` was added as the eighth gate command in the
+"Verify a checkout" (EN) and 本地验证 (ZH) blocks of README.md and
+README.zh-CN.md, with the stale "first seven commands" wording corrected to
+"first eight" and a pointer to docs/website.md. The new prose states the
+gate needs the website pages assembled to pass and does not prove browser
+behavior — it does not claim the public site is deployed or that the site
+gate has passed (the assembled-site run still pends integration). The
+verify_install module/console coverage sentences and all local-trust claims
+are untouched. Scope: both READMEs plus this addendum only; no
+checker/tests/workflow/AGENTS/website/core changes, no new tests (prose
+change), no merge/push. Verification: `python3 scripts/check_docs.py` → 0
+broken links; `git diff --check` clean; `git status` shows only the two
+READMEs and this report.
