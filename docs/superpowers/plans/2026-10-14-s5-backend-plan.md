@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python >= 3.9 standard library only (`sqlite3`, `http.server`, `urllib.parse`), `unittest`, zero runtime dependencies.
 
-**Spec:** [D25 design](../specs/2026-10-14-s5-gui-design.md), [S5 sprint](../sprints/2026-10-14-S5-plan.md), [S5 supervision](../s5-supervision.md), [builder check](../../../.agents/notes/2026-10-14-S5-design-review.md) — D25 overrides the builder report where they differ (goal in contract, requirement `id`, commands list, `counts.attempts`, whole-column `state_raw`/`body_raw`/`receipt_raw`).
+**Spec:** [D25 design](../specs/2026-10-14-s5-gui-design.md), [S5 sprint](../sprints/2026-10-14-S5-plan.md), [S5 supervision](2026-10-14-s5-supervision.md), [builder check](../../../.agents/notes/2026-10-14-S5-design-review.md) — D25 overrides the builder report where they differ (goal in contract, requirement `id`, commands list, `counts.attempts`, whole-column `state_raw`/`body_raw`/`receipt_raw`).
 
 ## Global Constraints
 
