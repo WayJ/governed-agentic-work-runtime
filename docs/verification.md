@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-15 (S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-15 (S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -367,6 +367,35 @@ is the D49–D53 section of the
   `test_single_clock_sample_shared_by_window_and_freshness`,
   `test_clock_not_sampled_until_hmac_succeeds`,
   `test_legacy_freshness_semantics_unchanged`.
+- **Cache-first replay, resend branches and history (D52)**: authentication
+  ahead of the command cache (retired-key replay of an accepted original →
+  `EVIDENCE_KEY_RETIRED`, all six tables byte-identical incl. metadata),
+  same-`command_id` re-sign under the new key returning the original receipt
+  verbatim with zero writes (including after trusted-local revocation),
+  new-`command_id` resends reporting current status (`revoked` after
+  revocation) with exactly `commands +1`, grant loss as a fresh unpersisted
+  `AUTHORITY_DENIED` with the stored receipt intact, changed content as
+  `SOURCE_EVENT_CONFLICT`, per-act history preservation (pure reconstruction
+  and every denial class byte-equal across all six tables; legitimate new
+  ingress prefix-equal on the append-only tables with `works`/`metadata`
+  untouched by a pending insertion), deterministic same-config/same-clock
+  restart decisions, minimal receipts for every new code without key echo,
+  reserved `accepted` and mapping-denied `withdrawn` kinds unchanged for a
+  keyring source, legacy bytes semantics beside a keyring, and the published
+  known-answer vector unchanged. Named: `test_resign_same_event_new_command_under_new_key_dedupes`,
+  `test_resign_same_command_under_new_key_returns_original_receipt`,
+  `test_revoked_evidence_preserves_original_receipt_and_reports_status`,
+  `test_grant_loss_is_fresh_unpersisted_authority_denied`,
+  `test_changed_content_same_event_is_source_event_conflict`,
+  `test_retired_key_replay_cannot_reach_cached_receipt`,
+  `test_history_six_tables_preserved_across_rotation_acts`,
+  `test_deterministic_restart_same_config_same_decisions`,
+  `test_new_code_receipts_are_minimal_without_key_echo`,
+  `test_reserved_and_withdrawn_kinds_unchanged_for_keyring_source`
+  (`ReplayHistoryTests`); `test_legacy_bytes_source_semantics_beside_a_keyring`,
+  `test_known_answer_vector_unchanged` (`LegacyCompatTests`).
+  `tests/test_ingress.py` remains the untouched 40-test legacy pin (KAT
+  included).
 
 ## RFC-001 acceptance behaviors (R1–R7)
 

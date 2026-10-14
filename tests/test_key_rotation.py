@@ -607,5 +607,324 @@ class WindowClockTests(unittest.TestCase):
         self.assertEqual(self.table_counts(), before)
 
 
+class ReplayHistoryTests(unittest.TestCase):
+    """Authentication-before-cache, two resend branches, history preservation (D52)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.now = 2000000000
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        grants = demo_grants()
+        grants["finance"] = {"evidence.write", "evidence.revoke"}
+        self.runtime = Runtime(self.path, ExpensePolicy(), grants)
+        initialize(self.runtime)
+        self.k1 = SourceKey("ring-2026-08", key(), current=True)
+        self.k2 = SourceKey("ring-2026-10", key())
+
+    def message(self, **overrides):
+        base = {"source": "finance", "command_id": "cmd-1", "work_id": "demo",
+                "event_id": "evt-1", "kind": "approval",
+                "data": {"digest": self.runtime.get_work("demo")["document_digest"]},
+                "issued_at": self.now}
+        base.update(overrides)
+        return base
+
+    def signed(self, secret, key_id=False, **overrides):
+        message = self.message(**overrides)
+        if key_id is not False:
+            message["key_id"] = key_id
+        return sign_evidence(secret, message)
+
+    def gateway(self, ring=None, clock=None, runtime=None):
+        return SignedEvidenceGateway(runtime or self.runtime,
+                                     {"finance": ring or [self.k1, self.k2]},
+                                     clock=clock or (lambda: self.now))
+
+    def table_counts(self):
+        with sqlite3.connect(self.path) as db:
+            return {t: db.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
+                    for t in ("works", "commands", "evidence", "operations", "events", "metadata")}
+
+    def table_dump(self):
+        dump = {}
+        with sqlite3.connect(self.path) as db:
+            for table in ("works", "commands", "evidence", "operations",
+                          "events", "metadata"):
+                dump[table] = db.execute(
+                    "SELECT * FROM %s ORDER BY rowid" % table).fetchall()
+        return dump
+
+    def test_resign_same_event_new_command_under_new_key_dedupes(self):
+        gateway = self.gateway()
+        first = gateway.record(self.signed(self.k1.secret, key_id=self.k1.key_id,
+                                           command_id="cmd-a", event_id="evt-1"))
+        before = self.table_counts()
+        second = gateway.record(self.signed(self.k2.secret, key_id=self.k2.key_id,
+                                            command_id="cmd-b", event_id="evt-1"))
+        self.assertEqual(second["decision"], "accepted")
+        self.assertEqual(second["evidence_id"], first["evidence_id"])
+        self.assertEqual(second["evidence_status"], "pending_verification")
+        after = self.table_counts()
+        self.assertEqual(after["commands"], before["commands"] + 1)
+        self.assertEqual(after["evidence"], before["evidence"])
+
+    def test_resign_same_command_under_new_key_returns_original_receipt(self):
+        gateway = self.gateway()
+        first = gateway.record(self.signed(self.k1.secret, key_id=self.k1.key_id,
+                                           command_id="cmd-a", event_id="evt-1"))
+        before = self.table_dump()
+        resend = gateway.record(self.signed(self.k2.secret, key_id=self.k2.key_id,
+                                            command_id="cmd-a", event_id="evt-1"))
+        self.assertEqual(resend, first)
+        self.assertEqual(self.table_dump(), before)
+
+    def test_revoked_evidence_preserves_original_receipt_and_reports_status(self):
+        gateway = self.gateway()
+        first = gateway.record(self.signed(self.k1.secret, key_id=self.k1.key_id,
+                                           command_id="cmd-a", event_id="evt-1"))
+        version = self.runtime.get_work("demo")["state_version"]
+        self.runtime.command("finance", "cmd-revoke", "demo", "revoke_evidence",
+                             {"source": "finance", "event_id": "evt-1",
+                              "reason": "rotated"}, version)
+        after_revoke = self.table_dump()
+        same_command = gateway.record(
+            self.signed(self.k2.secret, key_id=self.k2.key_id,
+                        command_id="cmd-a", event_id="evt-1"))
+        self.assertEqual(same_command, first)  # original pending receipt verbatim
+        self.assertEqual(self.table_dump(), after_revoke)
+        before = self.table_counts()
+        new_command = gateway.record(
+            self.signed(self.k2.secret, key_id=self.k2.key_id,
+                        command_id="cmd-b", event_id="evt-1"))
+        self.assertEqual(new_command["decision"], "accepted")
+        self.assertEqual(new_command["evidence_id"], first["evidence_id"])
+        self.assertEqual(new_command["evidence_status"], "revoked")
+        after = self.table_counts()
+        self.assertEqual(after["commands"], before["commands"] + 1)
+        self.assertEqual(after["evidence"], before["evidence"])
+
+    def test_grant_loss_is_fresh_unpersisted_authority_denied(self):
+        gateway = self.gateway()
+        envelope = self.signed(self.k2.secret, key_id=self.k2.key_id,
+                               command_id="cmd-a", event_id="evt-1")
+        self.assertEqual(gateway.record(envelope)["decision"], "accepted")
+        before = self.table_dump()
+        reopened = Runtime(self.path, ExpensePolicy(),
+                           {"agent": {"work.manage", "expense.submit"}})  # no finance
+        denied = self.gateway(runtime=reopened).record(envelope)
+        self.assertEqual(denied, {"decision": "rejected", "code": "AUTHORITY_DENIED"})
+        self.assertEqual(self.table_dump(), before)
+
+    def test_changed_content_same_event_is_source_event_conflict(self):
+        gateway = self.gateway()
+        gateway.record(self.signed(self.k1.secret, key_id=self.k1.key_id,
+                                   command_id="cmd-a", event_id="evt-1"))
+        before = self.table_counts()
+        conflict = gateway.record(
+            self.signed(self.k2.secret, key_id=self.k2.key_id,
+                        command_id="cmd-b", event_id="evt-1", data={"digest": "0" * 64}))
+        self.assertEqual(conflict["code"], "SOURCE_EVENT_CONFLICT")
+        after = self.table_counts()
+        self.assertEqual(after["commands"], before["commands"] + 1)
+        self.assertEqual(after["evidence"], before["evidence"])
+
+    def test_retired_key_replay_cannot_reach_cached_receipt(self):
+        original = self.gateway().record(
+            self.signed(self.k1.secret, key_id=self.k1.key_id,
+                        command_id="cmd-a", event_id="evt-1"))
+        self.assertEqual(original["decision"], "accepted")
+        envelope = self.signed(self.k1.secret, key_id=self.k1.key_id,
+                               command_id="cmd-a", event_id="evt-1")
+        rotated = [SourceKey(self.k1.key_id, self.k1.secret, not_after=self.now - 10),
+                   SourceKey(self.k2.key_id, self.k2.secret, current=True)]
+        before = self.table_dump()
+        replay = self.gateway(ring=rotated).record(envelope)
+        self.assertEqual(replay, {"decision": "rejected", "code": "EVIDENCE_KEY_RETIRED"})
+        self.assertEqual(self.table_dump(), before)
+
+    def test_history_six_tables_preserved_across_rotation_acts(self):
+        gateway = self.gateway()
+        gateway.record(self.signed(self.k1.secret, key_id=self.k1.key_id,
+                                   command_id="cmd-a", event_id="evt-1"))
+        gateway.record(self.signed(self.k2.secret, key_id=self.k2.key_id,
+                                   command_id="cmd-b", event_id="evt-2"))
+        self.runtime.verify_pending("demo")  # one legitimate evaluation bump
+        snapshot = self.table_dump()
+        # Pure reconstruction plus every denial class writes nothing, byte-equal
+        # across all six tables including metadata.
+        idle = self.gateway()
+        retired = [SourceKey(self.k1.key_id, self.k1.secret, not_after=self.now - 10),
+                   SourceKey(self.k2.key_id, self.k2.secret, current=True)]
+        future = [SourceKey(self.k1.key_id, self.k1.secret,
+                            not_before=self.now + 10),
+                  SourceKey(self.k2.key_id, self.k2.secret, current=True)]
+        broken = self.gateway(clock=lambda: float("nan"))
+        tampered = self.signed(self.k1.secret, key_id=self.k1.key_id,
+                               command_id="cmd-a", event_id="evt-1")
+        tampered["event_id"] = "evt-tampered"  # valid bytes, now forged
+        denials = (
+            idle.record(self.signed(self.k1.secret, source="ghost")),
+            idle.record(tampered),
+            idle.record(self.signed(self.k1.secret, key_id="ring-ghost")),
+            idle.record(self.signed(self.k1.secret, issued_at=self.now - 301)),
+            self.gateway(ring=retired).record(
+                self.signed(self.k1.secret, key_id=self.k1.key_id)),
+            self.gateway(ring=future).record(
+                self.signed(self.k1.secret, key_id=self.k1.key_id)),
+            broken.record(self.signed(self.k1.secret)),
+        )
+        for receipt in denials:
+            self.assertEqual(receipt["decision"], "rejected")
+        self.assertEqual(self.table_dump(), snapshot)
+        # Legitimate new ingress keeps the append-only tables prefix-equal and
+        # leaves works/metadata untouched by the mere pending insertion (M1:
+        # per-act scope, no universal works-row-prefix claim).
+        accepted = self.gateway().record(
+            self.signed(self.k2.secret, key_id=self.k2.key_id,
+                        command_id="cmd-c", event_id="evt-3"))
+        self.assertEqual(accepted["decision"], "accepted")
+        grown = self.table_dump()
+        for table in ("commands", "evidence", "operations", "events"):
+            self.assertEqual(grown[table][:len(snapshot[table])], snapshot[table], table)
+        self.assertEqual(grown["works"], snapshot["works"])
+        self.assertEqual(grown["metadata"], snapshot["metadata"])
+
+    def test_deterministic_restart_same_config_same_decisions(self):
+        series = [
+            self.signed(self.k1.secret, key_id=self.k1.key_id,
+                        command_id="cmd-a", event_id="evt-1"),
+            self.signed(self.k1.secret, key_id=self.k1.key_id,
+                        command_id="cmd-a", event_id="evt-1"),  # exact replay
+            self.signed(self.k1.secret, key_id=self.k1.key_id,
+                        command_id="cmd-stale", event_id="evt-stale",
+                        issued_at=self.now - 301),
+            self.signed(key(), key_id=self.k1.key_id,
+                        command_id="cmd-bad", event_id="evt-bad"),
+            self.signed(self.k2.secret, key_id="ring-ghost",
+                        command_id="cmd-ghost", event_id="evt-ghost"),
+        ]
+        first = [self.gateway().record(envelope) for envelope in series]
+        restarted = self.gateway()  # same config, same clock, same store
+        second = [restarted.record(envelope) for envelope in series]
+        self.assertEqual(second, first)
+
+    def test_new_code_receipts_are_minimal_without_key_echo(self):
+        retired = [SourceKey(self.k1.key_id, self.k1.secret, not_after=self.now - 10),
+                   SourceKey(self.k2.key_id, self.k2.secret, current=True)]
+        future = [SourceKey(self.k1.key_id, self.k1.secret,
+                            not_before=self.now + 10),
+                  SourceKey(self.k2.key_id, self.k2.secret, current=True)]
+        cases = (
+            (self.gateway(ring=retired),
+             self.signed(self.k1.secret, key_id=self.k1.key_id), "EVIDENCE_KEY_RETIRED"),
+            (self.gateway(ring=future),
+             self.signed(self.k1.secret, key_id=self.k1.key_id),
+             "EVIDENCE_KEY_NOT_YET_VALID"),
+            (self.gateway(clock=lambda: float("inf")),
+             self.signed(self.k1.secret), "EVIDENCE_CLOCK_INVALID"),
+            (self.gateway(),
+             self.signed(self.k1.secret, key_id="ring-ghost"),
+             "EVIDENCE_AUTHENTICATION_FAILED"),
+        )
+        for gateway, envelope, code in cases:
+            receipt = gateway.record(envelope)
+            self.assertEqual(receipt, {"decision": "rejected", "code": code})
+            self.assertEqual(set(receipt), {"decision", "code"})
+            rendered = json.dumps(receipt)
+            self.assertNotIn(self.k1.key_id, rendered)
+            self.assertNotIn(self.k2.key_id, rendered)
+            self.assertNotIn(self.k1.secret.hex(), rendered)
+            self.assertNotIn(self.k2.secret.hex(), rendered)
+
+    def test_reserved_and_withdrawn_kinds_unchanged_for_keyring_source(self):
+        gateway = self.gateway()
+        before = self.table_counts()
+        reserved = gateway.record(
+            self.signed(self.k1.secret, kind="accepted",
+                        data={"digest": "0" * 64, "external_id": "X"}))
+        self.assertEqual(reserved,
+                         {"decision": "rejected", "code": "EVIDENCE_KIND_UNSUPPORTED"})
+        self.assertEqual(self.table_counts(), before)
+        withdrawn = gateway.record(
+            self.signed(self.k1.secret, kind="withdrawn",
+                        command_id="cmd-w", event_id="evt-w",
+                        data={"digest": "0" * 64}))
+        self.assertEqual(withdrawn["code"], "AUTHORITY_DENIED")
+        after = self.table_counts()
+        self.assertEqual(after["commands"], before["commands"] + 1)
+        self.assertEqual(after["evidence"], before["evidence"])
+
+
+class LegacyCompatTests(unittest.TestCase):
+    """Legacy bytes behavior unchanged beside keyrings; published KAT (T16/T25)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.now = 2000000000
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.runtime = Runtime(self.path, ExpensePolicy(), demo_grants())
+        initialize(self.runtime)
+        self.finance_k1 = SourceKey("ring-2026-08", key(), current=True)
+        self.requester = key()
+
+    def message(self, **overrides):
+        base = {"source": "requester", "command_id": "cmd-1", "work_id": "demo",
+                "event_id": "evt-1", "kind": "confirmation",
+                "data": {"digest": "0" * 64}, "issued_at": self.now}
+        base.update(overrides)
+        return base
+
+    def signed(self, secret, **overrides):
+        return sign_evidence(secret, self.message(**overrides))
+
+    def gateway(self):
+        return SignedEvidenceGateway(
+            self.runtime,
+            {"finance": [self.finance_k1], "requester": self.requester},
+            clock=lambda: self.now)
+
+    def table_counts(self):
+        with sqlite3.connect(self.path) as db:
+            return {t: db.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
+                    for t in ("works", "commands", "evidence", "operations", "events", "metadata")}
+
+    def test_legacy_bytes_source_semantics_beside_a_keyring(self):
+        gateway = self.gateway()
+        first = gateway.record(self.signed(self.requester))
+        self.assertEqual(first["decision"], "accepted")
+        replay = gateway.record(self.signed(self.requester))
+        self.assertEqual(replay, first)
+        stable = self.table_counts()
+        tampered = self.signed(self.requester)
+        tampered["event_id"] = "evt-tampered"
+        self.assertEqual(gateway.record(tampered),
+                         {"decision": "rejected", "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        stale = self.signed(self.requester, command_id="cmd-stale",
+                            event_id="evt-stale", issued_at=self.now - 301)
+        self.assertEqual(gateway.record(stale),
+                         {"decision": "rejected", "code": "EVIDENCE_EXPIRED"})
+        self.assertEqual(self.table_counts(), stable)
+        # The ring source in the same gateway keeps working throughout.
+        ring_envelope = sign_evidence(self.finance_k1.secret, {
+            "source": "finance", "command_id": "cmd-ring", "work_id": "demo",
+            "event_id": "evt-ring", "kind": "approval",
+            "data": {"digest": self.runtime.get_work("demo")["document_digest"]},
+            "issued_at": self.now, "key_id": self.finance_k1.key_id})
+        self.assertEqual(gateway.record(ring_envelope)["decision"], "accepted")
+
+    def test_known_answer_vector_unchanged(self):
+        # Published non-secret vector (identical to tests/test_ingress.py): the
+        # legacy seven-field canonicalization is untouched by rotation work.
+        envelope = sign_evidence(bytes(range(32)), {
+            "source": "invoice-service", "command_id": "cmd-kat", "work_id": "demo",
+            "event_id": "evt-kat", "kind": "invoice_valid",
+            "data": {"invoice_id": "INV-KAT", "invoice_revision": 1, "valid": True},
+            "issued_at": 2000000000})
+        self.assertEqual(envelope["signature"],
+                         "84ba6259ac240cab06a5f9df89b8525be99ecb20605b975d76ee6e7f0c04ec08")
+
+
 if __name__ == "__main__":
     unittest.main()

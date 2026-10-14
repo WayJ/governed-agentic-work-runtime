@@ -137,7 +137,30 @@ local misuse), writing nothing.
   no retry guarantee beyond what Runtime lookup/reconciliation provides.
 
 The clock is injectable for tests; `max_age` defaults to 300 seconds and must
-be a nonnegative integer.
+be a nonnegative integer. Rotation adds to this picture (all on the unchanged
+Runtime machinery — nothing here is key-specific):
+
+- **Authentication precedes the cache.** Every request re-authenticates
+  before `Runtime.command`, so a cached receipt is unreachable behind a key
+  that no longer authenticates: the *accepted original* envelope replayed
+  under a rotated gateway is refused (`EVIDENCE_KEY_RETIRED` when the old
+  entry is retained expired, `EVIDENCE_AUTHENTICATION_FAILED` when dropped)
+  with all six tables byte-identical — zero writes, the stored receipt
+  untouched.
+- **Same `command_id`, re-signed under a new valid key** (any format):
+  returns the **original cached receipt verbatim** — original status and
+  state version — with zero writes, including after the evidence was
+  revoked; grant loss converts that replay into a fresh, unpersisted
+  `AUTHORITY_DENIED` while the stored receipt stays intact.
+- **New `command_id`, same `(source, event_id)` content**: dedupes to the
+  same evidence identity and reports its *current* status (for example
+  `revoked` after revocation) with exactly one new command row and no new
+  evidence row. Changed content is still `SOURCE_EVENT_CONFLICT`.
+- Fingerprints are key-agnostic: `key_id`, `issued_at` and `signature` are
+  never forwarded, never persisted, and never part of a business identity.
+  Rotation therefore never withdraws an accepted proof, effect, closure or
+  compensation record — verifying or undoing those stays with the Runtime's
+  own commands.
 
 ## Key handling
 
@@ -183,7 +206,19 @@ Freshness bounds (not prevents) replay; durable identity dedup handles the
 rest only after acceptance. One policy per runtime database still applies, and
 this ingress covers `record_evidence` only: dispatch, reconciliation and
 completion remain trusted-local operations. This is an implementation-spec
-boundary for S2, not a production security claim.
+boundary, not a production security claim.
+
+Rotation-specific truths (S11): there is **no persistent key revocation
+memory or rotation audit** — the keyring configuration is the only place key
+identity lives, and which key admitted a proof is never recorded; redeploying
+a pre-rotation configuration therefore **revives** the old secret for future
+envelopes (rollback is an operator discipline, as is key-id reuse after an
+entry was dropped); a **compromised current key stays forgeable until
+rotation lands** and the grace window expires — in-process secret changes do
+nothing, protection comes from the deployed configuration only; wall-clock
+trust is the operator's (the clock is trusted local configuration, exactly as
+before); and nothing here is tenant authentication, TLS, an external KMS,
+distributed revocation or federated key distribution.
 
 ## Tests
 
@@ -194,4 +229,12 @@ and unknown sources; freshness boundaries incl. boolean timestamps; reserved
 unchanged on every intake failure; signed success staying pending until
 `verify_pending`; exact replay, timestamp refresh and cross-work conflict;
 source grant refusal persistence; envelope-detachment regressions; and
-constructor configuration validation.
+constructor configuration validation. This file is the untouched legacy pin.
+
+`tests/test_key_rotation.py` (same discipline, synthetic ephemeral secrets
+never printed): keyring configuration validation and immutable copying; the
+optional signed `key_id` selector with strict per-ring selection; inclusive
+validity windows on one finite shared clock sample with the exact new codes;
+and authentication-before-cache replay, resend-branch and six-table history
+preservation pins. Coverage detail lives in
+[verification coverage](verification.md).
