@@ -27,7 +27,7 @@ date: 2026-10-15
 
 | sprint | state | note |
 |---|---|---|
-| S11 | ready | 2026-10-15 strategic go: S10 mergedb0b28d5/publishedb594d757 exactCI38646424464 independently verified; reviewce07781 F1-F4 ratified beforecode, boundedDoDcovered. [Design](../specs/2026-10-15-source-key-rotation-design.md), no early/deferred start. |
+| S11 | started | 2026-10-15 strategic go: S10 mergedb0b28d5/publishedb594d757 exactCI38646424464 independently verified; reviewce07781 F1-F4 ratified beforecode, boundedDoDcovered. [Design](../specs/2026-10-15-source-key-rotation-design.md), no early/deferred start. Materialized2026-10-15 [S11](../sprints/2026-10-15-S11-plan.md). |
 
 ## Decisions (ADR)
 
