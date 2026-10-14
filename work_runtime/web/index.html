@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Governed Work</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">&#9670;</span>
+    <span class="brand-name">Governed Work</span>
+  </div>
+  <div class="store-meta">
+    <span id="store-source" class="meta-chip meta-source"></span>
+    <span id="store-schema" class="meta-chip"></span>
+    <span id="sampled-at" class="meta-chip"></span>
+    <span id="poll-state" class="meta-chip meta-poll hidden"></span>
+  </div>
+  <div class="controls">
+    <button id="lang-toggle" type="button"></button>
+    <button id="refresh" type="button" data-i18n="action.refresh"></button>
+    <button id="poll-toggle" type="button"></button>
+  </div>
+</header>
+<div id="connection-banner" class="banner banner-error hidden" role="alert"></div>
+<main class="layout">
+  <aside class="sidebar">
+    <section id="tiles" class="tiles" aria-label="Metrics"></section>
+    <section id="counts" class="counts" aria-label="Record counts"></section>
+    <div class="filters">
+      <input id="work-search" type="search" autocomplete="off"
+             data-i18n-placeholder="filter.search">
+      <select id="status-filter" aria-label="Status filter"></select>
+    </div>
+    <div id="work-list" class="work-list" role="listbox" aria-label="Works"></div>
+    <p id="list-status" class="list-status"></p>
+  </aside>
+  <section id="detail" class="detail">
+    <div id="detail-placeholder" class="placeholder">
+      <p data-i18n="detail.placeholder"></p>
+      <p class="hint" data-i18n="detail.placeholderHint"></p>
+    </div>
+    <div id="detail-loading" class="placeholder hidden" data-i18n="detail.loading"></div>
+    <div id="detail-error" class="placeholder placeholder-error hidden">
+      <p id="detail-error-text"></p>
+      <button id="detail-retry" type="button" data-i18n="action.retry"></button>
+    </div>
+    <div id="detail-body" class="detail-body hidden"></div>
+  </section>
+</main>
+<footer class="footer">
+  <span data-i18n="footer.keys"></span>
+  <span data-i18n="footer.readonly"></span>
+</footer>
+<noscript>
+  <p>This read-only viewer needs JavaScript from this same local origin.
+       此只读页面需要同源本地 JavaScript。</p>
+</noscript>
+</body>
+</html>

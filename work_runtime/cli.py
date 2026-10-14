@@ -73,6 +73,17 @@ def main(argv=None):
     worker.add_argument("--oa", required=True)
     worker.add_argument("--operation", required=True)
     worker.add_argument("--crash-after-effect", action="store_true")
+    ui = sub.add_parser("ui",
+                        help="Serve the read-only local GUI for an existing store")
+    ui.add_argument("--db", required=True, help="Path to an existing runtime database")
+    ui.add_argument("--port", type=int, default=0,
+                    help="Loopback port (0-65535; default: an ephemeral port)")
+    ui_demo = sub.add_parser(
+        "ui-demo",
+        help="Seed a five-work sample store and serve the read-only local GUI")
+    ui_demo.add_argument("--directory", help="Parent directory for a fresh demo folder")
+    ui_demo.add_argument("--port", type=int, default=0,
+                         help="Loopback port (0-65535; default: an ephemeral port)")
     args = parser.parse_args(argv)
     if args.command == "demo":
         run_demo(args.directory)
@@ -100,5 +111,13 @@ def main(argv=None):
             runtime = Runtime(args.db, ExpensePolicy(), demo_grants())
         print(json.dumps({"work": runtime.get_work(args.work), "events": runtime.events(args.work)},
                          ensure_ascii=False, indent=2))
+    elif args.command == "ui":
+        # Imported here so the read-only UI backend stays optional: every
+        # prior command keeps working in installs without it.
+        from .ui_demo import serve_ui
+        serve_ui(args.db, args.port)
+    elif args.command == "ui-demo":
+        from .ui_demo import run_ui_demo
+        run_ui_demo(args.directory, args.port)
     else:
         run_worker(args.runtime, args.oa, args.operation, args.crash_after_effect)
