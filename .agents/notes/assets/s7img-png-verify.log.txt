@@ -1,0 +1,111 @@
+{
+ "new": {
+  "s7img-en-desktop.png": {
+   "dims": [
+    1280,
+    900
+   ],
+   "tokens": {
+    "white_card_#ffffff": 627051,
+    "ink_#26251e": 13085,
+    "orange_mark_#f54e00": 65,
+    "canvas_#f7f7f4": 307643
+   },
+   "old_theme_residue": {}
+  },
+  "s7img-zh-desktop.png": {
+   "dims": [
+    1280,
+    900
+   ],
+   "tokens": {
+    "white_card_#ffffff": 633572,
+    "ink_#26251e": 10068,
+    "orange_mark_#f54e00": 65,
+    "canvas_#f7f7f4": 306036
+   },
+   "old_theme_residue": {}
+  },
+  "s7img-en-390.png": {
+   "dims": [
+    390,
+    844
+   ],
+   "tokens": {
+    "white_card_#ffffff": 202716,
+    "ink_#26251e": 5777,
+    "orange_mark_#f54e00": 65,
+    "canvas_#f7f7f4": 79370
+   },
+   "old_theme_residue": {}
+  },
+  "s7img-zh-390.png": {
+   "dims": [
+    390,
+    844
+   ],
+   "tokens": {
+    "white_card_#ffffff": 205552,
+    "ink_#26251e": 4590,
+    "orange_mark_#f54e00": 65,
+    "canvas_#f7f7f4": 78507
+   },
+   "old_theme_residue": {}
+  }
+ },
+ "old": {
+  "gui-en-desktop.png": {
+   "dims": [
+    1280,
+    900
+   ],
+   "old_theme": {
+    "old_neutral_#eef1f6": 11113,
+    "old_bg_#f5f7fa": 706060,
+    "old_accent_#2456c6": 72,
+    "old_ink_#1c2433": 2021
+   },
+   "new_canvas_leak": 0
+  },
+  "gui-zh-desktop.png": {
+   "dims": [
+    1280,
+    900
+   ],
+   "old_theme": {
+    "old_neutral_#eef1f6": 9367,
+    "old_accent_#2456c6": 72,
+    "old_ink_#1c2433": 1928,
+    "old_bg_#f5f7fa": 717599
+   },
+   "new_canvas_leak": 0
+  },
+  "gui-en-390.png": {
+   "dims": [
+    390,
+    844
+   ],
+   "old_theme": {
+    "old_accent_#2456c6": 72,
+    "old_ink_#1c2433": 1902,
+    "old_neutral_#eef1f6": 16991,
+    "old_bg_#f5f7fa": 82320
+   },
+   "new_canvas_leak": 0
+  },
+  "gui-zh-390.png": {
+   "dims": [
+    390,
+    844
+   ],
+   "old_theme": {
+    "old_accent_#2456c6": 72,
+    "old_ink_#1c2433": 1887,
+    "old_neutral_#eef1f6": 9382,
+    "old_bg_#f5f7fa": 81772
+   },
+   "new_canvas_leak": 0
+  }
+ }
+}
+png verify: all dimension/token checks passed
