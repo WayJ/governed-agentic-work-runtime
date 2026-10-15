@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-15 (S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-15 (S12 demo wave: publication-demo harness, CLI entry point incl. the `inspect --policy sop-publish` choice, installed module+console verifier stages; S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -73,7 +73,7 @@ The P01–P15 matrix above is unchanged by this wave: intervention behaviors are
 
 ## S4 coverage — static SOP lint, file adapter, adoption harness
 
-The S4 wave added two foundations (authoring, file adapter) with their own reviewed evidence — `tests/test_authoring.py` (146 tests: exactly-14 diagnostics, iterative preflight/SCC graph boundary, digest key-order neutrality) and `tests/test_file_adapter.py` (50 tests: conformance over real directories, corruption matrix, subprocess races and real process death) — and the dependent adoption surface in `tests/test_adoption_demo.py` (this wave). Semantics and boundaries: [SOP authoring](sop-authoring.md), [file adapter](file-adapter.md), [contributor guide](contributor-guide.md).
+The S4 wave added two foundations (authoring, file adapter) with their own reviewed evidence — `tests/test_authoring.py` (146 tests: exactly-14 diagnostics, iterative preflight/SCC graph boundary, digest key-order neutrality) and `tests/test_file_adapter.py` (57 loader-counted tests — 51 in-file plus the six inherited conformance-mixin cases: conformance over real directories, corruption matrix, subprocess races and real process death) — and the dependent adoption surface in `tests/test_adoption_demo.py` (this wave). Semantics and boundaries: [SOP authoring](sop-authoring.md), [file adapter](file-adapter.md), [contributor guide](contributor-guide.md).
 
 - **Strict `lint-sop` CLI loader** (`LintCleanTests`, `LintDefectTests`, `LoaderExit2Tests`, `SecretEchoTests`): exit 0 clean with the exact `{valid, digest, diagnostics, scope:"static-only"}` JSON envelope and pinned packaged-card digests; exit 1 for lint diagnostics incl. syntactically valid escaped-surrogate **values and keys** (`INVALID_UNICODE`), with JSON output ASCII-escaped so diagnostics can never crash stdout and human lines surrogate-safe; exit 2 for duplicate object keys (top-level and nested), `NaN`/`Infinity` literals, malformed JSON, invalid UTF-8 bytes, unreadable files/directories, files strictly over 1 MiB and unparseably deep nesting (caught `RecursionError`, no traceback) — with bounded static messages that never echo file contents or secrets (planted-marker tests). Exactly-1 MiB files still load (boundary pinned).
 - **Packaged single-source cards** (`PackagedResourceTests`): `work_runtime/data/sop/{expense,publishing}.json` read via `importlib.resources.files`, lint-clean with the recorded digests; `pyproject.toml` ships them as package data, and a fresh non-editable install is verified below.
@@ -438,18 +438,137 @@ flipped evidence status, deleted evidence row, forged duplicate command row,
 tampered cached receipt, digest-only store mutation) are pinned by
 `VerifyInstallRotationProofTests`.
 
+## S12 coverage — governed SOP rule-card publication (core and demo waves)
+
+The S12 core wave adds the publication machinery on the unchanged Runtime,
+gateway and `FilePublisher` commit engine (`tests/test_publication.py`,
+`tests/test_publication_rotation.py`, plus narrow additive
+`ReadValidatedTests` in `tests/test_file_adapter.py`); the demo wave adds
+the `publication-demo` harness, its CLI entry point and the installed
+module+console proof stages (`tests/test_publication_demo.py`,
+`work_runtime/publication_demo.py`). Semantics and boundaries:
+[SOP authoring](sop-authoring.md) publication section,
+[file adapter](file-adapter.md); design
+[S12](superpowers/specs/2026-10-15-sop-publication-design.md) ratified
+D54–D66.
+
+- **Additive validated read surface (D61)** (`ReadValidatedTests`):
+  `FilePublisher.read_validated(key)` returns `None` for an absent key
+  (mirroring `lookup`, keeping absence distinguishable from corruption),
+  the full validated artifact for a committed key — detached from caller
+  and storage, stable across fresh instances — and refuses corrupt bytes
+  and tampered documents with bounded `ValueError`s while never rewriting
+  the file; the key gate applies unchanged.
+- **Digest-based publication key and store wrapper (D55/D56/D60)**
+  (`PublicationKeyTests`, `SopPublicationStoreTests`): the key equals
+  `"sop-pub:" + digest([policy id, version])` with the 64-hex tail;
+  delimiter-hostile lint-clean identities (`("collide:one","v1")` vs
+  `("collide","one:v1")`, IR-P16) do **not** collide; identity changes
+  change the key and malformed identities raise bounded errors; the wrapper
+  commits exactly one hash-named artifact per publication key (bare card as
+  document, `content_digest == sop_digest`), replays the byte-identical
+  receipt across instances, refuses same-key changed content without
+  overwriting, and delegates `lookup` (committed receipt / `None`).
+- **Fail-closed loader and pin (D62)** (`LoaderPinTests`): round trip
+  returns the published card with `sop_digest` equal to the stored
+  `content_digest` and receipt digest; absent version and missing store
+  directory raise the same bounded absent error (distinguishable from every
+  corruption class, directory never created by a read); corrupt bytes,
+  tampered documents with stale digests and doctored key fields raise
+  bounded errors; foreign card or non-card content committed under a
+  publication key by raw adapter use fails closed (MD-4 discipline);
+  `pinned_card` requires the exact pin (wrong pin or malformed pin
+  argument refused); `published_card_matches` compares `(id, version,
+  goal)` only — True for the packaged expense card against `ExpensePolicy`,
+  False on version/goal drift and non-card shapes.
+- **Governed flow on the real Runtime (D54/D57–D59/D66)**
+  (`GovernedFlowTests`, real SQLite + real directory + ephemeral never-printed
+  approver key): dirty cards are refused at admission with a bounded
+  unpersisted `ValueError` (zero `works` rows, nothing committed); clean
+  cards carry `document_digest == sop_digest`; proposals without approval
+  are persisted `REQUIREMENT_UNSATISFIED` with an `S02` blocker; tampered
+  approvals are refused `EVIDENCE_AUTHENTICATION_FAILED` with unchanged
+  evidence rows (zero intake writes); wrong-source intake is
+  `AUTHORITY_DENIED`; wrong-version approvals stay candidates then turn
+  `invalid` at verification; correctly-signed wrong-digest approvals verify
+  on shape but keep S02 unsatisfied; the valid version-bound approval
+  verifies and the accepted proposal's `business_key` is exactly the
+  publication key; dispatch through the response-loss wrapper commits one
+  hash-named artifact (bare card as document, zero `.stage`) and the
+  restart reconcile recovers `confirmed_succeeded` with exactly one
+  attempt; the `accepted` proof is runtime-written (`sop-store` source
+  absent from grants, `event_id` = operation id, digest-bound, verified);
+  completion closes `succeeded`; exact command replay returns the stored
+  receipt verbatim with one operation; cross-work same-card and doctored
+  same-version proposals are first `REQUIREMENT_UNSATISFIED` (D66 order)
+  and only after the second work's own verified approval persist
+  `OPERATION_CONTENT_CONFLICT` with the winning artifact byte-unchanged.
+- **Approver-key rotation battery (S11 semantics unchanged)**
+  (`tests/test_publication_rotation.py`, `PublicationRotationTests`): the
+  approver configured as a `SourceKey` keyring and rotated mid-flow — an
+  old-key envelope is refused `EVIDENCE_KEY_RETIRED` (retained past its
+  window) or `EVIDENCE_AUTHENTICATION_FAILED` (dropped, both selector-less
+  and cited-selector forms) with all six runtime tables byte-identical
+  (ordered rowid dumps); the same `command_id` re-signed under the new
+  current key replays the original receipt verbatim with zero writes; a new
+  `command_id` on the same `(source, event_id)` reports the candidate's
+  current status with exactly `commands +1`; after a completed publication,
+  every post-rotation refusal leaves the six tables and the committed
+  artifact bytes untouched (publication history is rotation-invariant); a
+  pre-rotation approval still verifies after rotation (key-agnostic
+  fingerprints) and carries its work to completion while a legitimate new
+  card version publishes under the rotated key. All secrets synthetic,
+  ephemeral, never printed.
+- **Demonstration surface (demo wave, D64)** (`tests/test_publication_demo.py`):
+  the deterministic no-credentials `publication-demo` runs the whole §11 story
+  on one fresh store — dirty-card lint diagnostics, the packaged
+  `publishing.json` card published with its pinned digest, the blocked
+  proposal, the tampered approval refused with zero intake writes, the valid
+  version-bound approval, the response-loss dispatch and one-attempt
+  reconcile, the runtime-written accepted proof, completion, the D66
+  doctored-card conflict order with the winner bytes unchanged, the
+  fail-closed loader matrix (absent vs tampered, distinguishable) and the
+  retired-key refusal with tables and artifact untouched. Tests re-derive
+  every count, key, digest and receipt from the SQLite store and the
+  artifact directory (works/commands/evidence/operations/events pinned:
+  2/11/3/1/11), re-run the printed `inspect --policy sop-publish` command
+  verbatim through the real CLI (the choice was added with master
+  authorization after a probe showed the pre-existing choices fail closed on
+  a sop-publish-family database), and prove secret hygiene by planted marker
+  (patched key generator: neither marker bytes, their hex, nor a locally
+  computed envelope signature ever reach the output). Hygiene: parent
+  contents survive, two runs use two fresh folders, the demo runs with the
+  working directory outside the checkout.
+- **Installed verification (demo wave, D64 — existing installer evidence,
+  no new global gate)** (`scripts/verify_install.py` stages 21/22): module
+  AND console `publication-demo` entry points run outside the checkout and
+  are verified independently of stdout — the artifact directory enumerated
+  (exactly one hash-named `.json`, zero `.stage`), the artifact parsed with
+  the standard library only (bare packaged card, recomputed content digest,
+  digest-based publication key, `sha256(key)` file name, accepted `FILE-`
+  receipt), the runtime store read directly (pub-1 closed/succeeded, pub-2
+  active, one `confirmed_succeeded` operation with one attempt and the
+  matching business key, three evidence rows incl. the runtime-written
+  `sop-store` accepted proof with `event_id` = the operation id and the
+  receipt's `external_id`, the `OPERATION_CONTENT_CONFLICT` and both
+  `REQUIREMENT_UNSATISFIED` receipts), and the printed inspect command
+  re-run verbatim; the printed absent/tampered loader lines must stay
+  distinguishable. Rejection tests mutate the real store (flipped accepted
+  status, deleted evidence row, tampered artifact bytes, forged duplicate
+  command row, rewritten conflict receipt) and require the proof to fail.
+
 ## RFC-001 acceptance behaviors (R1–R7)
 
 R1 restart/persistence — `test_prepared_intent_survives_restart`, `test_wait_expiry_survives_restart`, P07/P15 tests. R2 plan edits cannot delete requirements — P10 test. R3 unknown conditions block — P14 tests. R4 timeouts are not failures — `test_timeout_after_commit_then_reconcile`, `test_unknown_without_query_result_requires_attention` (no query result → `needs_attention`, no blind retry). R5 content change invalidates old confirmations — `test_existing_invoice_proof_reused_after_document_change`, `test_invoice_revision_invalidates_old_verification`, `test_unknown_old_content_blocks_new_submission`. R6 duplicate/late callbacks — P08/P09 tests. R7 no success without goal evidence — P12 tests.
 
 ## SOP example rules and review cases (E01–E08, T01–T12)
 
-The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-002-sop-authoring-and-binding.md) into executable checks (`work_runtime/policy.py`): set-closedness (E01), per-invoice validity (E02), cross-work uniqueness via the external stand-in (E03, `test_external_uniqueness_across_works`), unknown-amount blocking (E04), over-limit approval (E05), content-bound confirmation (E06), and acceptance evidence before closure (E08). E07 (original invoices must not be rewritten) is only **partially enforced**: the demo capability allowlist grants no invoice-write capability at all, so protected fields are excluded by construction rather than by an independently evaluated check. Of the review judgments T01–T12, the ones mirrored by named tests include T02/T07 (P14 tests), T05 (E05/confirmation invalidation tests), T09 (P10 test) and T10 (P07/P12 tests); the remaining judgments are still desk reasoning in [reference scenarios](reference-scenarios.md). The rule-card publication process itself (RFC-002 §6) is **not implemented**.
+The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-002-sop-authoring-and-binding.md) into executable checks (`work_runtime/policy.py`): set-closedness (E01), per-invoice validity (E02), cross-work uniqueness via the external stand-in (E03, `test_external_uniqueness_across_works`), unknown-amount blocking (E04), over-limit approval (E05), content-bound confirmation (E06), and acceptance evidence before closure (E08). E07 (original invoices must not be rewritten) is only **partially enforced**: the demo capability allowlist grants no invoice-write capability at all, so protected fields are excluded by construction rather than by an independently evaluated check. Of the review judgments T01–T12, the ones mirrored by named tests include T02/T07 (P14 tests), T05 (E05/confirmation invalidation tests), T09 (P10 test) and T10 (P07/P12 tests); the remaining judgments are still desk reasoning in [reference scenarios](reference-scenarios.md). The rule-card publication process (RFC-002 §6) is implemented since S12 as governed trusted-local publication — signed version-bound approvals and an immutable hash-named artifact store (see the S12 section); external author review and feedback collection remain unimplemented.
 
 ## Explicitly out of scope
 
 - Remote or multi-tenant authentication and authorization (local principal names only). Owner, delegate and `work.intervene` administrator grants are trusted-local configuration, not authenticated identities; replay protection rechecks this local authority, it is not a distributed security boundary.
-- Policy/SOP publication, author review workflow, and policy migration beyond the explicit same-family command above. Cross-domain policy registries are rejected; there is no implicit upgrade on restart or recovery. Static SOP lint is structural review only: no textual-predicate execution, no provenance verification, no authority approval, and no link from a linted card to an executing Python policy.
+- Author review workflow, external author feedback, and policy migration beyond the explicit same-family command above. SOP publication withdrawal/tombstones (D63: the store is append-only; a corrected card ships as a new version) and multi-approver quorum are separately designed future work. Cross-domain policy registries are rejected; there is no implicit upgrade on restart or recovery. Static SOP lint is structural review only: no textual-predicate execution, no provenance verification, and no link from a linted card to an executing Python policy — authority approval exists only in the governed publication flow (S12), as trusted-local signed evidence rather than authentication, and published cards never execute.
 - Compensation (effect reversal) is bounded: since S10 the expense family
   supports linked withdrawal proposals **only inside the active
   cancellation window**, executing a distinct appended external effect

@@ -735,3 +735,71 @@ class RuntimeDispatchTests(FileAdapterTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadValidatedTests(FileAdapterTestCase):
+    """The additive validated full-artifact read surface (S12 D61).
+
+    ``read_validated`` mirrors ``lookup``'s absent/corrupt semantics but
+    returns the whole validated artifact, not just its receipt — the read
+    path the SOP publication loader is built on.
+    """
+
+    def test_absent_key_returns_none(self):
+        adapter = self.make_adapter()
+        self.assertIsNone(adapter.read_validated("missing"))
+        self.assertEqual(os.listdir(self.directory), [])
+
+    def test_committed_key_returns_the_full_validated_artifact(self):
+        adapter = self.make_adapter()
+        document = sample_document()
+        receipt = adapter.execute("read-key", document, digest(document))
+        artifact = adapter.read_validated("read-key")
+        self.assertEqual(artifact, {"artifact_version": 1, "key": "read-key",
+                                    "content_digest": digest(document),
+                                    "document": document, "receipt": receipt})
+        # The returned document is a detached parse, not caller-aliased storage.
+        artifact["document"]["title"] = "mutated after read"
+        self.assertEqual(adapter.read_validated("read-key")["document"]["title"],
+                         document["title"])
+
+    def test_fresh_instance_returns_the_same_artifact(self):
+        directory = self.fresh_directory()
+        document = sample_document()
+        FilePublisher(directory).execute("read-key", document, digest(document))
+        again = FilePublisher(directory)
+        self.assertEqual(again.read_validated("read-key")["document"], document)
+
+    def test_key_gate_applies_without_files(self):
+        adapter = self.make_adapter()
+        for bad in ("", 7, None, b"key", True):
+            with self.assertRaises(ValueError):
+                adapter.read_validated(bad)
+        self.assertEqual(os.listdir(self.directory), [])
+
+    def test_corrupt_bytes_raise_bounded_valueerror_and_never_rewrite(self):
+        adapter, raw = self._committed("corrupt-key")
+        with open(path_for(adapter.directory, "corrupt-key"), "wb") as handle:
+            handle.write(b"not json")
+        with self.assertRaises(ValueError) as raised:
+            adapter.read_validated("corrupt-key")
+        self.assertIs(type(raised.exception), ValueError)
+        with open(path_for(adapter.directory, "corrupt-key"), "rb") as handle:
+            self.assertEqual(handle.read(), b"not json")
+
+    def test_tampered_document_with_stale_digest_raises(self):
+        adapter, raw = self._committed("tamper-key")
+        artifact = json.loads(raw.decode("utf-8"))
+        artifact["document"]["title"] = "doctored after commit"
+        with open(path_for(adapter.directory, "tamper-key"), "wb") as handle:
+            handle.write(canonical_bytes(artifact))
+        with self.assertRaises(ValueError) as raised:
+            adapter.read_validated("tamper-key")
+        self.assertIs(type(raised.exception), ValueError)
+
+    def _committed(self, key):
+        adapter = self.make_adapter()
+        document = sample_document()
+        adapter.execute(key, document, digest(document))
+        with open(path_for(adapter.directory, key), "rb") as handle:
+            return adapter, handle.read()

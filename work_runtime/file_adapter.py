@@ -292,3 +292,18 @@ class FilePublisher:
         except FileNotFoundError:
             return None
         return _validated_artifact(raw, key)["receipt"]
+
+    def read_validated(self, key):
+        """Validated full artifact for ``key``, else None when absent (S12 D61).
+
+        Same key gate and same bounded corruption refusals as ``lookup``;
+        returns the whole validated artifact — the additive read surface the
+        SOP publication loader consumes. Corrupt bytes raise, never rewrite.
+        """
+        key = _validated_key(key)
+        try:
+            with open(self._path_for(key), "rb") as handle:
+                raw = handle.read()
+        except FileNotFoundError:
+            return None
+        return _validated_artifact(raw, key)

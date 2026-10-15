@@ -46,3 +46,6 @@ The coordinator owns roadmap, dispatch, supervision and acceptance decisions. De
 | scripts/check_docs.py | CONTRIBUTING.md |
 | scripts/check_site.py | docs/website.md |
 | work_runtime/ingress.py | docs/signed-evidence.md |
+| work_runtime/publication.py | docs/sop-authoring.md |
+| work_runtime/publication_demo.py | docs/sop-authoring.md |
+| work_runtime/file_adapter.py | docs/file-adapter.md |

@@ -1,0 +1,377 @@
+"""A deterministic governed SOP publication harness: lint, approve, publish.
+
+Runs the frozen S12 publication core (``work_runtime/publication.py``) through
+its public API on a real Runtime, SQLite store and artifact directory: a dirty
+card is refused by lint, the packaged card publishes behind a signed
+version-bound approval, the response is lost after the immutable commit and
+recovered by reconciling the original key, a doctored same-version card
+conflicts only after its own approval (D66), the loader fails closed, and an
+approver-key rotation refuses the retired key without touching history.
+
+No credentials, no network, no model session. The approver keys are ephemeral
+in-memory random bytes for the run and are never printed, logged or persisted
+— only key ids appear in the output. Trust is trusted-local configuration
+(see docs/sop-authoring.md): the approver is a configured principal name with
+a shared-key signature, not an authentication; rotation is a configuration
+act with no persistent revocation memory; there is no withdrawal in this
+slice (D63); and published cards never execute (D62).
+"""
+
+import copy
+import hashlib
+import json
+import re
+import secrets
+import shutil
+import sqlite3
+import tempfile
+import uuid
+from pathlib import Path
+
+from .adoption_demo import lint_result, packaged_card
+from .authoring import sop_digest
+from .ingress import (CODE_KEY_RETIRED, OPTIONAL_KEY_FIELD,
+                      SignedEvidenceGateway, SourceKey, sign_evidence)
+from .publication import (SopPublicationPolicy, SopPublicationStore,
+                          load_published_card, publication_key)
+from .runtime import Runtime
+
+DEMO_NOW = 2000000000  # Fixed clock keeps runs deterministic.
+GRACE = 300  # == max_age, the documented minimum so envelopes land inside it
+OLD_KEY_ID = "sop-owner-2026-08"
+NEW_KEY_ID = "sop-owner-2026-10"
+CARD_NAME = "publishing.json"
+WORK_ID = "pub-1"
+CONFLICT_WORK_ID = "pub-2"
+DOCTORED_GOAL = "content.published.doctored"
+FINAL_LINE = ("1 published card version; committed artifacts: 1; doctored "
+              "same-version conflicts: 1 (after its own approval); loader "
+              "fail-closed refusals: 2; retired-key refusals: 1 (zero "
+              "writes); history rewritten: 0")
+TABLES = ("works", "commands", "evidence", "operations", "events", "metadata")
+_HASH_JSON = re.compile(r"[0-9a-f]{64}\.json")
+
+
+def publication_grants():
+    """Demo-local grants (design Q7), mirroring publishing_grants()."""
+    return {"agent": {"work.manage", "sop.publish"},
+            "sop-owner": {"evidence.write"}}
+
+
+def _key(key_id, **fields):
+    """One ephemeral keyring entry; the secret never leaves this process."""
+    return SourceKey(key_id, secrets.token_bytes(32), **fields)
+
+
+def _committed_artifacts(directory):
+    """Sorted hash-named committed artifact files under ``directory``."""
+    return sorted(path for path in Path(directory).iterdir()
+                  if _HASH_JSON.fullmatch(path.name))
+
+
+def _table_counts(path):
+    db = sqlite3.connect(str(path))
+    try:
+        return {table: db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+                for table in TABLES}
+    finally:
+        db.close()
+
+
+def _table_dump(path):
+    """Ordered rowid dump of all six tables, for byte-identity proofs."""
+    dump = {}
+    db = sqlite3.connect(str(path))
+    try:
+        for table in TABLES:
+            dump[table] = db.execute(
+                "SELECT * FROM %s ORDER BY rowid" % table).fetchall()
+    finally:
+        db.close()
+    return dump
+
+
+def _evidence_bodies(path):
+    db = sqlite3.connect(str(path))
+    try:
+        return [json.loads(row[0]) for row in
+                db.execute("SELECT body FROM evidence ORDER BY rowid")]
+    finally:
+        db.close()
+
+
+def _send(runtime, work_id, kind, payload=None, actor="agent", command_id=None):
+    version = None if kind in ("create_work", "record_evidence") \
+        else runtime.get_work(work_id)["state_version"]
+    return runtime.command(actor, command_id or uuid.uuid4().hex, work_id, kind,
+                           payload, version)
+
+
+def _propose(runtime, work_id, command_id=None):
+    work = runtime.get_work(work_id)
+    return _send(runtime, work_id, "propose_action", {
+        "capability": "sop.publish", "document_digest": work["document_digest"],
+        "contract_revision": work["contract"]["revision"],
+        "plan_revision": work["plan_revision"]}, command_id=command_id)
+
+
+class ResponseLossPublicationStore:
+    """Composition wrapper: the real store commits, then the response is lost.
+
+    The wrapper holds a real :class:`SopPublicationStore` and never stubs or
+    edits it: ``execute`` delegates the durable commit and then raises
+    ``TimeoutError`` exactly where an external service would lose its response
+    AFTER the side effect. ``lookup`` delegates unchanged, so a restart
+    reconciles the original key against the real committed artifact. The
+    delegate's declared contract is surfaced so the Runtime's capability
+    preflight still applies (composition, not a bypass).
+    """
+
+    def __init__(self, store):
+        self._store = store
+        self.contract = store.contract
+
+    def execute(self, key, document, content_digest):
+        self._store.execute(key, document, content_digest)
+        raise TimeoutError("response lost after the publication commit")
+
+    def lookup(self, key):
+        return self._store.lookup(key)
+
+
+def run_publication_demo(directory=None):
+    """Run the publication scenario in its own fresh store; return the folder.
+
+    Fresh directory per run; never removes existing user data. Every printed
+    count is asserted inside this function against the real SQLite store and
+    the artifact directory, never against the narration itself.
+    """
+    folder = Path(tempfile.mkdtemp(prefix="governed-publication-", dir=directory))
+    run_dir = folder / "publication"
+    store_dir = run_dir / "store"
+    runtime_path = run_dir / "runtime.sqlite"
+    clock = {"now": DEMO_NOW}
+
+    def tick(now):
+        clock["now"] = now
+        return now
+
+    card = packaged_card(CARD_NAME)
+    policy = SopPublicationPolicy()
+    grants = publication_grants()
+    runtime = Runtime(str(runtime_path), policy, grants)
+    old_key = _key(OLD_KEY_ID, current=True)
+    new_key = _key(NEW_KEY_ID)
+    print("Scenario — publish a lint-clean SOP rule card through the governed "
+          "flow (own store: publication/)", flush=True)
+    print("ephemeral in-memory approver keys %s (current) and %s; secrets are "
+          "never printed, only key ids" % (OLD_KEY_ID, NEW_KEY_ID), flush=True)
+
+    def message(command_id, event_id, work_id, data, key_id=OLD_KEY_ID):
+        return {"source": "sop-owner", "command_id": command_id,
+                "work_id": work_id, "event_id": event_id,
+                "kind": "card_approval", "data": data,
+                "issued_at": clock["now"], OPTIONAL_KEY_FIELD: key_id}
+
+    gateway = SignedEvidenceGateway(runtime, {"sop-owner": [old_key, new_key]},
+                                    clock=lambda: clock["now"])
+
+    # Static prologue: lint is structural review only, never execution.
+    dirty = copy.deepcopy(card)
+    dirty["policy"]["goal"] = "  "
+    dirty["rogue_field"] = 1
+    invalid = lint_result(dirty)
+    assert invalid["valid"] is False and invalid["diagnostics"]
+    first = invalid["diagnostics"][0]
+    print("Static SOP review (lint-sop; never executed by the Runtime):",
+          flush=True)
+    print("1. Dirty demo card -> %d diagnostics, first %s at %s (lint-sop exit "
+          "1; work admission would refuse it bounded and unpersisted)"
+          % (len(invalid["diagnostics"]), first["code"],
+             first["path"] or "<root>"), flush=True)
+    clean = lint_result(card)
+    assert clean["valid"] is True and clean["digest"] == sop_digest(card)
+    print("2. Packaged card %s lint-clean with pinned digest %s (lint-sop exit "
+          "0) -> it becomes the work document (card = document)"
+          % (CARD_NAME, clean["digest"]), flush=True)
+
+    print("Live governed publication on the unchanged Runtime (family %s):"
+          % policy.id, flush=True)
+    _send(runtime, WORK_ID, "create_work", {"document": card},
+          command_id="cmd-create-pub")
+    _send(runtime, WORK_ID, "bind_contract",
+          {"policy_id": policy.id, "policy_version": policy.version,
+           "goal": policy.goal}, command_id="cmd-bind-pub")
+    work = runtime.get_work(WORK_ID)
+    assert work["document"] == card
+    assert work["document_digest"] == sop_digest(card) == clean["digest"]
+    print("3. Publication work created: document_digest == sop_digest == the "
+          "pinned digest", flush=True)
+
+    blocked = _propose(runtime, WORK_ID, command_id="cmd-propose-blocked")
+    assert blocked["decision"] == "rejected"
+    assert blocked["code"] == "REQUIREMENT_UNSATISFIED"
+    assert any(blocker["id"].startswith("S02:") for blocker in blocked["blockers"])
+    assert not store_dir.exists()
+    print("4. Agent proposes publication -> BLOCKED %s (S02 approval pending)"
+          % blocked["code"], flush=True)
+
+    tampered = sign_evidence(old_key.secret, message(
+        "cmd-approve-tampered", "evt-approve-tampered", WORK_ID,
+        {"digest": sop_digest(card), "policy_version": card["policy"]["version"]}))
+    tampered["data"]["digest"] = "0" * 64  # forged after signing
+    intake_before = _table_counts(runtime_path)
+    rejection = gateway.record(tampered)
+    assert rejection == {"decision": "rejected",
+                         "code": "EVIDENCE_AUTHENTICATION_FAILED"}
+    assert _table_counts(runtime_path) == intake_before
+    print("5. Tampered card_approval -> rejected %s before any intake write "
+          "(six tables unchanged)" % rejection["code"], flush=True)
+
+    valid = gateway.record(sign_evidence(old_key.secret, message(
+        "cmd-approve-valid", "evt-approve-valid", WORK_ID,
+        {"digest": runtime.get_work(WORK_ID)["document_digest"],
+         "policy_version": card["policy"]["version"]})))
+    assert valid["decision"] == "accepted"
+    assert valid["evidence_status"] == "pending_verification"
+    runtime.verify_pending(WORK_ID)
+    intent = _propose(runtime, WORK_ID, command_id="publish-once")
+    assert intent["decision"] == "accepted"
+    assert (runtime.get_operation(intent["operation_id"])["business_key"]
+            == publication_key(card))
+    print("6. Valid signed {digest, policy_version} approval verified -> intent "
+          "accepted; business key = the publication key", flush=True)
+
+    unknown = runtime.dispatch(intent["operation_id"],
+                               ResponseLossPublicationStore(
+                                   SopPublicationStore(str(store_dir))))
+    assert unknown["status"] == "outcome_unknown"
+    artifacts = _committed_artifacts(store_dir)
+    assert len(artifacts) == 1
+    assert artifacts[0].name == hashlib.sha256(
+        publication_key(card).encode("utf-8")).hexdigest() + ".json"
+    assert json.loads(artifacts[0].read_text(encoding="utf-8"))["document"] == card
+    print("7. Dispatch commits exactly ONE hash-named artifact; response lost "
+          "AFTER the commit -> outcome_unknown", flush=True)
+
+    restarted = Runtime(str(runtime_path), policy, grants)
+    recovered = restarted.reconcile(intent["operation_id"],
+                                    SopPublicationStore(str(store_dir)))
+    assert recovered["status"] == "confirmed_succeeded"
+    assert len(restarted.get_operation(intent["operation_id"])
+               ["attempts"]) == 1
+    print("8. Restart -> reconcile the ORIGINAL key -> confirmed_succeeded, one "
+          "attempt, nothing resent", flush=True)
+
+    accepted = [event for event in _evidence_bodies(runtime_path)
+                if event["kind"] == "accepted"][0]
+    assert "sop-store" not in grants  # no principal can sign as the store
+    assert accepted["source"] == "sop-store"
+    assert accepted["event_id"] == intent["operation_id"]
+    assert accepted["status"] == "verified"
+    print("9. Accepted proof runtime-written under the store source %s (absent "
+          "from grants), event_id = the operation id" % accepted["source"],
+          flush=True)
+
+    completion = _send(restarted, WORK_ID, "request_completion",
+                       command_id="cmd-complete-pub")
+    assert completion["decision"] == "accepted"
+    work = restarted.get_work(WORK_ID)
+    assert (work["status"], work["outcome"]) == ("closed", "succeeded")
+    winner_bytes = _committed_artifacts(store_dir)[0].read_bytes()
+    print("10. Evidence-backed completion -> SUCCEEDED; committed file "
+          "artifacts: 1", flush=True)
+
+    doctored = copy.deepcopy(card)
+    doctored["policy"]["goal"] = DOCTORED_GOAL
+    assert publication_key(doctored) == publication_key(card)
+    assert sop_digest(doctored) != sop_digest(card)
+    _send(runtime, CONFLICT_WORK_ID, "create_work", {"document": doctored},
+          command_id="cmd-create-pub2")
+    _send(runtime, CONFLICT_WORK_ID, "bind_contract",
+          {"policy_id": policy.id, "policy_version": policy.version,
+           "goal": policy.goal}, command_id="cmd-bind-pub2")
+    blocked_again = _propose(runtime, CONFLICT_WORK_ID,
+                             command_id="cmd-propose-conflict-blocked")
+    assert blocked_again["code"] == "REQUIREMENT_UNSATISFIED"  # D66 order
+    print("11. Doctored same-version card enters as a NEW work -> BLOCKED %s "
+          "first (D66 order: requirement blockers before the business key)"
+          % blocked_again["code"], flush=True)
+    conflict_approval = gateway.record(sign_evidence(old_key.secret, message(
+        "cmd-approve-conflict", "evt-approve-conflict", CONFLICT_WORK_ID,
+        {"digest": runtime.get_work(CONFLICT_WORK_ID)["document_digest"],
+         "policy_version": doctored["policy"]["version"]})))
+    assert conflict_approval["decision"] == "accepted"
+    runtime.verify_pending(CONFLICT_WORK_ID)
+    conflict = _propose(runtime, CONFLICT_WORK_ID,
+                        command_id="cmd-propose-conflict")
+    assert conflict["decision"] == "rejected"
+    assert conflict["code"] == "OPERATION_CONTENT_CONFLICT"
+    assert _committed_artifacts(store_dir)[0].read_bytes() == winner_bytes
+    assert len(_committed_artifacts(store_dir)) == 1
+    print("    ... then after its OWN verified approval -> persisted %s; the "
+          "winner artifact bytes are unchanged (still exactly one .json)"
+          % conflict["code"], flush=True)
+
+    loaded = load_published_card(str(store_dir), card["policy"]["id"],
+                                 card["policy"]["version"])
+    assert loaded == card and sop_digest(loaded) == clean["digest"]
+    absent_error = None
+    try:
+        load_published_card(str(store_dir), card["policy"]["id"],
+                            "demo-1-absent")
+    except ValueError as error:
+        absent_error = str(error)
+    assert absent_error is not None
+    tampered_dir = run_dir / "store-tampered"
+    shutil.copytree(store_dir, tampered_dir)  # the real store stays untouched
+    tampered_file = _committed_artifacts(tampered_dir)[0]
+    raw = json.loads(tampered_file.read_text(encoding="utf-8"))
+    raw["document"]["policy"]["goal"] = "tampered.after.demo"
+    tampered_file.write_text(json.dumps(raw), encoding="utf-8")
+    tampered_error = None
+    try:
+        load_published_card(str(tampered_dir), card["policy"]["id"],
+                            card["policy"]["version"])
+    except ValueError as error:
+        tampered_error = str(error)
+    assert (tampered_error is not None
+            and "no published card" not in tampered_error
+            and tampered_error != absent_error)
+    print("12. Loader fail-closed: the published card returns with its "
+          "matching digest; absent version and a tampered file refuse with "
+          "distinguishable bounded errors:", flush=True)
+    print("absent version: %s" % absent_error, flush=True)
+    print("tampered file: %s" % tampered_error, flush=True)
+
+    before = _table_dump(runtime_path)
+    before_bytes = _committed_artifacts(store_dir)[0].read_bytes()
+    rotated = SignedEvidenceGateway(
+        runtime,
+        {"sop-owner": [SourceKey(OLD_KEY_ID, old_key.secret,
+                                 not_after=DEMO_NOW + GRACE),
+                       SourceKey(NEW_KEY_ID, new_key.secret, current=True)]},
+        clock=lambda: clock["now"])
+    tick(DEMO_NOW + GRACE + 1)
+    retired = rotated.record(sign_evidence(old_key.secret, message(
+        "cmd-approve-rotated-old", "evt-approve-rotated-old", WORK_ID,
+        {"digest": sop_digest(card),
+         "policy_version": card["policy"]["version"]})))
+    assert retired == {"decision": "rejected", "code": CODE_KEY_RETIRED}
+    assert _table_dump(runtime_path) == before
+    assert _committed_artifacts(store_dir)[0].read_bytes() == before_bytes
+    print("13. Approver key rotated (new key current, %s retained to T+%d): a "
+          "fresh old-key envelope one second past grace -> rejected %s; six "
+          "tables and the artifact bytes untouched (publication history is "
+          "rotation-invariant)" % (OLD_KEY_ID, GRACE, CODE_KEY_RETIRED),
+          flush=True)
+
+    counts = _table_counts(runtime_path)
+    assert (counts["works"] == 2 and counts["commands"] == 11
+            and counts["evidence"] == 3 and counts["operations"] == 1)
+    print(FINAL_LINE)
+    print("\nInspect the durable history and the real artifact:")
+    print('  python3 -m work_runtime inspect --db "%s" --work %s '
+          '--policy sop-publish' % (runtime_path, WORK_ID))
+    print('  committed artifact: "%s"' % _committed_artifacts(store_dir)[0])
+    return folder

@@ -135,6 +135,18 @@ violation class only — key and document content are never echoed.
   Runtime retains the operation as `outcome_unknown` and the work in
   `needs_attention` when this happens.
 
+### `read_validated` (additive, S12 D61)
+
+`read_validated(key)` is the additive full-artifact read surface added for
+the SOP publication loader: the same key gate, `None` for an absent key
+(mirroring `lookup`, so callers can distinguish absence from corruption),
+and otherwise the **whole validated artifact dict** — exactly
+`{"artifact_version", "key", "content_digest", "document", "receipt"}` as
+committed, with every `lookup` validation applied (digest recomputed from
+the stored bytes, never a receipt field alone). Corrupt bytes raise the
+same bounded `ValueError` classes and the file is never rewritten. `lookup`
+itself is unchanged.
+
 ## Idempotency semantics
 
 | call | outcome |
