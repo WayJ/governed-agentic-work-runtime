@@ -478,6 +478,28 @@ D54–D66.
   argument refused); `published_card_matches` compares `(id, version,
   goal)` only — True for the packaged expense card against `ExpensePolicy`,
   False on version/goal drift and non-card shapes.
+- **Governed flow on the real Runtime (D54/D57–D59/D66)**
+  (`GovernedFlowTests`, real SQLite + real directory + ephemeral never-printed
+  approver key): dirty cards are refused at admission with a bounded
+  unpersisted `ValueError` (zero `works` rows, nothing committed); clean
+  cards carry `document_digest == sop_digest`; proposals without approval
+  are persisted `REQUIREMENT_UNSATISFIED` with an `S02` blocker; tampered
+  approvals are refused `EVIDENCE_AUTHENTICATION_FAILED` with unchanged
+  evidence rows (zero intake writes); wrong-source intake is
+  `AUTHORITY_DENIED`; wrong-version approvals stay candidates then turn
+  `invalid` at verification; correctly-signed wrong-digest approvals verify
+  on shape but keep S02 unsatisfied; the valid version-bound approval
+  verifies and the accepted proposal's `business_key` is exactly the
+  publication key; dispatch through the response-loss wrapper commits one
+  hash-named artifact (bare card as document, zero `.stage`) and the
+  restart reconcile recovers `confirmed_succeeded` with exactly one
+  attempt; the `accepted` proof is runtime-written (`sop-store` source
+  absent from grants, `event_id` = operation id, digest-bound, verified);
+  completion closes `succeeded`; exact command replay returns the stored
+  receipt verbatim with one operation; cross-work same-card and doctored
+  same-version proposals are first `REQUIREMENT_UNSATISFIED` (D66 order)
+  and only after the second work's own verified approval persist
+  `OPERATION_CONTENT_CONFLICT` with the winning artifact byte-unchanged.
 
 ## RFC-001 acceptance behaviors (R1–R7)
 

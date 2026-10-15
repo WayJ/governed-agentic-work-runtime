@@ -177,3 +177,86 @@ def published_card_matches(card, policy):
     return (section.get("id") == getattr(policy, "id", None)
             and section.get("version") == getattr(policy, "version", None)
             and section.get("goal") == getattr(policy, "goal", None))
+
+
+class SopPublicationPolicy:
+    """The governed ``sop.publish`` family (D54): S02 approval, S03 acceptance.
+
+    Mirrors the publishing domain on the unchanged command protocol: S02 is
+    C02's shape — a version-bound signed ``card_approval`` of the current
+    content digest from the configured authority source — and S03 is C04's
+    shape, excluded from blockers because the store's own acceptance (the
+    runtime-written ``accepted`` proof) satisfies it. Admission lints the
+    card (D57): a dirty card is a bounded unpersisted ``ValueError``, the
+    house convention for malformed documents; the lint workflow itself
+    stays with ``lint-sop``.
+    """
+
+    id = "sop-publish"
+    version = "demo-1"
+    goal = "sop.published"
+    evidence_sources = {
+        "card_approval": "sop-owner",
+        "accepted": "sop-store",
+    }
+
+    def validate_document(self, document):
+        sop_digest(document)  # Bounded ValueError when the card is not lint-clean.
+
+    def validate_evidence(self, work, candidate):
+        data = candidate["data"]
+        kind = candidate["kind"]
+        if kind == "card_approval":
+            # Version-bound approval (D58): the exact {digest, policy_version}
+            # shape with the version bound to the CARD's own policy version.
+            return (set(data) == {"digest", "policy_version"}
+                    and isinstance(data["digest"], str)
+                    and data["policy_version"]
+                    == work["document"]["policy"]["version"])
+        if kind == "accepted":
+            # Reserved shape adopted from Runtime-written receipts.
+            return (set(data) == {"digest", "external_id"}
+                    and isinstance(data["digest"], str)
+                    and isinstance(data["external_id"], str)
+                    and bool(data["external_id"]))
+        return False
+
+    def evaluate(self, work, evidence):
+        document = work["document"]
+        current = work["document_digest"]
+        proofs = [e for e in evidence if e["status"] == "verified"]
+
+        def has(kind):
+            source = self.evidence_sources[kind]
+            return any(e["kind"] == kind and e["source"] == source
+                       and e["data"].get("digest") == current for e in proofs)
+
+        result = []
+
+        def add(rule, subject, satisfied, explanation):
+            result.append({"id": rule + ":" + subject, "rule_id": rule,
+                           "subject": subject, "applicability": "applicable",
+                           "fulfillment": "satisfied" if satisfied else "pending",
+                           "explanation": explanation})
+
+        subject = document["policy"]["id"]
+        add("S02", subject, has("card_approval"),
+            "The configured authority must approve the exact current card content "
+            "with a version-bound signed card_approval")
+        add("S03", subject, has("accepted"),
+            "The publication store must accept the current card content "
+            "(runtime-written proof)")
+        return result
+
+    def action_blockers(self, capability, requirements):
+        if capability != "sop.publish":
+            return [{"code": "CAPABILITY_UNSUPPORTED", "capability": capability}]
+        return [r for r in requirements if r["rule_id"] != "S03" and
+                (r["applicability"] in ("unknown", "conflict")
+                 or (r["applicability"] == "applicable"
+                     and r["fulfillment"] != "satisfied"))]
+
+    def operation_key(self, capability, work):
+        # The store key IS the business key (D66): re-proposing the same card
+        # converges on one operation identity per (policy id, version).
+        return publication_key(work["document"])

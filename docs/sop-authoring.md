@@ -208,6 +208,67 @@ overwrite). Making the Runtime itself consult the store at construction is
 deliberately rejected: it would create the card→policy binding the
 [contributor guide](contributor-guide.md) disclaims.
 
+### The governed flow (write path)
+
+`SopPublicationPolicy` is the ``sop.publish`` family riding the unchanged
+command protocol in its own database: `create_work` with the card as the
+work document → `bind_contract` → signed `card_approval` through the
+unchanged [`SignedEvidenceGateway`](signed-evidence.md) → `verify_pending`
+→ `propose_action` → `dispatch` through `SopPublicationStore` →
+`reconcile` on uncertainty → `request_completion`.
+
+- **Admission lint (D57):** `create_work` lints the card through
+  `validate_document` — a dirty card is refused with a bounded,
+  *unpersisted* `ValueError` (the house convention for malformed
+  documents), and a clean card's `work["document_digest"]` equals
+  `sop_digest(card)` exactly.
+- **Requirements:** two, mirroring the publishing domain. **S02** — the
+  configured authority (`sop-owner`, a trusted-local principal holding
+  `evidence.write`) must have approved the *current* content digest;
+  **S03** — the store must have accepted the current content, satisfied by
+  the runtime-written `accepted` proof and excluded from blockers exactly
+  like C04. A missing, wrong-digest or wrong-version approval leaves S02
+  pending and blocks the proposal (`REQUIREMENT_UNSATISFIED`).
+- **The approval is evidence, not a grant check (D58):** a signed envelope
+  of kind `card_approval` whose `data` is exactly
+  `{"digest": <sop_digest>, "policy_version": <card version>}` — the
+  version-bound shape proven by the expense family's stronger policy. A
+  tampered envelope is refused `EVIDENCE_AUTHENTICATION_FAILED` with zero
+  intake writes; a correctly-signed wrong-version approval lands as a
+  candidate but never verifies against the card's version; a
+  correctly-signed wrong-digest approval verifies on shape but leaves S02
+  unsatisfied because the digest does not bind the current content. The
+  store's acceptance is *not* approval: the Runtime writes the `accepted`
+  proof itself when resolving the confirmed effect, under the family's
+  `sop-store` source (absent from grants — signed ingress refuses that
+  kind outright), with `event_id` = the operation id.
+- **The stored document is the bare card (D59):** the committed artifact's
+  `document` is the card itself — no envelope change; the runtime evidence
+  store is the approval audit.
+- **Replay, idempotency and conflict (D66, pinned order):** the three
+  existing layers compose with no new machinery. Command dedup replays the
+  stored receipt while authority holds. `operation_key` returns the
+  publication key, so one publication identity exists per card version per
+  database. Because `_propose` checks requirement blockers **before** the
+  business-key branch, a second work proposing the same `(policy id,
+  version)` — the same card or a doctored variant — is first refused
+  `REQUIREMENT_UNSATISFIED` while its own approval is missing, and only
+  after that work records and verifies its **own** approval does the
+  persisted `OPERATION_CONTENT_CONFLICT` surface; the committed artifact is
+  never touched. A response lost after the store commits is recovered by
+  reconciling the original key — one attempt, nothing resent. Within one
+  work the card document is effectively immutable: `revise_document`
+  requires a top-level document `id` which cards do not have, content
+  changes enter as new works, and legitimate change requires a new version
+  string — RFC-002 §6's model.
+- **Approver rotation** follows the S11 configuration semantics unchanged
+  (reconstruct the gateway from a rotated keyring): an old-key envelope is
+  refused `EVIDENCE_KEY_RETIRED` (key retained, past its window) or
+  `EVIDENCE_AUTHENTICATION_FAILED` (key dropped); the same `command_id`
+  re-signed under the new key replays the original receipt verbatim;
+  publication history — committed artifacts and runtime tables — is
+  untouched by the rotation acts themselves.
+
 ## Examples
 
 - Valid packaged cards (the single truth source for examples):

@@ -11,15 +11,21 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import sqlite3
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
+from work_runtime import Runtime
 from work_runtime.adoption_demo import packaged_card
 from work_runtime.authoring import lint_sop, sop_digest
 from work_runtime.file_adapter import FilePublisher
+from work_runtime.ingress import SignedEvidenceGateway, sign_evidence
 from work_runtime.policy import digest
 from work_runtime.publication import (
+    SopPublicationPolicy,
     SopPublicationStore,
     load_published_card,
     pinned_card,
@@ -28,6 +34,12 @@ from work_runtime.publication import (
 )
 
 _HEX_JSON = re.compile(r"[0-9a-f]{64}\.json")
+_FLOW_NOW = 2000000000  # Fixed clock keeps gateway freshness deterministic.
+
+
+def publication_grants():
+    """Demo-local grants (design Q7), mirroring publishing_grants()."""
+    return {"agent": {"work.manage", "sop.publish"}, "sop-owner": {"evidence.write"}}
 
 
 def card_with(policy_id="expense-submit", policy_version="demo-1"):
@@ -57,6 +69,16 @@ def stage_names(directory):
 
 def artifact_name(key):
     return hashlib.sha256(key.encode("utf-8")).hexdigest() + ".json"
+
+
+def table_counts(path):
+    db = sqlite3.connect(str(path))
+    try:
+        return {t: db.execute("SELECT COUNT(*) FROM " + t).fetchone()[0]
+                for t in ("works", "commands", "evidence", "operations",
+                          "events", "metadata")}
+    finally:
+        db.close()
 
 
 def json_read(directory, key):
@@ -293,3 +315,285 @@ class LoaderPinTests(PublicationTestCase):
         self.assertFalse(published_card_matches(changed_goal, ExpensePolicy()))
         self.assertFalse(published_card_matches("not a card", ExpensePolicy()))
         self.assertFalse(published_card_matches({}, ExpensePolicy()))
+
+
+class ResponseLossPublicationStore:
+    """Composition wrapper mirroring adoption_demo.ResponseLossPublisher:
+    the real store commits, then the response is lost after the effect."""
+
+    def __init__(self, store):
+        self._store = store
+        self.contract = store.contract  # surfaced, never bypassed
+
+    def execute(self, key, document, content_digest):
+        self._store.execute(key, document, content_digest)
+        raise TimeoutError("response lost after the publication commit")
+
+    def lookup(self, key):
+        return self._store.lookup(key)
+
+
+def evidence_bodies(path):
+    db = sqlite3.connect(str(path))
+    try:
+        return [json.loads(row[0]) for row in
+                db.execute("SELECT body FROM evidence ORDER BY rowid")]
+    finally:
+        db.close()
+
+
+class GovernedFlowTests(PublicationTestCase):
+    """The full RFC-002 §6 story on a real Runtime, SQLite and directory."""
+
+    def setUp(self):
+        super().setUp()
+        self.policy = SopPublicationPolicy()
+        self.grants = publication_grants()
+        self.runtime = Runtime(str(self.runtime_path), self.policy, self.grants)
+        self.approver_key = secrets.token_bytes(32)  # never printed
+        self.gateway = SignedEvidenceGateway(
+            self.runtime, {"sop-owner": self.approver_key},
+            clock=lambda: DEMO_NOW if False else _FLOW_NOW)
+
+    def _send(self, runtime, work_id, kind, payload=None, actor="agent",
+              command_id=None, version=None):
+        if version is None and kind not in ("create_work", "record_evidence"):
+            version = runtime.get_work(work_id)["state_version"]
+        return runtime.command(actor, command_id or uuid.uuid4().hex, work_id,
+                               kind, payload, version)
+
+    def _propose(self, runtime, work_id, command_id=None, version=None):
+        work = runtime.get_work(work_id)
+        if version is None:
+            version = work["state_version"]
+        return self._send(runtime, work_id, "propose_action", {
+            "capability": "sop.publish", "document_digest": work["document_digest"],
+            "contract_revision": work["contract"]["revision"],
+            "plan_revision": work["plan_revision"]}, command_id=command_id,
+            version=version)
+
+    def _signed_approval(self, runtime, work_id, card, digest_value=None,
+                         policy_version=None, command_id=None, event_id=None):
+        work = runtime.get_work(work_id)
+        return sign_evidence(self.approver_key, {
+            "source": "sop-owner", "command_id": command_id or uuid.uuid4().hex,
+            "work_id": work_id, "event_id": event_id or uuid.uuid4().hex,
+            "kind": "card_approval",
+            "data": {"digest": digest_value or work["document_digest"],
+                     "policy_version": policy_version
+                     or card["policy"]["version"]},
+            "issued_at": _FLOW_NOW})
+
+    def _establish(self, runtime, card, work_id):
+        self._send(runtime, work_id, "create_work", {"document": card})
+        self._send(runtime, work_id, "bind_contract", {
+            "policy_id": self.policy.id, "policy_version": self.policy.version,
+            "goal": self.policy.goal})
+
+    def _approve(self, runtime, work_id, card, **overrides):
+        receipt = self.gateway.record(
+            self._signed_approval(runtime, work_id, card, **overrides))
+        assert receipt["decision"] == "accepted", receipt
+        runtime.verify_pending(work_id)
+
+    def test_dirty_card_is_refused_unpersisted_at_admission(self):
+        dirty = card_with()
+        dirty["rogue_field"] = 1  # UNKNOWN_FIELD
+        with self.assertRaises(ValueError) as raised:
+            self._send(self.runtime, "pub-1", "create_work", {"document": dirty})
+        self.assertIs(type(raised.exception), ValueError)
+        self.assertIn("lint-clean", str(raised.exception))
+        self.assertEqual(table_counts(self.runtime_path)["works"], 0)
+        self.assertFalse(self.store_dir.exists())  # nothing committed anywhere
+
+    def test_clean_card_document_digest_equals_sop_digest(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        work = self.runtime.get_work("pub-1")
+        self.assertEqual(work["document_digest"], sop_digest(card))
+        self.assertEqual(work["document"], card)
+
+    def test_proposal_before_approval_is_blocked_pending_s02(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        blocked = self._propose(self.runtime, "pub-1")
+        self.assertEqual(blocked["decision"], "rejected")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")
+        self.assertTrue(any(b["id"].startswith("S02:")
+                            for b in blocked["blockers"]))
+        self.assertFalse(self.store_dir.exists())
+
+    def test_tampered_approval_rejected_before_any_intake_write(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        tampered = self._signed_approval(self.runtime, "pub-1", card)
+        tampered["data"]["digest"] = "0" * 64  # forged after signing
+        before = table_counts(self.runtime_path)
+        rejection = self.gateway.record(tampered)
+        self.assertEqual(rejection,
+                         {"decision": "rejected",
+                          "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(table_counts(self.runtime_path), before)
+
+    def test_wrong_source_intake_is_authority_denied(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        other_key = secrets.token_bytes(32)
+        gateway = SignedEvidenceGateway(
+            self.runtime, {"sop-owner": self.approver_key, "other": other_key},
+            clock=lambda: _FLOW_NOW)
+        envelope = sign_evidence(other_key, {
+            "source": "other", "command_id": uuid.uuid4().hex, "work_id": "pub-1",
+            "event_id": uuid.uuid4().hex, "kind": "card_approval",
+            "data": {"digest": self.runtime.get_work("pub-1")["document_digest"],
+                     "policy_version": card["policy"]["version"]},
+            "issued_at": _FLOW_NOW})
+        receipt = gateway.record(envelope)
+        self.assertEqual(receipt["decision"], "rejected")
+        self.assertEqual(receipt["code"], "AUTHORITY_DENIED")
+        self.assertEqual(table_counts(self.runtime_path)["evidence"], 0)
+
+    def test_wrong_version_approval_is_candidate_then_unsatisfied(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        receipt = self.gateway.record(
+            self._signed_approval(self.runtime, "pub-1", card,
+                                  policy_version="v9"))
+        self.assertEqual(receipt["decision"], "accepted")
+        self.assertEqual(receipt["evidence_status"], "pending_verification")
+        self.runtime.verify_pending("pub-1")
+        statuses = {e["kind"]: e["status"] for e in
+                    evidence_bodies(self.runtime_path)}
+        self.assertEqual(statuses["card_approval"], "invalid")
+        blocked = self._propose(self.runtime, "pub-1")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")
+
+    def test_wrong_digest_approval_verifies_shape_but_keeps_s02_pending(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        receipt = self.gateway.record(
+            self._signed_approval(self.runtime, "pub-1", card,
+                                  digest_value=sop_digest(doctored_card())))
+        self.assertEqual(receipt["decision"], "accepted")
+        self.runtime.verify_pending("pub-1")
+        statuses = {e["kind"]: e["status"] for e in
+                    evidence_bodies(self.runtime_path)}
+        self.assertEqual(statuses["card_approval"], "verified")
+        blocked = self._propose(self.runtime, "pub-1")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")
+
+    def test_valid_signed_approval_verifies_and_proposal_accepts(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        self._approve(self.runtime, "pub-1", card)
+        intent = self._propose(self.runtime, "pub-1", command_id="publish-once")
+        self.assertEqual(intent["decision"], "accepted")
+        operation = self.runtime.get_operation(intent["operation_id"])
+        self.assertEqual(operation["business_key"], publication_key(card))
+
+    def test_dispatch_response_loss_then_one_attempt_reconcile(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        self._approve(self.runtime, "pub-1", card)
+        intent = self._propose(self.runtime, "pub-1")
+        store = self.make_store()
+        unknown = self.runtime.dispatch(
+            intent["operation_id"], ResponseLossPublicationStore(store))
+        self.assertEqual(unknown["status"], "outcome_unknown")
+        self.assertEqual(committed_names(self.store_dir),
+                         [artifact_name(publication_key(card))])
+        self.assertEqual(stage_names(self.store_dir), [])
+        self.assertEqual(json_read(self.store_dir, publication_key(card))["document"],
+                         card)
+        restarted = Runtime(str(self.runtime_path), self.policy, self.grants)
+        recovered = restarted.reconcile(intent["operation_id"], self.make_store())
+        self.assertEqual(recovered["status"], "confirmed_succeeded")
+        self.assertEqual(len(restarted.get_operation(intent["operation_id"])
+                            ["attempts"]), 1)
+        self.assertEqual(committed_names(self.store_dir),
+                         [artifact_name(publication_key(card))])
+
+    def test_accepted_proof_is_runtime_written_under_the_store_source(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        self._approve(self.runtime, "pub-1", card)
+        intent = self._propose(self.runtime, "pub-1")
+        resolved = self.runtime.dispatch(intent["operation_id"], self.make_store())
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        self.assertNotIn("sop-store", self.grants)  # no principal can sign as it
+        proofs = [e for e in evidence_bodies(self.runtime_path)
+                  if e["kind"] == "accepted"]
+        self.assertEqual(len(proofs), 1)
+        proof = proofs[0]
+        self.assertEqual(proof["source"], "sop-store")
+        self.assertEqual(proof["event_id"], intent["operation_id"])
+        self.assertEqual(proof["status"], "verified")
+        self.assertEqual(proof["data"]["digest"], sop_digest(card))
+        self.assertTrue(proof["data"]["external_id"].startswith("FILE-"))
+
+    def test_completion_closes_the_work_succeeded(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        self._approve(self.runtime, "pub-1", card)
+        intent = self._propose(self.runtime, "pub-1")
+        self.runtime.dispatch(intent["operation_id"], self.make_store())
+        completion = self._send(self.runtime, "pub-1", "request_completion",
+                                command_id="complete")
+        self.assertEqual(completion["decision"], "accepted")
+        work = self.runtime.get_work("pub-1")
+        self.assertEqual((work["status"], work["outcome"]),
+                         ("closed", "succeeded"))
+        self.assertTrue(work["completion"]["evidence"])
+        self.assertEqual(committed_names(self.store_dir),
+                         [artifact_name(publication_key(card))])
+
+    def test_command_replay_returns_the_stored_receipt_verbatim(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        self._approve(self.runtime, "pub-1", card)
+        version = self.runtime.get_work("pub-1")["state_version"]
+        first = self._propose(self.runtime, "pub-1", command_id="publish-once",
+                              version=version)
+        again = self._propose(self.runtime, "pub-1", command_id="publish-once",
+                              version=version)
+        self.assertEqual(again, first)
+        operations = table_counts(self.runtime_path)["operations"]
+        self.assertEqual(operations, 1)
+
+    def test_cross_work_same_card_conflicts_only_after_its_own_approval(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        self._approve(self.runtime, "pub-1", card)
+        self.runtime.dispatch(
+            self._propose(self.runtime, "pub-1")["operation_id"],
+            self.make_store())
+        self._establish(self.runtime, card, "pub-2")
+        blocked = self._propose(self.runtime, "pub-2")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")  # D66 order
+        self._approve(self.runtime, "pub-2", card)
+        conflict = self._propose(self.runtime, "pub-2")
+        self.assertEqual(conflict["decision"], "rejected")
+        self.assertEqual(conflict["code"], "OPERATION_CONTENT_CONFLICT")
+        self.assertEqual(len(committed_names(self.store_dir)), 1)
+
+    def test_doctored_same_version_card_conflicts_after_its_own_approval(self):
+        card = card_with()
+        self._establish(self.runtime, card, "pub-1")
+        self._approve(self.runtime, "pub-1", card)
+        self.runtime.dispatch(
+            self._propose(self.runtime, "pub-1")["operation_id"],
+            self.make_store())
+        winner_bytes = Path(os.path.join(
+            str(self.store_dir), artifact_name(publication_key(card)))).read_bytes()
+        doctored = doctored_card()  # same (id, version), different content
+        self.assertEqual(publication_key(doctored), publication_key(card))
+        self._establish(self.runtime, doctored, "pub-2")
+        blocked = self._propose(self.runtime, "pub-2")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")  # D66 order
+        self._approve(self.runtime, "pub-2", doctored)
+        conflict = self._propose(self.runtime, "pub-2")
+        self.assertEqual(conflict["code"], "OPERATION_CONTENT_CONFLICT")
+        after = Path(os.path.join(
+            str(self.store_dir), artifact_name(publication_key(card)))).read_bytes()
+        self.assertEqual(after, winner_bytes)  # artifact untouched
+        self.assertEqual(len(committed_names(self.store_dir)), 1)
