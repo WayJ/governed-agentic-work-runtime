@@ -353,7 +353,7 @@ class GovernedFlowTests(PublicationTestCase):
         self.approver_key = secrets.token_bytes(32)  # never printed
         self.gateway = SignedEvidenceGateway(
             self.runtime, {"sop-owner": self.approver_key},
-            clock=lambda: DEMO_NOW if False else _FLOW_NOW)
+            clock=lambda: _FLOW_NOW)
 
     def _send(self, runtime, work_id, kind, payload=None, actor="agent",
               command_id=None, version=None):
