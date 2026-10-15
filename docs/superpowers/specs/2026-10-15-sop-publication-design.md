@@ -411,3 +411,86 @@ history untouched. All five existing gates green; no new global gate.
   question 1) remains untested. This draft self-ratifies nothing — the
   master's ratification and the independent review it dispatches are the
   counterweight (recon §5).
+
+## MASTER ratification - 2026-10-15 D54-D66 (before implementation)
+
+Ratified on the independent review
+[61b50fc](../../../.agents/notes/2026-10-15-s12-independent-design-review.md)
+(verdict: implementable with amendments; 31/31 probes, live end-to-end run of
+§6, counter-probes IR-P16/P17). The DRAFT body above is ratified **as
+amended** by this section; where they differ, this section governs.
+
+- **D54** (=SPD-1) Governed-protocol shape: publication is a governed
+  `sop.publish` policy-family Work riding the unchanged command protocol and
+  `SignedEvidenceGateway` — zero changes to `runtime.py`/`ingress.py`/
+  `authoring.py`/`FilePublisher` semantics.
+- **D55** (=SPD-2) Thin `SopPublicationStore` wrapper delegating to
+  `FilePublisher` unchanged (adoption-demo wrapper precedent).
+- **D56** (=SPD-3, **amended per IR-F1 — replaces the drafted key**): the
+  publication key is collision-free by construction,
+  `publication_key = "sop-pub:" + digest([policy_id, policy_version])` (the
+  Runtime's own compensation-key pattern). The drafted delimiter-joined key
+  is **rejected**: IR-P16 proved two lint-clean cards colliding on it. All
+  keys/receipts/loaders use the digest form from the first commit.
+- **D57** (=SPD-4) Lint at admission: dirty card ⇒ bounded unpersisted
+  `ValueError`; clean card ⇒ `work.document_digest == sop_digest(card)`.
+- **D58** (=SPD-5) Version-bound signed `card_approval` `{digest,
+  policy_version}`; tampered ⇒ `EVIDENCE_AUTHENTICATION_FAILED` with zero
+  intake writes; wrong-version ⇒ candidate-but-unsatisfied.
+- **D59** (=SPD-6) The stored document is the bare card; the runtime
+  evidence store is the approval audit (Q1 defer ratified).
+- **D60** (=SPD-7) Wrapper contract declares keyed uniqueness; conflict
+  layers are the three verified ones (proposal business-key, command-id
+  reuse, store refusal).
+- **D61** (=SPD-8 + IR-F4 pin) Additive `FilePublisher.read_validated(key)`:
+  returns `None` for an absent key (mirroring `lookup`); corrupt artifact ⇒
+  bounded `ValueError`; `load_published_card` converts absence into its own
+  bounded fail-closed error so corrupt and absent stay distinguishable.
+- **D62** (=SPD-9, Q3 default ratified) Loader/pin functions only —
+  `load_published_card`, `pinned_card`, `published_card_matches` — with **no
+  Runtime wiring** and no card→policy compilation: published cards never
+  execute.
+- **D63** (=SPD-10, Q4 default ratified) No withdrawal in this slice; a
+  follow-up designs it separately on the S8 revocation model.
+- **D64** (=SPD-11) `publication-demo` + installed module/console stage as
+  existing installer evidence — **no new global gate**; rehearsal set
+  untouched.
+- **D65** (=SPD-12) Doc set per story 6 (sop-authoring.md publication
+  sections incl. the stale-CLI repair at lines 25–26, verification.md
+  coverage, file-adapter.md `read_validated` note, IR-F5's correction to
+  51 loader-counted file-adapter test cases); the master adds the
+  `doc_sync_map` rows in the same ratification act (workers never edit
+  AGENTS.md — SKR-9 precedent).
+- **D66** (=SPD-13 + IR-F3 pin) Cross-work same-version/doctored content ⇒
+  persisted `OPERATION_CONTENT_CONFLICT` is intended semantics, with the
+  order pinned: `_propose` checks requirement blockers **before** the
+  business-key branch, so the conflict surfaces only after the second work
+  carries its own verified approval — tests pin this order.
+
+**§8 re-framed per IR-F2 (overrides the drafted `revise_document`
+sentence):** within a publication work the card document is effectively
+immutable — `revise_document` requires a top-level `document["id"]` which
+cards do not have (IR-P17 `KeyError`); content changes enter as **new
+works**, same-version doctored content is refused by `OPERATION_CONTENT_CONFLICT`
+(after the second work's approval, D66), and legitimate change requires a
+new version string — exactly RFC-002 §6. No `runtime.py` change is
+authorized for this.
+
+**Ratified defaults:** Q1 defer · Q2 single configured source per family ·
+Q3 no Runtime wiring · Q4 withdrawal as separately-designed follow-up · Q5
+no external-author-feedback obligation · Q6 nonempty-string version
+discipline · Q7 demo-local grants mirroring `publishing_grants()`.
+
+**MD-3 wave split:** wave 1 = stories 1–4 (store/read surface, loader/pin,
+governed flow, rotation interaction); wave 2 = stories 5–6 (demo+installer,
+docs). `wip_limit 1` throughout.
+
+**MD-4 boundary:** IR-F7 — two runtime databases sharing one store
+directory fail closed at reconcile (`ADAPTER_RESULT_INVALID` +
+`needs_attention`, no overwrite) — is an **accepted operator-discipline
+boundary**, recorded in the sprint report, not new machinery.
+
+No tenant authentication, TLS, external KMS, network, external authors,
+multi-tenant or security-certification claim is made or implied; grants are
+trusted-local names and ingress authenticates sources within a shared-key
+boundary (S11 limits unchanged).
