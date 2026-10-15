@@ -426,7 +426,17 @@ fingerprint and digest re-derived from the SQLite store, never from stdout.
 The CLI surface runs the harness end to end (`test_cli_rotation_demo_module_runs`,
 `RotationDemoCliTests`: exit 0, final line, one printed inspect path); the
 installed `work-runtime rotation-demo` console entry point ships through the
-existing packaging.
+existing packaging. The installed verifier proves both entry points
+independently of printed text (`scripts/verify_install.py` stages 19–20:
+`require_rotation_proof` reads the real store — the six-table digest
+recomputed locally and matched against the printed digest, evidence
+statuses/fingerprints/document digest recomputed with the standard library,
+exactly one command row per rotation command id with the original cached
+receipt still `pending_verification`, zero operations, schema 1 — and re-runs
+the printed inspect command verbatim); rejection paths (missing final line,
+flipped evidence status, deleted evidence row, forged duplicate command row,
+tampered cached receipt, digest-only store mutation) are pinned by
+`VerifyInstallRotationProofTests`.
 
 ## RFC-001 acceptance behaviors (R1–R7)
 

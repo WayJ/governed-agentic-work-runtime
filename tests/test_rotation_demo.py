@@ -179,5 +179,90 @@ class RotationDemoCliTests(unittest.TestCase):
         self.assertEqual(result.stdout.count("inspect --db"), 1)
 
 
+def _load_verify_install():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "verify_install", REPO_ROOT / "scripts" / "verify_install.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class VerifyInstallRotationProofTests(unittest.TestCase):
+    """The installer proof reads the demo's real store, never its stdout."""
+
+    def setUp(self):
+        from work_runtime import rotation_demo
+        self.verify_install = _load_verify_install()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.folder = rotation_demo.run_rotation_demo(self.temp.name)
+        self.stdout = out.getvalue()
+
+    def mutate(self, sql, args=()):
+        db = sqlite3.connect(str(self.folder / "rotate" / "runtime.sqlite"))
+        with db:
+            db.execute(sql, args)
+        db.close()
+
+    def proof(self, stdout=None):
+        return self.verify_install.require_rotation_proof(
+            stdout if stdout is not None else self.stdout, "test")
+
+    def test_proof_passes_on_real_demo_output(self):
+        store = self.proof()
+        self.assertEqual(Path(store).parent.name, "rotate")
+
+    def test_proof_rejects_missing_final_line(self):
+        stripped = "\n".join(line for line in self.stdout.splitlines()
+                             if FINAL_LINE not in line) + "\n"
+        with self.assertRaises(SystemExit) as raised:
+            self.proof(stripped)
+        self.assertIn("history rewritten", str(raised.exception))
+
+    def test_proof_rejects_flipped_evidence_status(self):
+        self.mutate("UPDATE evidence SET body=replace(body, "
+                    "'\"status\":\"verified\"', '\"status\":\"pending_verification\"') "
+                    "WHERE event_id='evt-rotation-1'")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("evt-rotation-1", str(raised.exception))
+
+    def test_proof_rejects_deleted_evidence_row(self):
+        self.mutate("DELETE FROM evidence WHERE event_id='evt-rotation-2'")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("evt-rotation-2", str(raised.exception))
+
+    def test_proof_rejects_duplicated_command_row(self):
+        # An exact duplicate is impossible (UNIQUE(actor, id) — the schema
+        # itself guarantees one row per command identity), so forge the
+        # duplicate under a different actor: the proof must still notice the
+        # command appearing twice.
+        self.mutate("INSERT INTO commands (actor,id,fingerprint,work_id,receipt) "
+                    "VALUES ('agent','cmd-rotation-k1','forged','rotate','{}')")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("command rows", str(raised.exception))
+
+    def test_proof_rejects_tampered_cached_receipt(self):
+        self.mutate("UPDATE commands SET receipt=replace(receipt, "
+                    "'\"pending_verification\"', '\"verified\"') "
+                    "WHERE id='cmd-rotation-k1'")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("cached receipt", str(raised.exception))
+
+    def test_proof_rejects_digest_only_store_mutation(self):
+        # A count-preserving event-body edit: only the recomputed six-table
+        # digest can catch it.
+        self.mutate("UPDATE events SET body=body || ' ' WHERE type='WorkCreated'")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("digest", str(raised.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
