@@ -9,6 +9,7 @@ from .policy import ExpensePolicy, ExpensePolicyV2
 from .publishing import PublishingPolicy
 from .publishing_demo import publishing_grants, run_demo as run_publish_demo
 from .revocation_demo import run_revocation_demo
+from .rotation_demo import run_rotation_demo
 from .runtime import Runtime
 
 SUPPORTED_EXPENSE_VERSIONS = ("demo-1", "demo-2")
@@ -65,6 +66,11 @@ def main(argv=None):
         help="Run the expense-compensation demonstration (real crash "
              "withdrawal, retained history, refusal-not-reversal)")
     compensation.add_argument("--directory", help="Parent directory for a fresh demo folder")
+    rotation = sub.add_parser(
+        "rotation-demo",
+        help="Run the signing-key rotation demonstration (dual-key window, "
+             "retirement, verbatim cached receipts, preserved history)")
+    rotation.add_argument("--directory", help="Parent directory for a fresh demo folder")
     lint = sub.add_parser("lint-sop",
                           help="Lint a static SOP rule-card JSON file "
                                "(exit 0 clean / 1 diagnostics / 2 file error)")
@@ -109,6 +115,8 @@ def main(argv=None):
         run_revocation_demo(args.directory)
     elif args.command == "compensation-demo":
         run_compensation_demo(args.directory)
+    elif args.command == "rotation-demo":
+        run_rotation_demo(args.directory)
     elif args.command == "lint-sop":
         raise SystemExit(run_lint_sop(args.path, args.as_json))
     elif args.command == "inspect":

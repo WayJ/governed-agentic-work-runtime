@@ -82,6 +82,16 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     this build the stage prints an explicit SKIPPED line and the final
     summary discloses the skip — it never reports UI coverage it did not
     actually run.
+19. Run `python -m work_runtime rotation-demo` outside the checkout and
+    verify it INDEPENDENTLY of the printed text: read the runtime store
+    directly — the six-table history digest recomputed locally and matched
+    against the printed digest, exactly two verified approval-evidence rows
+    with recomputed fingerprints and document digest, exactly one command row
+    per rotation command id with the original cached receipt still
+    pending_verification while its evidence row is verified, zero operations —
+    and re-run the demo's printed inspect command verbatim.
+20. Run the `work-runtime rotation-demo` console entry point outside the
+    checkout and apply the same independent store proof.
 
 Usage: python3 scripts/verify_install.py [--python INTERP] [--repo PATH] [--keep]
 """
@@ -114,6 +124,14 @@ COMPENSATION_FINAL_LINE = ("2 scenarios; retained forward effects: 2 accepted "
                            "applications; withdrawal effects: 1; refused "
                            "withdrawals: 1; refusal is not reversal")
 COMPENSATION_SCENARIOS = ("crash", "refusal")
+ROTATION_FINAL_LINE = ("1 scenario; dual-key accepts: 2; retired refusals: 1 (zero "
+                       "writes); cached receipts verbatim: 2; new commands: 1; "
+                       "history rewritten: 0")
+ROTATION_BEFORE_DIGEST = re.compile(r"six-table digest before rotation: ([0-9a-f]{16})")
+ROTATION_FINAL_DIGEST = re.compile(r"six-table digest after all steps: ([0-9a-f]{16})")
+ROTATION_TABLES = ("works", "commands", "evidence", "operations", "events", "metadata")
+ROTATION_COMMAND_IDS = ("cmd-rotation-k1", "cmd-rotation-k2", "cmd-rotation-resend")
+ROTATION_EVENT_IDS = ("evt-rotation-1", "evt-rotation-2")
 UI_WORK_IDS = {"wait-1", "uncertain-1", "transfer-1", "succeed-1", "cancel-1"}
 PINNED_PUBLISHING_DIGEST = ("56c85d32da9a9eee6330326e2d14ce0661dbc26d"
                             "782b13d0259c3f149e6be000")
@@ -796,6 +814,117 @@ def require_compensation_proof(stdout, source):
     return stores
 
 
+def rotation_six_table_digest(runtime_db):
+    """SHA-256 over the ordered rowid dumps of all six tables (16-char prefix).
+
+    Recomputed locally on purpose: this script never imports the product
+    package for its proofs.
+    """
+    dump = {}
+    db = sqlite3.connect(str(runtime_db))
+    try:
+        for table in ROTATION_TABLES:
+            dump[table] = [list(row) for row in
+                           db.execute("SELECT * FROM %s ORDER BY rowid" % table)]
+    finally:
+        db.close()
+    return hashlib.sha256(canonical_json(dump).encode("utf-8")).hexdigest()[:16]
+
+
+def require_rotation_proof(stdout, source):
+    """Independent module/console rotation-demo proof, never stdout-only.
+
+    Requires the demo's exact final line, its printed before/after six-table
+    digests and exactly one printed store, then verifies the store directly:
+    the six-table digest recomputed locally must equal the printed after-all-
+    steps digest (and differ from the before-rotation digest), exactly two
+    verified approval-evidence rows with locally recomputed fingerprints and
+    document digest, exactly one command row per rotation command id with the
+    original cached receipt still pending_verification while its evidence row
+    is verified, zero operations and schema 1. Returns the store path.
+    """
+    require(ROTATION_FINAL_LINE in stdout,
+            "%s output lacks %r" % (source, ROTATION_FINAL_LINE))
+    printed = ROTATION_FINAL_DIGEST.search(stdout)
+    require(printed is not None, "%s printed no after-all-steps digest" % source)
+    before_printed = ROTATION_BEFORE_DIGEST.search(stdout)
+    require(before_printed is not None, "%s printed no before-rotation digest" % source)
+    store_match = INSPECT_DB.search(stdout)
+    require(store_match is not None, "%s printed no inspect --db path" % source)
+    runtime_db = Path(store_match.group(1))
+    require(runtime_db.exists(),
+            "%s runtime database %s does not exist" % (source, runtime_db))
+    require(runtime_db.parent.name == "rotate",
+            "%s store directory is %s (expected rotate)"
+            % (source, runtime_db.parent.name))
+
+    state = require_work_state(runtime_db, "rotate", source)
+    require((state.get("status"), state.get("state_version")) == ("active", 4),
+            "%s work rotate is %s/%s (expected active/4)"
+            % (source, state.get("status"), state.get("state_version")))
+    document_digest = local_digest(state["document"])
+
+    evidence_ids = {}
+    for event_id in ROTATION_EVENT_IDS:
+        body = require_source_event_proof(runtime_db, "rotate", "finance", event_id,
+                                          "verified", source)
+        require(body["kind"] == "approval"
+                and body["data"] == {"digest": document_digest},
+                "%s evidence %s is not an approval of the work document"
+                % (source, event_id))
+        evidence_ids[event_id] = body["id"]
+    require(db_rows(runtime_db, "SELECT COUNT(*) FROM evidence",
+                    source=source)[0][0] == 2,
+            "%s store holds evidence rows beyond the two rotation approvals" % source)
+
+    commands = db_rows(runtime_db, "SELECT actor,id FROM commands", source=source)
+    require(len(commands) == 6,
+            "%s store holds %d command rows (expected exactly 6: three "
+            "initialization + three rotation commands, the same-command "
+            "re-sign adding none)" % (source, len(commands)))
+    by_id = {}
+    for actor, command_id in commands:
+        by_id.setdefault(command_id, []).append(actor)
+    for command_id in ROTATION_COMMAND_IDS:
+        require(by_id.get(command_id) == ["finance"],
+                "%s command %s appears %d times with actors %s (expected "
+                "exactly once, by finance)"
+                % (source, command_id, len(by_id.get(command_id, [])),
+                   by_id.get(command_id)))
+    receipt = json.loads(db_rows(runtime_db, "SELECT receipt FROM commands "
+                                 "WHERE id='cmd-rotation-k1'", source=source)[0][0])
+    require(receipt.get("decision") == "accepted"
+            and receipt.get("evidence_status") == "pending_verification"
+            and receipt.get("evidence_id") == evidence_ids["evt-rotation-1"],
+            "%s cached receipt for cmd-rotation-k1 is not the original "
+            "accepted/pending_verification receipt of evt-rotation-1 (the "
+            "same-command re-sign must return the stored receipt verbatim, "
+            "never a refreshed status)" % source)
+
+    require(db_rows(runtime_db, "SELECT COUNT(*) FROM operations",
+                    source=source)[0][0] == 0,
+            "%s store holds operations (expected 0: evidence-only scenario)"
+            % source)
+    require(db_rows(runtime_db, "SELECT COUNT(*) FROM events",
+                    source=source)[0][0] == 4,
+            "%s store holds %d events (expected exactly 4: WorkCreated, "
+            "ContractBound, PlanRevised, EvidenceEvaluated)"
+            % (source, db_rows(runtime_db, "SELECT COUNT(*) FROM events",
+                               source=source)[0][0]))
+    require(db_rows(runtime_db, "SELECT * FROM metadata", source=source)
+            == [("schema_version", "1")],
+            "%s metadata is not exactly schema_version 1" % source)
+
+    digest = rotation_six_table_digest(runtime_db)
+    require(digest == printed.group(1),
+            "%s recomputed six-table digest %s does not equal the printed "
+            "digest %s" % (source, digest, printed.group(1)))
+    require(printed.group(1) != before_printed.group(1),
+            "%s printed identical before/after digests (the new command must "
+            "be reflected)" % source)
+    return str(runtime_db)
+
+
 def run_printed_inspect_command(stdout, venv_python, outside, source,
                                 outcome_marker='"outcome": "succeeded"'):
     """Re-run the demo's printed inspect command verbatim (python3 swapped)."""
@@ -1156,6 +1285,21 @@ def main(argv=None):
         require_compensation_proof(console_compensation.stdout,
                                    "console compensation-demo")
 
+        print("=== module rotation-demo outside the checkout ===")
+        module_rotation = run([venv_python, "-m", "work_runtime", "rotation-demo"],
+                              outside, show=True)
+        require_rotation_proof(module_rotation.stdout, "module rotation-demo")
+        run_printed_inspect_command(module_rotation.stdout, venv_python, outside,
+                                    "module rotation-demo",
+                                    outcome_marker='"status": "active"')
+        print("independent check: recomputed six-table digest, verified evidence "
+              "statuses/fingerprints, the original cached receipt and one command "
+              "row per rotation command id re-verified from the rotation store")
+
+        print("=== console rotation-demo outside the checkout ===")
+        console_rotation = run([console, "rotation-demo"], outside, show=True)
+        require_rotation_proof(console_rotation.stdout, "console rotation-demo")
+
         print("=== packaged web assets ship with the install ===")
         for name in ("index.html", "app.js", "app.css"):
             require((package_dir / "web" / name).is_file(),
@@ -1176,7 +1320,10 @@ def main(argv=None):
               "module and console compensation-demo stores re-verified (recomputed "
               "business keys, immutable link and adapter-result binding, tagged "
               "receipts and one withdrawal row, withdrawn-kind proof with retained "
-              "E08 truth, exact two-id ack, refusal-not-reversal); packaged web assets "
+              "E08 truth, exact two-id ack, refusal-not-reversal); module and console "
+              "rotation-demo stores re-verified (recomputed six-table digest, "
+              "verified evidence fingerprints, original cached receipt, one "
+              "command row per rotation command id); packaged web assets "
               "shipped%s (%.1fs)"
               % ("; SKIPPED stages: " + ui_skip if ui_skip else "",
                  time.time() - started))
