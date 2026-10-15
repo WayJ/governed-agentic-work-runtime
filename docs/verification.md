@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-15 (S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-15 (S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -437,6 +437,85 @@ the printed inspect command verbatim); rejection paths (missing final line,
 flipped evidence status, deleted evidence row, forged duplicate command row,
 tampered cached receipt, digest-only store mutation) are pinned by
 `VerifyInstallRotationProofTests`.
+
+## S12 coverage — governed SOP rule-card publication (core wave)
+
+The S12 core wave adds the publication machinery on the unchanged Runtime,
+gateway and `FilePublisher` commit engine (`tests/test_publication.py`,
+`tests/test_publication_rotation.py`, plus narrow additive
+`ReadValidatedTests` in `tests/test_file_adapter.py`). Semantics and
+boundaries: [SOP authoring](sop-authoring.md) publication section,
+[file adapter](file-adapter.md); design
+[S12](superpowers/specs/2026-10-15-sop-publication-design.md) ratified
+D54–D66.
+
+- **Additive validated read surface (D61)** (`ReadValidatedTests`):
+  `FilePublisher.read_validated(key)` returns `None` for an absent key
+  (mirroring `lookup`, keeping absence distinguishable from corruption),
+  the full validated artifact for a committed key — detached from caller
+  and storage, stable across fresh instances — and refuses corrupt bytes
+  and tampered documents with bounded `ValueError`s while never rewriting
+  the file; the key gate applies unchanged.
+- **Digest-based publication key and store wrapper (D55/D56/D60)**
+  (`PublicationKeyTests`, `SopPublicationStoreTests`): the key equals
+  `"sop-pub:" + digest([policy id, version])` with the 64-hex tail;
+  delimiter-hostile lint-clean identities (`("collide:one","v1")` vs
+  `("collide","one:v1")`, IR-P16) do **not** collide; identity changes
+  change the key and malformed identities raise bounded errors; the wrapper
+  commits exactly one hash-named artifact per publication key (bare card as
+  document, `content_digest == sop_digest`), replays the byte-identical
+  receipt across instances, refuses same-key changed content without
+  overwriting, and delegates `lookup` (committed receipt / `None`).
+- **Fail-closed loader and pin (D62)** (`LoaderPinTests`): round trip
+  returns the published card with `sop_digest` equal to the stored
+  `content_digest` and receipt digest; absent version and missing store
+  directory raise the same bounded absent error (distinguishable from every
+  corruption class, directory never created by a read); corrupt bytes,
+  tampered documents with stale digests and doctored key fields raise
+  bounded errors; foreign card or non-card content committed under a
+  publication key by raw adapter use fails closed (MD-4 discipline);
+  `pinned_card` requires the exact pin (wrong pin or malformed pin
+  argument refused); `published_card_matches` compares `(id, version,
+  goal)` only — True for the packaged expense card against `ExpensePolicy`,
+  False on version/goal drift and non-card shapes.
+- **Governed flow on the real Runtime (D54/D57–D59/D66)**
+  (`GovernedFlowTests`, real SQLite + real directory + ephemeral never-printed
+  approver key): dirty cards are refused at admission with a bounded
+  unpersisted `ValueError` (zero `works` rows, nothing committed); clean
+  cards carry `document_digest == sop_digest`; proposals without approval
+  are persisted `REQUIREMENT_UNSATISFIED` with an `S02` blocker; tampered
+  approvals are refused `EVIDENCE_AUTHENTICATION_FAILED` with unchanged
+  evidence rows (zero intake writes); wrong-source intake is
+  `AUTHORITY_DENIED`; wrong-version approvals stay candidates then turn
+  `invalid` at verification; correctly-signed wrong-digest approvals verify
+  on shape but keep S02 unsatisfied; the valid version-bound approval
+  verifies and the accepted proposal's `business_key` is exactly the
+  publication key; dispatch through the response-loss wrapper commits one
+  hash-named artifact (bare card as document, zero `.stage`) and the
+  restart reconcile recovers `confirmed_succeeded` with exactly one
+  attempt; the `accepted` proof is runtime-written (`sop-store` source
+  absent from grants, `event_id` = operation id, digest-bound, verified);
+  completion closes `succeeded`; exact command replay returns the stored
+  receipt verbatim with one operation; cross-work same-card and doctored
+  same-version proposals are first `REQUIREMENT_UNSATISFIED` (D66 order)
+  and only after the second work's own verified approval persist
+  `OPERATION_CONTENT_CONFLICT` with the winning artifact byte-unchanged.
+- **Approver-key rotation battery (S11 semantics unchanged)**
+  (`tests/test_publication_rotation.py`, `PublicationRotationTests`): the
+  approver configured as a `SourceKey` keyring and rotated mid-flow — an
+  old-key envelope is refused `EVIDENCE_KEY_RETIRED` (retained past its
+  window) or `EVIDENCE_AUTHENTICATION_FAILED` (dropped, both selector-less
+  and cited-selector forms) with all six runtime tables byte-identical
+  (ordered rowid dumps); the same `command_id` re-signed under the new
+  current key replays the original receipt verbatim with zero writes; a new
+  `command_id` on the same `(source, event_id)` reports the candidate's
+  current status with exactly `commands +1`; after a completed publication,
+  every post-rotation refusal leaves the six tables and the committed
+  artifact bytes untouched (publication history is rotation-invariant); a
+  pre-rotation approval still verifies after rotation (key-agnostic
+  fingerprints) and carries its work to completion while a legitimate new
+  card version publishes under the rotated key. All secrets synthetic,
+  ephemeral, never printed.
 
 ## RFC-001 acceptance behaviors (R1–R7)
 

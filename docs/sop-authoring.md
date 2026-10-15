@@ -141,6 +141,134 @@ order never matters; any content change does. No JCS compliance or
 cross-language float canonicalization is claimed — the digest is exact and
 stable for this library's canonical form.
 
+## Publication (governed, S12)
+
+`work_runtime/publication.py` adds the ratified publication core (design
+D54–D66): a lint-clean card can be published as one immutable, hash-named
+artifact through the same governed command protocol every other external
+effect uses, behind a signed, version-bound approval of the card's exact
+content digest.
+
+### What a publication is
+
+A publication is **one committed artifact in an append-only store
+directory**, identified by a three-part identity:
+
+- **artifact identity** — the store key
+  `publication_key(card) = "sop-pub:" + digest([card.policy.id,
+  card.policy.version])` (D56). The key is collision-free by construction:
+  the independent review (IR-P16) proved the drafted delimiter-joined form
+  collides on legal colon-bearing lint-clean ids, so the digest form — the
+  same pattern the Runtime uses for compensation keys — is ratified
+  instead. The committed path is `sha256(key)` hex either way; the key
+  never touches the filesystem.
+- **content identity** — `sop_digest(card)`, which equals the Runtime's
+  `work["document_digest"]` for a lint-clean card: every existing
+  digest-bound mechanism (approvals, operation admission, receipt
+  validation) binds SOP content with no new plumbing.
+- **version** — the card's own `policy.version` (a nonempty string,
+  operator discipline). Changed content under the same version is a
+  **conflict, never a mutation**; legitimate change requires a new version
+  string (RFC-002 §6).
+
+### The store
+
+`SopPublicationStore(directory)` is a thin wrapper over the unchanged
+[`FilePublisher`](file-adapter.md) (D55): it delegates `execute`/`lookup`
+verbatim and declares its own contract with `actions=("sop.publish",)` and
+keyed uniqueness — exactly one artifact per publication key, same-key
+changed content refused with zero overwrite (D60). Immutability,
+hash-naming, race and corruption semantics are inherited wholesale from the
+file adapter; the trusted-local directory boundary applies unchanged.
+**There is no withdrawal in this slice** (D63): the store is append-only,
+and "rolling back" a publication means publishing a corrected new version.
+
+### Loading and pinning (fail-closed, D62)
+
+Reading a publication back is a set of functions with **no Runtime wiring**
+and no card-to-policy compilation — a published card is the reviewable
+specification and content identity of record, never executable authority:
+
+| function | behavior |
+|---|---|
+| `load_published_card(directory, policy_id, policy_version)` | Reads the hash-named artifact through `FilePublisher.read_validated`, re-lints the stored card, recomputes `sop_digest` against the stored `content_digest` and receipt, and checks the stored identity against the request. Returns the bare stored card. |
+| `pinned_card(directory, policy_id, policy_version, expected_digest)` | Additionally requires the recomputed digest to equal the operator's pin — the explicit cross-check that the engineered Python policy version being loaded corresponds to the published card of record. |
+| `published_card_matches(card, policy)` | Structural `(id, version, goal)` cross-check between a published card and a Python policy object. Partial by design: capabilities have no runtime counterpart (grants decide execution authority) and are never compared. |
+
+The fail-closed matrix: an absent version (including a missing store
+directory — a read never creates it), corrupt bytes, a digest mismatch, or
+a card whose identity does not match the request each raise a **bounded,
+distinguishable `ValueError`**; there is no fallback and nothing degrades
+to an unpinned card. A store directory shared across runtime databases can
+therefore contain foreign content under a publication key — the loader
+refuses it rather than loading it (an accepted operator-discipline
+boundary, MD-4); two databases sharing one directory also fail closed at
+reconcile (`ADAPTER_RESULT_INVALID` + `needs_attention`, never an
+overwrite). Making the Runtime itself consult the store at construction is
+deliberately rejected: it would create the card→policy binding the
+[contributor guide](contributor-guide.md) disclaims.
+
+### The governed flow (write path)
+
+`SopPublicationPolicy` is the ``sop.publish`` family riding the unchanged
+command protocol in its own database: `create_work` with the card as the
+work document → `bind_contract` → signed `card_approval` through the
+unchanged [`SignedEvidenceGateway`](signed-evidence.md) → `verify_pending`
+→ `propose_action` → `dispatch` through `SopPublicationStore` →
+`reconcile` on uncertainty → `request_completion`.
+
+- **Admission lint (D57):** `create_work` lints the card through
+  `validate_document` — a dirty card is refused with a bounded,
+  *unpersisted* `ValueError` (the house convention for malformed
+  documents), and a clean card's `work["document_digest"]` equals
+  `sop_digest(card)` exactly.
+- **Requirements:** two, mirroring the publishing domain. **S02** — the
+  configured authority (`sop-owner`, a trusted-local principal holding
+  `evidence.write`) must have approved the *current* content digest;
+  **S03** — the store must have accepted the current content, satisfied by
+  the runtime-written `accepted` proof and excluded from blockers exactly
+  like C04. A missing, wrong-digest or wrong-version approval leaves S02
+  pending and blocks the proposal (`REQUIREMENT_UNSATISFIED`).
+- **The approval is evidence, not a grant check (D58):** a signed envelope
+  of kind `card_approval` whose `data` is exactly
+  `{"digest": <sop_digest>, "policy_version": <card version>}` — the
+  version-bound shape proven by the expense family's stronger policy. A
+  tampered envelope is refused `EVIDENCE_AUTHENTICATION_FAILED` with zero
+  intake writes; a correctly-signed wrong-version approval lands as a
+  candidate but never verifies against the card's version; a
+  correctly-signed wrong-digest approval verifies on shape but leaves S02
+  unsatisfied because the digest does not bind the current content. The
+  store's acceptance is *not* approval: the Runtime writes the `accepted`
+  proof itself when resolving the confirmed effect, under the family's
+  `sop-store` source (absent from grants — signed ingress refuses that
+  kind outright), with `event_id` = the operation id.
+- **The stored document is the bare card (D59):** the committed artifact's
+  `document` is the card itself — no envelope change; the runtime evidence
+  store is the approval audit.
+- **Replay, idempotency and conflict (D66, pinned order):** the three
+  existing layers compose with no new machinery. Command dedup replays the
+  stored receipt while authority holds. `operation_key` returns the
+  publication key, so one publication identity exists per card version per
+  database. Because `_propose` checks requirement blockers **before** the
+  business-key branch, a second work proposing the same `(policy id,
+  version)` — the same card or a doctored variant — is first refused
+  `REQUIREMENT_UNSATISFIED` while its own approval is missing, and only
+  after that work records and verifies its **own** approval does the
+  persisted `OPERATION_CONTENT_CONFLICT` surface; the committed artifact is
+  never touched. A response lost after the store commits is recovered by
+  reconciling the original key — one attempt, nothing resent. Within one
+  work the card document is effectively immutable: `revise_document`
+  requires a top-level document `id` which cards do not have, content
+  changes enter as new works, and legitimate change requires a new version
+  string — RFC-002 §6's model.
+- **Approver rotation** follows the S11 configuration semantics unchanged
+  (reconstruct the gateway from a rotated keyring): an old-key envelope is
+  refused `EVIDENCE_KEY_RETIRED` (key retained, past its window) or
+  `EVIDENCE_AUTHENTICATION_FAILED` (key dropped); the same `command_id`
+  re-signed under the new key replays the original receipt verbatim;
+  publication history — committed artifacts and runtime tables — is
+  untouched by the rotation acts themselves.
+
 ## Examples
 
 - Valid packaged cards (the single truth source for examples):
