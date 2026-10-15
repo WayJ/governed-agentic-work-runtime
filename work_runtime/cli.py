@@ -6,6 +6,8 @@ from .compensation_demo import run_compensation_demo
 from .demo import demo_grants, run_demo, run_worker
 from .intervention_demo import run_intervention_demo
 from .policy import ExpensePolicy, ExpensePolicyV2
+from .publication import SopPublicationPolicy
+from .publication_demo import publication_grants, run_publication_demo
 from .publishing import PublishingPolicy
 from .publishing_demo import publishing_grants, run_demo as run_publish_demo
 from .revocation_demo import run_revocation_demo
@@ -71,6 +73,13 @@ def main(argv=None):
         help="Run the signing-key rotation demonstration (dual-key window, "
              "retirement, verbatim cached receipts, preserved history)")
     rotation.add_argument("--directory", help="Parent directory for a fresh demo folder")
+    publication = sub.add_parser(
+        "publication-demo",
+        help="Run the governed SOP rule-card publication demonstration "
+             "(lint, signed approval, one immutable hash-named artifact, "
+             "doctored-card conflict, loader fail-closed, key rotation)")
+    publication.add_argument("--directory",
+                             help="Parent directory for a fresh demo folder")
     lint = sub.add_parser("lint-sop",
                           help="Lint a static SOP rule-card JSON file "
                                "(exit 0 clean / 1 diagnostics / 2 file error)")
@@ -80,7 +89,9 @@ def main(argv=None):
     inspect = sub.add_parser("inspect", help="Print a persisted work snapshot and event history")
     inspect.add_argument("--db", required=True)
     inspect.add_argument("--work", default="demo")
-    inspect.add_argument("--policy", choices=["expense-submit", "content-publish"],
+    inspect.add_argument("--policy",
+                         choices=["expense-submit", "content-publish",
+                                  "sop-publish"],
                          default="expense-submit",
                          help="Policy that owns this database (default: expense-submit)")
     inspect.add_argument("--policy-versions", dest="policy_versions", default=None,
@@ -117,10 +128,18 @@ def main(argv=None):
         run_compensation_demo(args.directory)
     elif args.command == "rotation-demo":
         run_rotation_demo(args.directory)
+    elif args.command == "publication-demo":
+        run_publication_demo(args.directory)
     elif args.command == "lint-sop":
         raise SystemExit(run_lint_sop(args.path, args.as_json))
     elif args.command == "inspect":
-        if args.policy == "content-publish":
+        if args.policy == "sop-publish":
+            if args.policy_versions is not None:
+                parser.error("--policy-versions loads expense-family versions only; "
+                             "it cannot be combined with --policy sop-publish")
+            runtime = Runtime(args.db, SopPublicationPolicy(),
+                              publication_grants())
+        elif args.policy == "content-publish":
             if args.policy_versions is not None:
                 parser.error("--policy-versions loads expense-family versions only; "
                              "it cannot be combined with --policy content-publish")

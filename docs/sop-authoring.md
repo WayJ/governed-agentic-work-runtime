@@ -22,8 +22,11 @@ Lint-clean means *structural review readiness* only:
 - Advice entries are suggestions; they never become rules and never satisfy
   the mandatory-rule requirement.
 
-Authority approvals, immutable publication and a `lint-sop` CLI are later
-sprint work (see [roadmap](roadmap.md)).
+The `lint-sop` CLI ships with the adoption wave (exit 0 clean / 1
+diagnostics / 2 file error), and authority approvals plus immutable
+publication are implemented as the governed publication core below (S12,
+design D54–D66) — lint-clean still means review readiness, never executable
+authority.
 
 ## API
 
@@ -268,6 +271,47 @@ unchanged [`SignedEvidenceGateway`](signed-evidence.md) → `verify_pending`
   re-signed under the new key replays the original receipt verbatim;
   publication history — committed artifacts and runtime tables — is
   untouched by the rotation acts themselves.
+
+### Demonstration (`publication-demo`)
+
+`python3 -m work_runtime publication-demo [--directory DIR]` runs the whole
+ratified story (design §11) deterministically in one fresh temporary
+directory, no credentials and no network: a dirty fixture card is refused by
+lint; the packaged `publishing.json` card is lint-clean with its pinned
+digest and becomes the work document; the proposal blocks on S02; a tampered
+`card_approval` is refused `EVIDENCE_AUTHENTICATION_FAILED` with zero intake
+writes; the valid signed `{digest, policy_version}` approval verifies and
+the intent is accepted; dispatch commits exactly one hash-named artifact and
+loses the response; a restart reconciles the original key in one attempt to
+`confirmed_succeeded`; the `accepted` proof is runtime-written under
+`sop-store` with `event_id` = the operation id; completion closes the work
+`succeeded`; a doctored same-version card is first blocked
+`REQUIREMENT_UNSATISFIED` (the D66 order) and only after its own approval
+persists `OPERATION_CONTENT_CONFLICT` with the winner artifact bytes
+unchanged; the loader returns the card with its matching digest while an
+absent version and a tampered file fail closed with distinguishable bounded
+errors; and an approver-key rotation refuses the retired old-key envelope
+`EVIDENCE_KEY_RETIRED` with all six runtime tables and the artifact bytes
+untouched.
+
+The approver keys are ephemeral in-memory random bytes for the run, never
+printed or persisted — only key ids appear in the output. Every printed
+count is asserted inside the demo against the real SQLite store and the
+artifact directory, never against the narration; `tests/test_publication_demo.py`
+and the installed verifier re-derive the counts, keys, digests and receipts
+independently (planted-marker tests prove the secrets never reach the
+output). The demo prints an `inspect --db … --work pub-1 --policy
+sop-publish` command plus the committed artifact path; the `sop-publish`
+inspect choice loads `SopPublicationPolicy` with the demo grants (added with
+master authorization after a probe showed the pre-existing choices fail
+closed on a sop-publish-family database).
+
+The limits are unchanged and stated plainly: approvers and publishers are
+trusted-local principals in grants configuration, not authentication;
+rotation is config-only trust (a configuration rollback revives an old key);
+there is no withdrawal in this slice (D63), no tenant authentication, TLS,
+KMS, network or distributed exactly-once claim; and published cards never
+execute (D62).
 
 ## Examples
 

@@ -92,6 +92,18 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     and re-run the demo's printed inspect command verbatim.
 20. Run the `work-runtime rotation-demo` console entry point outside the
     checkout and apply the same independent store proof.
+21. Run `python -m work_runtime publication-demo` outside the checkout and
+    verify it INDEPENDENTLY of the printed text: parse the committed
+    artifact and the runtime store directly — exactly one hash-named
+    artifact with the recomputed bare-card digest, digest-based publication
+    key and accepted FILE- receipt; the closed/succeeded work with its
+    one-attempt confirmed operation; the runtime-written sop-store accepted
+    proof (event_id = operation id); the doctored-card conflict receipt
+    (OPERATION_CONTENT_CONFLICT) and both blocked proposals; the printed
+    absent-vs-tampered loader lines distinguishable — and re-run the demo's
+    printed `inspect --policy sop-publish` command verbatim.
+22. Run the `work-runtime publication-demo` console entry point outside the
+    checkout and apply the same independent store proof.
 
 Usage: python3 scripts/verify_install.py [--python INTERP] [--repo PATH] [--keep]
 """
@@ -132,6 +144,21 @@ ROTATION_FINAL_DIGEST = re.compile(r"six-table digest after all steps: ([0-9a-f]
 ROTATION_TABLES = ("works", "commands", "evidence", "operations", "events", "metadata")
 ROTATION_COMMAND_IDS = ("cmd-rotation-k1", "cmd-rotation-k2", "cmd-rotation-resend")
 ROTATION_EVENT_IDS = ("evt-rotation-1", "evt-rotation-2")
+PUBLICATION_FINAL_LINE = ("1 published card version; committed artifacts: 1; "
+                          "doctored same-version conflicts: 1 (after its own "
+                          "approval); loader fail-closed refusals: 2; "
+                          "retired-key refusals: 1 (zero writes); history "
+                          "rewritten: 0")
+PUBLICATION_ABSENT_LINE = re.compile(r"^absent version: (.+)$", re.MULTILINE)
+PUBLICATION_TAMPERED_LINE = re.compile(r"^tampered file: (.+)$", re.MULTILINE)
+PUBLICATION_RUN_COMMANDS = (
+    "cmd-create-pub", "cmd-bind-pub", "cmd-propose-blocked", "publish-once",
+    "cmd-complete-pub", "cmd-create-pub2", "cmd-bind-pub2",
+    "cmd-propose-conflict-blocked", "cmd-propose-conflict",
+)
+PUBLICATION_GATEWAY_COMMANDS = ("cmd-approve-valid", "cmd-approve-conflict")
+PUBLICATION_BLOCKED_COMMANDS = ("cmd-propose-blocked",
+                                "cmd-propose-conflict-blocked")
 UI_WORK_IDS = {"wait-1", "uncertain-1", "transfer-1", "succeed-1", "cancel-1"}
 PINNED_PUBLISHING_DIGEST = ("56c85d32da9a9eee6330326e2d14ce0661dbc26d"
                             "782b13d0259c3f149e6be000")
@@ -925,6 +952,203 @@ def require_rotation_proof(stdout, source):
     return str(runtime_db)
 
 
+def require_publication_proof(stdout, source):
+    """Independent module/console publication-demo proof, never stdout-only.
+
+    Requires the demo's exact final line and its printed fail-closed loader
+    lines (absent vs tampered, distinguishable), locates the runtime store
+    from the printed inspect command and the artifact from the printed
+    artifact path, then verifies both stores directly with the standard
+    library only: exactly one hash-named committed .json and zero .stage
+    leftovers; the artifact parsed (exact keys, artifact_version 1, bare-card
+    document with the packaged publishing identity, recomputed content
+    digest, accepted FILE- receipt, digest-based publication key, sha256(key)
+    file name); the runtime database read directly (pub-1 closed/succeeded
+    and pub-2 active, exactly one confirmed_succeeded operation with one
+    attempt whose business key is the artifact key, exactly three evidence
+    rows — two verified sop-owner card approvals, the conflict one bound to
+    different content than the winner, plus the runtime-written sop-store
+    accepted proof with event_id equal to the operation id — and the pinned
+    command rows with the D66 conflict code and both blocked codes).
+    Returns the runtime store path.
+    """
+    require(PUBLICATION_FINAL_LINE in stdout,
+            "%s output lacks %r (history rewritten must stay 0)"
+            % (source, PUBLICATION_FINAL_LINE))
+    absent = PUBLICATION_ABSENT_LINE.search(stdout)
+    require(absent is not None, "%s printed no absent-version loader line"
+            % source)
+    tampered = PUBLICATION_TAMPERED_LINE.search(stdout)
+    require(tampered is not None, "%s printed no tampered-file loader line"
+            % source)
+    require("no published card" in absent.group(1)
+            and "no published card" not in tampered.group(1)
+            and absent.group(1) != tampered.group(1),
+            "%s loader failure lines are not distinguishable (absent=%r, "
+            "tampered=%r)" % (source, absent.group(1), tampered.group(1)))
+    store_match = INSPECT_DB.search(stdout)
+    require(store_match is not None, "%s printed no inspect --db path" % source)
+    runtime_db = Path(store_match.group(1))
+    require(runtime_db.exists(),
+            "%s runtime database %s does not exist" % (source, runtime_db))
+    require(runtime_db.parent.name == "publication",
+            "%s store directory is %s (expected publication)"
+            % (source, runtime_db.parent.name))
+    artifact_match = COMMITTED_ARTIFACT.search(stdout)
+    require(artifact_match is not None, "%s printed no artifact path" % source)
+    artifact_file = Path(artifact_match.group(1))
+    require(artifact_file.exists(),
+            "%s printed artifact %s does not exist" % (source, artifact_file))
+    store_dir = artifact_file.parent
+    committed = sorted(path for path in store_dir.iterdir()
+                       if HASH_NAMED.fullmatch(path.name))
+    require(len(committed) == 1,
+            "%s publication store holds %d hash-named artifacts (expected "
+            "exactly 1: one publication identity per card version)"
+            % (source, len(committed)))
+    require(not [path for path in store_dir.iterdir()
+                 if path.suffix == ".stage"],
+            "%s publication store holds .stage leftovers" % source)
+
+    artifact = json.loads(artifact_file.read_text(encoding="utf-8"))
+    require(set(artifact) == {"artifact_version", "key", "content_digest",
+                              "document", "receipt"},
+            "%s artifact keys are %s (expected the exact FilePublisher shape)"
+            % (source, sorted(artifact)))
+    require(artifact["artifact_version"] == 1,
+            "%s artifact_version is %r (expected 1)" % (source,
+                                                        artifact.get("artifact_version")))
+    document = artifact["document"]
+    policy = document.get("policy") if isinstance(document, dict) else None
+    require(isinstance(policy, dict)
+            and (policy.get("id"), policy.get("version")) == ("content-publish",
+                                                              "demo-1"),
+            "%s stored document is not the bare packaged publishing card"
+            % source)
+    content_digest = local_digest(document)
+    require(artifact["content_digest"] == content_digest,
+            "%s artifact content digest does not match its recomputed "
+            "document digest (tampered artifact?)" % source)
+    receipt = artifact["receipt"]
+    require(set(receipt) == {"status", "external_id", "digest"},
+            "%s artifact receipt keys are %s" % (source, sorted(receipt)))
+    require(receipt["status"] == "accepted"
+            and receipt["external_id"].startswith("FILE-")
+            and receipt["digest"] == content_digest,
+            "%s artifact receipt is not an accepted FILE- receipt of the "
+            "card digest" % source)
+    key = "sop-pub:" + local_digest(["content-publish", "demo-1"])
+    require(artifact["key"] == key,
+            "%s artifact key is not the digest-based publication key" % source)
+    require(artifact_file.name
+            == hashlib.sha256(key.encode("utf-8")).hexdigest() + ".json",
+            "%s artifact file name is not sha256(publication key)" % source)
+
+    completed = require_work_state(runtime_db, "pub-1", source)
+    require((completed.get("status"), completed.get("outcome"))
+            == ("closed", "succeeded"),
+            "%s work pub-1 is %s/%s (expected closed/succeeded)"
+            % (source, completed.get("status"), completed.get("outcome")))
+    conflicting = require_work_state(runtime_db, "pub-2", source)
+    require(conflicting.get("status") == "active",
+            "%s work pub-2 is %s (expected active with its persisted "
+            "conflict receipt)" % (source, conflicting.get("status")))
+
+    operations = [json.loads(row[0]) for row in
+                  db_rows(runtime_db, "SELECT body FROM operations", source=source)]
+    require(len(operations) == 1,
+            "%s store holds %d operations (expected exactly 1)"
+            % (source, len(operations)))
+    operation = operations[0]
+    require(operation["status"] == "confirmed_succeeded"
+            and len(operation["attempts"]) == 1,
+            "%s operation is not confirmed_succeeded with one attempt"
+            % source)
+    require(operation["business_key"] == key and operation["work_id"] == "pub-1",
+            "%s operation business key/work do not match the publication"
+            % source)
+
+    evidence = {json.loads(row[2])["event_id"]: (row[0], json.loads(row[2]))
+                for row in db_rows(runtime_db, "SELECT source, event_id, body "
+                                   "FROM evidence", source=source)}
+    for event_id, digest_value in (("evt-approve-valid", content_digest),
+                                   ("evt-approve-conflict", None)):
+        require(event_id in evidence,
+                "%s evidence %s is missing" % (source, event_id))
+        row_source, body = evidence[event_id]
+        require((row_source, body["kind"], body["status"])
+                == ("sop-owner", "card_approval", "verified"),
+                "%s evidence %s is not a verified sop-owner card approval"
+                % (source, event_id))
+        require(body["data"].get("policy_version") == "demo-1",
+                "%s card approval %s is not version-bound" % (source, event_id))
+        if digest_value is not None:
+            require(body["data"].get("digest") == digest_value,
+                    "%s card approval %s did not bind the published digest"
+                    % (source, event_id))
+        else:
+            # The doctored card's own approval: same version, DIFFERENT content
+            # than the winner (D66).
+            require(body["data"].get("digest") != content_digest
+                    and len(body["data"].get("digest", "")) == 64,
+                    "%s conflict approval bound the winner's digest (the "
+                    "doctored card differs)" % source)
+    accepted_rows = [pair for event_id, pair in evidence.items()
+                     if pair[0] == "sop-store"]
+    require(len(evidence) == 3,
+            "%s store holds %d evidence rows (expected exactly 3: two "
+            "card approvals plus the runtime-written accepted proof)"
+            % (source, len(evidence)))
+    require(len(accepted_rows) == 1,
+            "%s store holds %d sop-store rows (expected exactly the one "
+            "runtime-written accepted proof)" % (source, len(accepted_rows)))
+    accepted = accepted_rows[0][1]
+    require(accepted["kind"] == "accepted" and accepted["status"] == "verified",
+            "%s accepted proof under sop-store is not verified (event_id must "
+            "equal the operation id; no principal can sign as sop-store)"
+            % source)
+    require(accepted["event_id"] == operation["id"],
+            "%s accepted proof event_id is not the operation id" % source)
+    require(accepted["data"].get("digest") == content_digest
+            and accepted["data"].get("external_id") == receipt["external_id"],
+            "%s accepted proof is not bound to the committed artifact" % source)
+
+    commands = db_rows(runtime_db, "SELECT actor, id FROM commands", source=source)
+    by_id = {}
+    for actor, command_id in commands:
+        by_id.setdefault(command_id, []).append(actor)
+    for command_id in PUBLICATION_RUN_COMMANDS + PUBLICATION_GATEWAY_COMMANDS:
+        require(by_id.get(command_id) is not None and len(by_id[command_id]) == 1,
+                "%s command %s appears %d times (expected exactly once)"
+                % (source, command_id, len(by_id.get(command_id, []))))
+    require(len(commands) == len(PUBLICATION_RUN_COMMANDS)
+            + len(PUBLICATION_GATEWAY_COMMANDS),
+            "%s store holds %d command rows (expected exactly 11)"
+            % (source, len(commands)))
+    conflict_receipt = json.loads(db_rows(
+        runtime_db, "SELECT receipt FROM commands "
+        "WHERE id='cmd-propose-conflict'", source=source)[0][0])
+    require(conflict_receipt.get("code") == "OPERATION_CONTENT_CONFLICT",
+            "%s receipt for cmd-propose-conflict lost its "
+            "OPERATION_CONTENT_CONFLICT code (the D66 order must stay "
+            "visible: the conflict surfaces only after the second work's own "
+            "approval)" % source)
+    for blocked_id in PUBLICATION_BLOCKED_COMMANDS:
+        blocked_receipt = json.loads(db_rows(
+            runtime_db, "SELECT receipt FROM commands WHERE id=?",
+            args=(blocked_id,), source=source)[0][0])
+        require(blocked_receipt.get("code") == "REQUIREMENT_UNSATISFIED",
+                "%s receipt for %s lost its REQUIREMENT_UNSATISFIED code"
+                % (source, blocked_id))
+    require(db_rows(runtime_db, "SELECT COUNT(*) FROM events",
+                    source=source)[0][0] == 11,
+            "%s store holds an unexpected event count" % source)
+    require(db_rows(runtime_db, "SELECT * FROM metadata", source=source)
+            == [("schema_version", "1")],
+            "%s metadata is not exactly schema_version 1" % source)
+    return str(runtime_db)
+
+
 def run_printed_inspect_command(stdout, venv_python, outside, source,
                                 outcome_marker='"outcome": "succeeded"'):
     """Re-run the demo's printed inspect command verbatim (python3 swapped)."""
@@ -1300,6 +1524,25 @@ def main(argv=None):
         console_rotation = run([console, "rotation-demo"], outside, show=True)
         require_rotation_proof(console_rotation.stdout, "console rotation-demo")
 
+        print("=== module publication-demo outside the checkout ===")
+        module_publication = run([venv_python, "-m", "work_runtime",
+                                  "publication-demo"], outside, show=True)
+        require_publication_proof(module_publication.stdout,
+                                  "module publication-demo")
+        run_printed_inspect_command(module_publication.stdout, venv_python,
+                                    outside, "module publication-demo")
+        print("independent check: one hash-named artifact parsed with the "
+              "standard library (bare packaged card, recomputed digest and "
+              "digest-based publication key, accepted FILE- receipt), the "
+              "runtime store re-verified (closed/succeeded work, one "
+              "confirmed operation with the runtime-written accepted proof, "
+              "D66 conflict receipt, distinguishable loader failures)")
+
+        print("=== console publication-demo outside the checkout ===")
+        console_publication = run([console, "publication-demo"], outside, show=True)
+        require_publication_proof(console_publication.stdout,
+                                  "console publication-demo")
+
         print("=== packaged web assets ship with the install ===")
         for name in ("index.html", "app.js", "app.css"):
             require((package_dir / "web" / name).is_file(),
@@ -1323,7 +1566,12 @@ def main(argv=None):
               "E08 truth, exact two-id ack, refusal-not-reversal); module and console "
               "rotation-demo stores re-verified (recomputed six-table digest, "
               "verified evidence fingerprints, original cached receipt, one "
-              "command row per rotation command id); packaged web assets "
+              "command row per rotation command id); module and console "
+              "publication-demo stores re-verified (recomputed bare-card "
+              "artifact digest and digest-based publication key, one "
+              "confirmed operation with the runtime-written accepted proof, "
+              "D66 conflict receipt, distinguishable loader failures); "
+              "packaged web assets "
               "shipped%s (%.1fs)"
               % ("; SKIPPED stages: " + ui_skip if ui_skip else "",
                  time.time() - started))
