@@ -423,6 +423,10 @@ and a six-table history digest. Named tests: `test_demo_creates_fresh_store`,
 `test_output_pins_narrative_without_secret_material`,
 `test_demo_runs_are_repeatable` (`RotationDemoTests`) — every count, status,
 fingerprint and digest re-derived from the SQLite store, never from stdout.
+The CLI surface runs the harness end to end (`test_cli_rotation_demo_module_runs`,
+`RotationDemoCliTests`: exit 0, final line, one printed inspect path); the
+installed `work-runtime rotation-demo` console entry point ships through the
+existing packaging.
 
 ## RFC-001 acceptance behaviors (R1–R7)
 

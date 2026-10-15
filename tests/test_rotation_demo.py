@@ -13,6 +13,8 @@ import io
 import json
 import re
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -166,6 +168,15 @@ class RotationDemoTests(unittest.TestCase):
         self.assertNotEqual(folder_one, folder_two)
         self.assertIn(FINAL_LINE, out_one)
         self.assertIn(FINAL_LINE, out_two)
+
+
+class RotationDemoCliTests(unittest.TestCase):
+    def test_cli_rotation_demo_module_runs(self):
+        result = subprocess.run([sys.executable, "-m", "work_runtime", "rotation-demo"],
+                                cwd=str(REPO_ROOT), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(FINAL_LINE, result.stdout)
+        self.assertEqual(result.stdout.count("inspect --db"), 1)
 
 
 if __name__ == "__main__":
