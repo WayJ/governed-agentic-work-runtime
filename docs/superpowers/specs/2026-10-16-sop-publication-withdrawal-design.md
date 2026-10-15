@@ -526,3 +526,79 @@ artifacts untouched. All five existing gates green; no new global gate.
   author usability remains untested (unchanged 0.4 gap). This draft
   self-ratifies nothing — the master's ratification and the independent
   review it dispatches are the counterweight.
+
+## MASTER ratification - 2026-10-16 D67-D79 (before implementation)
+
+Ratified on the independent design review
+[8eee4ad](../../../.agents/notes/2026-10-16-s13-independent-design-review.md)
+(verdict: implementable with amendments; 48/48 probes; R2 proved the drafted
+SWD-8 refusal channel strands the governed work). The DRAFT body above is
+ratified **as amended** by this section; where they differ, this section
+governs.
+
+- **D67** (=SWD-1) Withdrawal is a second immutable hash-named record
+  artifact in the same store directory; publication artifacts are never
+  mutated or deleted.
+- **D68** (=SWD-2) `withdrawal_key = "sop-withdrawn:" +
+  digest([policy_id, policy_version])` — collision-free in every namespace
+  (D56 basis).
+- **D69** (=SWD-3 + RV-F2 disclosure) Deterministic closed four-field record
+  document, no free text. Withdrawal request documents are effectively
+  immutable under `revise_document` (id-less shape; content changes enter as
+  new works — the S12 IR-F2 precedent wording applies verbatim).
+- **D70** (=SWD-4 + RV-F4(a) pin) Same family/database/ledger, second
+  capability `sop.withdraw`, document-shape-discriminated W02/W03
+  requirements, operation key = withdrawal key. A dispatch whose adapter is
+  the publication store (capability mismatch) holds bounded — pin it.
+- **D71** (=SWD-5) Signed version-bound `card_withdrawal` `{digest,
+  policy_version}` from the configured source; no admin bypass on the
+  governed path (the admin's real reach is `revoke_evidence`, which never
+  touches the store — Q2 asymmetry ratified).
+- **D72** (=SWD-6 + RV-F5 amendment) Loader gains the withdrawal check and
+  two new bounded errors — withdrawn (distinct from absent) and
+  invalid-record (fail-closed) — plus `withdrawal_record()` audit read; no
+  override parameter. A corrupt withdrawal record maps to the invalid-record
+  error by explicit catch-and-re-raise, never an unbounded store traceback.
+- **D73** (=SWD-7) No write-path fencing: current validity lives at the read
+  surface only (structurally enforced by reconcile-from-lookup; re-publication
+  of a withdrawn version is refused by the governed proposal's target checks,
+  not by the store).
+- **D74** (=SWD-8, **amended per MD-2 Alternative A — replaces the drafted
+  refusal channel**): `SopWithdrawalStore` wraps `FilePublisher` unchanged
+  and refuses an absent target or digest mismatch by returning a **rejected
+  receipt** (`status: "rejected"`), which resolves `confirmed_failed` —
+  terminal, truthful, and the work stays cancellable. The drafted
+  `ValueError` channel (which strands the work at `NO_AUTHORITATIVE_RESULT`
+  with both completion and cancel refusing `OUTCOME_UNRESOLVED`, RV-F1/R2)
+  is **rejected**. Per-capability adapter discipline disclosure (RV-F3):
+  each capability's dispatch/reconcile/recover path uses exactly its own
+  adapter; nothing crosses.
+- **D75** (=SWD-9) D66 order inherited and pinned for withdrawal works:
+  requirement blockers before the business-key branch.
+- **D76** (=SWD-10) No un-withdrawal (forward-only correction: publish a new
+  version), no compensation semantics, no Runtime wiring, no UI change.
+- **D77** (=SWD-11) `publication-demo` withdrawal chapter + installed
+  module/console stage as existing installer evidence — **no new global
+  gate**; demo census/counts updated for the new artifact population.
+- **D78** (=SWD-12, MD-5 confirmation) Doc set per story 6 (sop-authoring.md
+  withdrawal sections, verification.md coverage); the master confirms **zero
+  new `doc_sync_map` rows** — the existing
+  `work_runtime/publication.py → docs/sop-authoring.md` row covers the
+  withdrawal surface (RV-F7), so same-commit pairing is owed there as-is.
+- **D79** (=SWD-13) The S8 `revoke_evidence` × sop-publish composition
+  (admin revokes `card_approval`/accepted proofs on the closed work;
+  artifacts untouched; completion byte-identical) is **pinned by tests** —
+  real today, previously unpinned.
+
+**Ratified defaults:** Q1–Q10 all as drafted (same family; no admin bypass;
+separate wrapper; forward-only; etc.) — verified implementable and internally
+consistent by the review; none challenged.
+
+**MD-4 test-list extensions (pin in story 3):** capability × document-shape
+pairing in both directions; the governed refusal outcome per D74
+(`confirmed_failed`, cancellable); the wrong-adapter dispatch hold per D70.
+
+No history rewrite, no distributed revocation, no tenant authentication, no
+un-withdrawal, no security-certification claim. Config rollback revives old
+approver keys (S11 limits); cross-database store sharing remains the accepted
+MD-4 operator boundary from S12.
