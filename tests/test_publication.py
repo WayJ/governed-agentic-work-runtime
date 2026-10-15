@@ -17,8 +17,15 @@ from pathlib import Path
 
 from work_runtime.adoption_demo import packaged_card
 from work_runtime.authoring import lint_sop, sop_digest
+from work_runtime.file_adapter import FilePublisher
 from work_runtime.policy import digest
-from work_runtime.publication import SopPublicationStore, publication_key
+from work_runtime.publication import (
+    SopPublicationStore,
+    load_published_card,
+    pinned_card,
+    publication_key,
+    published_card_matches,
+)
 
 _HEX_JSON = re.compile(r"[0-9a-f]{64}\.json")
 
@@ -165,3 +172,124 @@ class SopPublicationStoreTests(PublicationTestCase):
         receipt = store.execute(publication_key(card), card, sop_digest(card))
         self.assertEqual(store.lookup(publication_key(card)), receipt)
         self.assertIsNone(store.lookup("sop-pub:" + "0" * 64))
+
+
+
+class LoaderPinTests(PublicationTestCase):
+    """Fail-closed read path (D62): absent/corrupt/digest/identity errors
+    are bounded and distinguishable; no fallback, no silent skip, no Runtime
+    wiring, no directory-creation side effect on reads."""
+
+    def publish(self, card):
+        store = self.make_store()
+        receipt = store.execute(publication_key(card), card, sop_digest(card))
+        return receipt
+
+    def test_round_trip_returns_the_published_card_with_matching_digest(self):
+        card = card_with()
+        receipt = self.publish(card)
+        loaded = load_published_card(str(self.store_dir), "expense-submit", "demo-1")
+        self.assertEqual(loaded, card)
+        raw = json_read(self.store_dir, publication_key(card))
+        self.assertEqual(sop_digest(loaded), raw["content_digest"])
+        self.assertEqual(receipt["digest"], sop_digest(loaded))
+
+    def test_absent_version_raises_bounded_distinguishable_error(self):
+        self.publish(card_with())
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(str(self.store_dir), "expense-submit", "v2")
+        message = str(raised.exception)
+        self.assertIs(type(raised.exception), ValueError)
+        self.assertIn("no published card", message)
+        # Distinguishable from corruption classes: none of the file-adapter
+        # corruption messages or the lint message may equal this one.
+        for other in ("committed artifact is not valid UTF-8 JSON",
+                      "SOP is not lint-clean"):
+            self.assertNotEqual(message, other)
+
+    def test_missing_directory_raises_absent_without_creating_it(self):
+        missing = self.root / "never-created"
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(str(missing), "expense-submit", "demo-1")
+        self.assertIn("no published card", str(raised.exception))
+        self.assertFalse(missing.exists())
+
+    def test_corrupt_bytes_raise_bounded_valueerror(self):
+        card = card_with()
+        self.publish(card)
+        target = os.path.join(str(self.store_dir),
+                              artifact_name(publication_key(card)))
+        with open(target, "wb") as handle:
+            handle.write(b"not json")
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(str(self.store_dir), "expense-submit", "demo-1")
+        self.assertIs(type(raised.exception), ValueError)
+        self.assertIn("committed artifact", str(raised.exception))
+
+    def test_tampered_document_with_stale_digest_raises(self):
+        card = card_with()
+        self.publish(card)
+        raw = json_read(self.store_dir, publication_key(card))
+        raw["document"]["policy"]["goal"] = "doctored.after.commit"
+        with open(os.path.join(str(self.store_dir),
+                               artifact_name(publication_key(card))), "w") as handle:
+            json.dump(raw, handle)
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(str(self.store_dir), "expense-submit", "demo-1")
+        self.assertIs(type(raised.exception), ValueError)
+
+    def test_doctored_key_field_raises(self):
+        card = card_with()
+        self.publish(card)
+        raw = json_read(self.store_dir, publication_key(card))
+        raw["key"] = "sop-pub:someone-elses-key"
+        with open(os.path.join(str(self.store_dir),
+                               artifact_name(publication_key(card))), "w") as handle:
+            json.dump(raw, handle)
+        with self.assertRaises(ValueError):
+            load_published_card(str(self.store_dir), "expense-submit", "demo-1")
+
+    def test_other_card_committed_under_this_key_fails_closed(self):
+        # Cross-database/doctored store (MD-4 class): raw FilePublisher use
+        # can commit ANY content under this key; the loader must refuse.
+        other = card_with(policy_id="a-different-policy")
+        key = publication_key(card_with())
+        FilePublisher(str(self.store_dir)).execute(key, other, sop_digest(other))
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(str(self.store_dir), "expense-submit", "demo-1")
+        self.assertNotIn("no published card", str(raised.exception))
+
+    def test_non_card_document_committed_under_this_key_fails_closed(self):
+        key = publication_key(card_with())
+        document = {"id": "ART-001", "title": "not a card"}
+        FilePublisher(str(self.store_dir)).execute(key, document, digest(document))
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(str(self.store_dir), "expense-submit", "demo-1")
+        self.assertIs(type(raised.exception), ValueError)
+
+    def test_pinned_card_requires_the_exact_pin(self):
+        card = card_with()
+        self.publish(card)
+        pinned = pinned_card(str(self.store_dir), "expense-submit", "demo-1",
+                             sop_digest(card))
+        self.assertEqual(pinned, card)
+        with self.assertRaises(ValueError) as raised:
+            pinned_card(str(self.store_dir), "expense-submit", "demo-1", "0" * 64)
+        self.assertIn("pin", str(raised.exception).lower())
+        for bad in ("", 7, None):
+            with self.assertRaises(ValueError):
+                pinned_card(str(self.store_dir), "expense-submit", "demo-1", bad)
+
+    def test_published_card_matches_compares_identity_and_goal_only(self):
+        from work_runtime import ExpensePolicy
+        card = packaged_card("expense.json")
+        self.assertTrue(published_card_matches(card, ExpensePolicy()))
+        self.assertTrue(published_card_matches(card, ExpensePolicy()))  # pure
+        changed_version = copy.deepcopy(card)
+        changed_version["policy"]["version"] = "v2"
+        self.assertFalse(published_card_matches(changed_version, ExpensePolicy()))
+        changed_goal = copy.deepcopy(card)
+        changed_goal["policy"]["goal"] = "something.else"
+        self.assertFalse(published_card_matches(changed_goal, ExpensePolicy()))
+        self.assertFalse(published_card_matches("not a card", ExpensePolicy()))
+        self.assertFalse(published_card_matches({}, ExpensePolicy()))

@@ -183,6 +183,31 @@ file adapter; the trusted-local directory boundary applies unchanged.
 **There is no withdrawal in this slice** (D63): the store is append-only,
 and "rolling back" a publication means publishing a corrected new version.
 
+### Loading and pinning (fail-closed, D62)
+
+Reading a publication back is a set of functions with **no Runtime wiring**
+and no card-to-policy compilation — a published card is the reviewable
+specification and content identity of record, never executable authority:
+
+| function | behavior |
+|---|---|
+| `load_published_card(directory, policy_id, policy_version)` | Reads the hash-named artifact through `FilePublisher.read_validated`, re-lints the stored card, recomputes `sop_digest` against the stored `content_digest` and receipt, and checks the stored identity against the request. Returns the bare stored card. |
+| `pinned_card(directory, policy_id, policy_version, expected_digest)` | Additionally requires the recomputed digest to equal the operator's pin — the explicit cross-check that the engineered Python policy version being loaded corresponds to the published card of record. |
+| `published_card_matches(card, policy)` | Structural `(id, version, goal)` cross-check between a published card and a Python policy object. Partial by design: capabilities have no runtime counterpart (grants decide execution authority) and are never compared. |
+
+The fail-closed matrix: an absent version (including a missing store
+directory — a read never creates it), corrupt bytes, a digest mismatch, or
+a card whose identity does not match the request each raise a **bounded,
+distinguishable `ValueError`**; there is no fallback and nothing degrades
+to an unpinned card. A store directory shared across runtime databases can
+therefore contain foreign content under a publication key — the loader
+refuses it rather than loading it (an accepted operator-discipline
+boundary, MD-4); two databases sharing one directory also fail closed at
+reconcile (`ADAPTER_RESULT_INVALID` + `needs_attention`, never an
+overwrite). Making the Runtime itself consult the store at construction is
+deliberately rejected: it would create the card→policy binding the
+[contributor guide](contributor-guide.md) disclaims.
+
 ## Examples
 
 - Valid packaged cards (the single truth source for examples):

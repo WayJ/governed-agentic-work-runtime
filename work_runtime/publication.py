@@ -18,7 +18,10 @@ this slice (D63); approver-key rotation follows the S11 configuration
 semantics and never touches publication history.
 """
 
+import os
+
 from .adapter_contract import AdapterContract
+from .authoring import sop_digest
 from .file_adapter import FilePublisher
 from .policy import digest
 
@@ -89,3 +92,88 @@ class SopPublicationStore:
 
     def lookup(self, key):
         return self.publisher.lookup(key)
+
+# Fail-closed read path (D62): every failure below is a bounded ValueError
+# naming the violation class only. Absence, corruption, digest mismatch and
+# identity mismatch stay distinguishable; nothing degrades to an unpinned
+# card and no fallback or silent skip exists.
+ABSENT_MESSAGE = "no published card is committed for this policy version"
+DIGEST_MISMATCH_MESSAGE = "published card digest does not match the stored artifact"
+IDENTITY_MISMATCH_MESSAGE = ("published card identity does not match the "
+                             "requested policy version")
+PIN_MESSAGE = "published digest does not match the pinned digest"
+PIN_ARGUMENT_MESSAGE = "expected digest must be a nonempty string"
+
+
+def _read_publication_artifact(directory, policy_id, policy_version):
+    """Read and fully validate the committed artifact for one card version.
+
+    The validation chain: derive the key, refuse a missing store directory
+    without creating it, read through ``FilePublisher.read_validated``
+    (absent key → ``None``), convert absence into this module's bounded
+    fail-closed error, re-lint the stored card, recompute its digest against
+    the stored ``content_digest`` and receipt, and check the stored identity
+    against the requested one — raw adapter use can commit foreign content
+    under any key, and the loader must refuse it (MD-4 discipline).
+    """
+    key = _identity_key(policy_id, policy_version)
+    if not isinstance(directory, str) or not directory:
+        raise ValueError(ABSENT_MESSAGE)
+    if not os.path.isdir(directory):
+        raise ValueError(ABSENT_MESSAGE)
+    artifact = FilePublisher(directory).read_validated(key)
+    if artifact is None:
+        raise ValueError(ABSENT_MESSAGE)
+    card = artifact["document"]
+    card_digest = sop_digest(card)  # Bounded lint refusal for non-card content.
+    if card_digest != artifact["content_digest"] or artifact["receipt"]["digest"] != card_digest:
+        raise ValueError(DIGEST_MISMATCH_MESSAGE)
+    policy = card["policy"]
+    if policy["id"] != policy_id or policy["version"] != policy_version:
+        raise ValueError(IDENTITY_MISMATCH_MESSAGE)
+    return artifact
+
+
+def load_published_card(directory, policy_id, policy_version):
+    """The published card of record for one (policy id, version), fail-closed.
+
+    Raises a bounded ``ValueError`` when the version is absent (including a
+    missing store directory — never created by a read), the artifact is
+    corrupt, the recomputed digest disagrees with the stored artifact, or
+    the stored card's identity does not match the request. Returns the bare
+    stored card; the approval audit lives in the runtime evidence store,
+    not here (D59).
+    """
+    return _read_publication_artifact(directory, policy_id,
+                                      policy_version)["document"]
+
+
+def pinned_card(directory, policy_id, policy_version, expected_digest):
+    """The published card, additionally required to equal an operator pin.
+
+    The pin is the operator-side cross-check that the engineered Python
+    policy version being loaded corresponds to the published card of
+    record; a mismatch is a bounded fail-closed error, never a warning.
+    """
+    if not isinstance(expected_digest, str) or not expected_digest:
+        raise ValueError(PIN_ARGUMENT_MESSAGE)
+    card = load_published_card(directory, policy_id, policy_version)
+    if sop_digest(card) != expected_digest:
+        raise ValueError(PIN_MESSAGE)
+    return card
+
+
+def published_card_matches(card, policy):
+    """Structural (id, version, goal) cross-check of card against a policy.
+
+    Partial by design (D62): capabilities have no runtime counterpart —
+    grants decide execution authority — and are never compared. Returns
+    ``False`` for non-card shapes rather than raising; the authoritative
+    content checks live in :func:`load_published_card`.
+    """
+    section = card.get("policy") if isinstance(card, dict) else None
+    if not isinstance(section, dict):
+        return False
+    return (section.get("id") == getattr(policy, "id", None)
+            and section.get("version") == getattr(policy, "version", None)
+            and section.get("goal") == getattr(policy, "goal", None))

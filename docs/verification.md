@@ -466,6 +466,18 @@ D54–D66.
   document, `content_digest == sop_digest`), replays the byte-identical
   receipt across instances, refuses same-key changed content without
   overwriting, and delegates `lookup` (committed receipt / `None`).
+- **Fail-closed loader and pin (D62)** (`LoaderPinTests`): round trip
+  returns the published card with `sop_digest` equal to the stored
+  `content_digest` and receipt digest; absent version and missing store
+  directory raise the same bounded absent error (distinguishable from every
+  corruption class, directory never created by a read); corrupt bytes,
+  tampered documents with stale digests and doctored key fields raise
+  bounded errors; foreign card or non-card content committed under a
+  publication key by raw adapter use fails closed (MD-4 discipline);
+  `pinned_card` requires the exact pin (wrong pin or malformed pin
+  argument refused); `published_card_matches` compares `(id, version,
+  goal)` only — True for the packaged expense card against `ExpensePolicy`,
+  False on version/goal drift and non-card shapes.
 
 ## RFC-001 acceptance behaviors (R1–R7)
 
