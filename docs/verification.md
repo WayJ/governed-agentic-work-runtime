@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-15 (S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-15 (S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -398,6 +398,45 @@ is the D49–D53 section of the
   `test_known_answer_vector_unchanged` (`LegacyCompatTests`).
   `tests/test_ingress.py` remains the untouched 40-test legacy pin (KAT
   included).
+
+### S11 demo wave — demonstration and installed verification
+
+The demo wave added the public no-credentials demonstration on top of the
+accepted frozen core (`tests/test_rotation_demo.py`;
+`work_runtime/rotation_demo.py`; reference in
+[signed-evidence](signed-evidence.md)). The demo drives the core through its
+stable public API with an injected deterministic clock
+(`T0 = 2000000000`, `grace = 300 == max_age`) and ephemeral in-memory keys
+(`secrets.token_bytes(32)`, never printed — only key ids): dual-key window
+accept (both ring keys authenticate), `verify_pending`, rotate (the old key
+retained with `not_after` at the inclusive grace boundary — reconstructing the
+gateway writes nothing), boundary replay returning the original cached receipt
+verbatim, retired refusal `EVIDENCE_KEY_RETIRED` one second past grace with the
+cached receipt unreachable, same-`command_id` re-sign under the new key
+returning the original receipt byte-verbatim with no new command row, a new
+`command_id` resend reporting the current status with exactly `commands +1`,
+and a six-table history digest. Named tests: `test_demo_creates_fresh_store`,
+`test_store_evidence_rows_statuses_and_fingerprints`,
+`test_store_command_rows_exact_with_original_cached_receipt`,
+`test_store_table_counts_and_work_state`,
+`test_six_table_digest_matches_printed_final_digest`,
+`test_output_pins_narrative_without_secret_material`,
+`test_demo_runs_are_repeatable` (`RotationDemoTests`) — every count, status,
+fingerprint and digest re-derived from the SQLite store, never from stdout.
+The CLI surface runs the harness end to end (`test_cli_rotation_demo_module_runs`,
+`RotationDemoCliTests`: exit 0, final line, one printed inspect path); the
+installed `work-runtime rotation-demo` console entry point ships through the
+existing packaging. The installed verifier proves both entry points
+independently of printed text (`scripts/verify_install.py` stages 19–20:
+`require_rotation_proof` reads the real store — the six-table digest
+recomputed locally and matched against the printed digest, evidence
+statuses/fingerprints/document digest recomputed with the standard library,
+exactly one command row per rotation command id with the original cached
+receipt still `pending_verification`, zero operations, schema 1 — and re-runs
+the printed inspect command verbatim); rejection paths (missing final line,
+flipped evidence status, deleted evidence row, forged duplicate command row,
+tampered cached receipt, digest-only store mutation) are pinned by
+`VerifyInstallRotationProofTests`.
 
 ## RFC-001 acceptance behaviors (R1–R7)
 
