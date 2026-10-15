@@ -141,6 +141,48 @@ order never matters; any content change does. No JCS compliance or
 cross-language float canonicalization is claimed — the digest is exact and
 stable for this library's canonical form.
 
+## Publication (governed, S12)
+
+`work_runtime/publication.py` adds the ratified publication core (design
+D54–D66): a lint-clean card can be published as one immutable, hash-named
+artifact through the same governed command protocol every other external
+effect uses, behind a signed, version-bound approval of the card's exact
+content digest.
+
+### What a publication is
+
+A publication is **one committed artifact in an append-only store
+directory**, identified by a three-part identity:
+
+- **artifact identity** — the store key
+  `publication_key(card) = "sop-pub:" + digest([card.policy.id,
+  card.policy.version])` (D56). The key is collision-free by construction:
+  the independent review (IR-P16) proved the drafted delimiter-joined form
+  collides on legal colon-bearing lint-clean ids, so the digest form — the
+  same pattern the Runtime uses for compensation keys — is ratified
+  instead. The committed path is `sha256(key)` hex either way; the key
+  never touches the filesystem.
+- **content identity** — `sop_digest(card)`, which equals the Runtime's
+  `work["document_digest"]` for a lint-clean card: every existing
+  digest-bound mechanism (approvals, operation admission, receipt
+  validation) binds SOP content with no new plumbing.
+- **version** — the card's own `policy.version` (a nonempty string,
+  operator discipline). Changed content under the same version is a
+  **conflict, never a mutation**; legitimate change requires a new version
+  string (RFC-002 §6).
+
+### The store
+
+`SopPublicationStore(directory)` is a thin wrapper over the unchanged
+[`FilePublisher`](file-adapter.md) (D55): it delegates `execute`/`lookup`
+verbatim and declares its own contract with `actions=("sop.publish",)` and
+keyed uniqueness — exactly one artifact per publication key, same-key
+changed content refused with zero overwrite (D60). Immutability,
+hash-naming, race and corruption semantics are inherited wholesale from the
+file adapter; the trusted-local directory boundary applies unchanged.
+**There is no withdrawal in this slice** (D63): the store is append-only,
+and "rolling back" a publication means publishing a corrected new version.
+
 ## Examples
 
 - Valid packaged cards (the single truth source for examples):

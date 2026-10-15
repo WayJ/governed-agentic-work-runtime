@@ -456,6 +456,16 @@ D54–D66.
   and storage, stable across fresh instances — and refuses corrupt bytes
   and tampered documents with bounded `ValueError`s while never rewriting
   the file; the key gate applies unchanged.
+- **Digest-based publication key and store wrapper (D55/D56/D60)**
+  (`PublicationKeyTests`, `SopPublicationStoreTests`): the key equals
+  `"sop-pub:" + digest([policy id, version])` with the 64-hex tail;
+  delimiter-hostile lint-clean identities (`("collide:one","v1")` vs
+  `("collide","one:v1")`, IR-P16) do **not** collide; identity changes
+  change the key and malformed identities raise bounded errors; the wrapper
+  commits exactly one hash-named artifact per publication key (bare card as
+  document, `content_digest == sop_digest`), replays the byte-identical
+  receipt across instances, refuses same-key changed content without
+  overwriting, and delegates `lookup` (committed receipt / `None`).
 
 ## RFC-001 acceptance behaviors (R1–R7)
 
