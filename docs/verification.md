@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-15 (S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-15 (S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -437,6 +437,25 @@ the printed inspect command verbatim); rejection paths (missing final line,
 flipped evidence status, deleted evidence row, forged duplicate command row,
 tampered cached receipt, digest-only store mutation) are pinned by
 `VerifyInstallRotationProofTests`.
+
+## S12 coverage — governed SOP rule-card publication (core wave)
+
+The S12 core wave adds the publication machinery on the unchanged Runtime,
+gateway and `FilePublisher` commit engine (`tests/test_publication.py`,
+`tests/test_publication_rotation.py`, plus narrow additive
+`ReadValidatedTests` in `tests/test_file_adapter.py`). Semantics and
+boundaries: [SOP authoring](sop-authoring.md) publication section,
+[file adapter](file-adapter.md); design
+[S12](superpowers/specs/2026-10-15-sop-publication-design.md) ratified
+D54–D66.
+
+- **Additive validated read surface (D61)** (`ReadValidatedTests`):
+  `FilePublisher.read_validated(key)` returns `None` for an absent key
+  (mirroring `lookup`, keeping absence distinguishable from corruption),
+  the full validated artifact for a committed key — detached from caller
+  and storage, stable across fresh instances — and refuses corrupt bytes
+  and tampered documents with bounded `ValueError`s while never rewriting
+  the file; the key gate applies unchanged.
 
 ## RFC-001 acceptance behaviors (R1–R7)
 
