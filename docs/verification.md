@@ -500,6 +500,22 @@ D54–D66.
   same-version proposals are first `REQUIREMENT_UNSATISFIED` (D66 order)
   and only after the second work's own verified approval persist
   `OPERATION_CONTENT_CONFLICT` with the winning artifact byte-unchanged.
+- **Approver-key rotation battery (S11 semantics unchanged)**
+  (`tests/test_publication_rotation.py`, `PublicationRotationTests`): the
+  approver configured as a `SourceKey` keyring and rotated mid-flow — an
+  old-key envelope is refused `EVIDENCE_KEY_RETIRED` (retained past its
+  window) or `EVIDENCE_AUTHENTICATION_FAILED` (dropped, both selector-less
+  and cited-selector forms) with all six runtime tables byte-identical
+  (ordered rowid dumps); the same `command_id` re-signed under the new
+  current key replays the original receipt verbatim with zero writes; a new
+  `command_id` on the same `(source, event_id)` reports the candidate's
+  current status with exactly `commands +1`; after a completed publication,
+  every post-rotation refusal leaves the six tables and the committed
+  artifact bytes untouched (publication history is rotation-invariant); a
+  pre-rotation approval still verifies after rotation (key-agnostic
+  fingerprints) and carries its work to completion while a legitimate new
+  card version publishes under the rotated key. All secrets synthetic,
+  ephemeral, never printed.
 
 ## RFC-001 acceptance behaviors (R1–R7)
 
