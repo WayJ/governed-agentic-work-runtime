@@ -344,5 +344,98 @@ class PublicationDemoCliTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
 
 
+def _load_verify_install():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "verify_install", REPO_ROOT / "scripts" / "verify_install.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class VerifyInstallPublicationProofTests(unittest.TestCase):
+    """The installer proof reads the demo's real stores, never its stdout."""
+
+    def setUp(self):
+        # A fresh demo run per test: every mutation below hits a pristine
+        # store, so each rejection is attributable to its own mutation.
+        self.verify_install = _load_verify_install()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.folder = run_publication_demo(directory=self.temp.name)
+        self.stdout = out.getvalue()
+        self.runtime_db = self.folder / "publication" / "runtime.sqlite"
+
+    def artifact_path(self):
+        return committed_artifacts(self.folder / "publication" / "store")[0]
+
+    def mutate_db(self, sql, args=()):
+        db = sqlite3.connect(str(self.runtime_db))
+        with db:
+            db.execute(sql, args)
+        db.close()
+
+    def proof(self, stdout=None):
+        return self.verify_install.require_publication_proof(
+            stdout if stdout is not None else self.stdout, "test")
+
+    def test_proof_passes_on_real_demo_output(self):
+        runtime_db = self.proof()
+        self.assertEqual(Path(runtime_db).parent.name, "publication")
+
+    def test_proof_rejects_missing_final_line(self):
+        stripped = "\n".join(line for line in self.stdout.splitlines()
+                             if FINAL_LINE not in line) + "\n"
+        with self.assertRaises(SystemExit) as raised:
+            self.proof(stripped)
+        self.assertIn("history rewritten", str(raised.exception))
+
+    def test_proof_rejects_flipped_accepted_proof_status(self):
+        self.mutate_db("UPDATE evidence SET body=replace(body, "
+                       "'\"status\":\"verified\"', "
+                       "'\"status\":\"pending_verification\"') "
+                       "WHERE source='sop-store'")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("sop-store", str(raised.exception))
+
+    def test_proof_rejects_deleted_evidence_row(self):
+        self.mutate_db("DELETE FROM evidence WHERE event_id='evt-approve-conflict'")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("evt-approve-conflict", str(raised.exception))
+
+    def test_proof_rejects_tampered_artifact_bytes(self):
+        artifact = self.artifact_path()
+        raw = json.loads(artifact.read_text(encoding="utf-8"))
+        raw["document"]["policy"]["goal"] = "tampered.after.proof"
+        artifact.write_text(json.dumps(raw), encoding="utf-8")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("digest", str(raised.exception))
+
+    def test_proof_rejects_duplicated_command_row(self):
+        # An exact duplicate is impossible (UNIQUE(actor, id) — the schema
+        # itself guarantees one row per command identity), so forge the
+        # duplicate under a different actor: the proof must still notice the
+        # command id appearing twice.
+        self.mutate_db("INSERT INTO commands (actor,id,fingerprint,work_id,receipt) "
+                       "VALUES ('sop-owner','cmd-propose-conflict','forged',"
+                       "'pub-2','{}')")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("cmd-propose-conflict", str(raised.exception))
+
+    def test_proof_rejects_conflict_receipt_rewrite(self):
+        self.mutate_db("UPDATE commands SET receipt=replace(receipt, "
+                       "'\"OPERATION_CONTENT_CONFLICT\"', '\"accepted\"') "
+                       "WHERE id='cmd-propose-conflict'")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("OPERATION_CONTENT_CONFLICT", str(raised.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
