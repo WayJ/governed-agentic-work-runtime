@@ -67,7 +67,11 @@ class PolicyPairingTests(unittest.TestCase):
             with self.subTest(owner=owner.__name__):
                 self.assertFalse(getattr(owner, "compensation_capabilities", None))
         self.assertIs(FilePublisher.contract.supports_action_context, False)
-        self.assertIs(FakePublisher.contract.supports_action_context, False)
+        # S14 D86+MD-2: FakePublisher declares the paired action with the
+        # forward action FIRST and opts into action/link context.
+        self.assertEqual(FakePublisher.contract.actions,
+                         ("content.publish", "content.unpublish"))
+        self.assertIs(FakePublisher.contract.supports_action_context, True)
 
 
 
@@ -1531,7 +1535,11 @@ class PreservationPins(CompensationCase):
             with self.subTest(owner=owner.__name__):
                 self.assertFalse(getattr(owner, "compensation_capabilities", None))
         self.assertIs(FilePublisher.contract.supports_action_context, False)
-        self.assertIs(FakePublisher.contract.supports_action_context, False)
+        # S14 D86+MD-2: FakePublisher declares the paired action with the
+        # forward action FIRST and opts into action/link context.
+        self.assertEqual(FakePublisher.contract.actions,
+                         ("content.publish", "content.unpublish"))
+        self.assertIs(FakePublisher.contract.supports_action_context, True)
         self.assertEqual(PublishingPolicy().action_blockers("content.publish", []),
                          [])
         self.assertNotEqual(PublishingPolicy().action_blockers("content.withdraw", []),

@@ -266,12 +266,15 @@ ingress is denied at `record_evidence`, imports are impossible, and
 revocation of a withdrawn proof is administrator-only. Runtime-observed
 withdrawal effects are not source-claimable.
 
-**External stand-in store compatibility (S10).** `FakeOA`'s own SQLite store
+**External stand-in store compatibility (S10/S14).** `FakeOA`'s own SQLite store
 migrated additively: opening any store — including pre-S10 ones — runs one
 `BEGIN IMMEDIATE` transaction that adds the nullable `receipts.action` /
 `receipts.link_digest` identity columns and the per-original `withdrawals`
 effect table exactly once (schema, migration, withdrawal execution and
-counter semantics: [adapter-contract.md](adapter-contract.md)). The runtime
+counter semantics: [adapter-contract.md](adapter-contract.md)). `FakePublisher`
+adopts the identical pattern since S14 (additive `receipts` identity columns
+plus a `retractions` effect table; forward rows keep `NULL`
+action/link_digest under the disclosed column-named INSERT). The runtime
 store schema stays `1`; forward adapter behavior (duplicate-invoice
 rejection, key replay, counters) is preserved, with the forward INSERT on
 named columns.

@@ -260,6 +260,70 @@ resolved = runtime.dispatch(proposal["operation_id"], FakeOA(oa_path))
 # action="expense.withdraw", compensates=<immutable link snapshot>).
 ```
 
+## FakePublisher's paired contract and store (S14)
+
+`FakePublisher` adopts the same D46 pattern for the publishing family's
+linked retraction (`content.unpublish`), keeping the forward action FIRST
+(the conformance mixin derives forward context from `actions[0]`):
+
+```python
+AdapterContract(actions=("content.publish", "content.unpublish"),
+                idempotency_scope="adapter-store:key",
+                retention="lifetime-of-store",
+                lookup_consistency="authoritative-by-key",
+                uniqueness=("document.id+content_digest",
+                            "retraction.original_external_id"),
+                supports_action_context=True)
+```
+
+| value | assertion |
+|---|---|
+| `actions=("content.publish", "content.unpublish")` | executes the publish capability and its paired retraction, forward action first |
+| `uniqueness=("document.id+content_digest", "retraction.original_external_id")` | one artifact per document content and one retraction effect per original across all keys |
+| `supports_action_context=True` | opts into explicit action/link execution context |
+
+### Store schema, migration and counters
+
+`receipts` is the per-key call/lookup surface for both actions;
+`publications` keeps immutable `(document_id, digest)` artifacts; `retractions`
+is the per-original effect surface. Opening a store — including any pre-S14
+one — runs one `BEGIN IMMEDIATE` transaction that creates any missing table,
+probes `PRAGMA table_info(receipts)` **inside the transaction**, adds the two
+nullable identity columns when absent and creates `retractions`, so
+concurrent first-open and re-open are race-free and pre-S14 stores open
+unchanged (no row rewritten or deleted):
+
+```sql
+-- legacy columns, unchanged shape for old rows
+CREATE TABLE IF NOT EXISTS receipts (
+    key TEXT PRIMARY KEY, digest TEXT NOT NULL, result TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS publications (
+    document_id TEXT, digest TEXT, external_id TEXT NOT NULL,
+    document TEXT NOT NULL, PRIMARY KEY(document_id, digest));
+-- additive identity columns (NULL = legacy/forward row, no link)
+ALTER TABLE receipts ADD COLUMN action TEXT;
+ALTER TABLE receipts ADD COLUMN link_digest TEXT;
+CREATE TABLE IF NOT EXISTS retractions (
+    original_external_id TEXT PRIMARY KEY, external_id TEXT NOT NULL,
+    key TEXT NOT NULL, digest TEXT NOT NULL);
+```
+
+Forward rows keep `NULL` `action`/`link_digest`: the forward INSERT is the
+single mechanical column-naming edit disclosed in the S14 ratification (D87
+as amended) — identical inputs produce identical receipt rows and store
+state before and after the migration, and same-content dedup still reuses
+the publication id. Replay of an existing row validates the digest, the
+normalized action (legacy `NULL` reads as `content.publish`) and the link
+fingerprint; any mismatch raises `ValueError("Idempotency key reused with
+different content")` with zero new effects, so a key can never be replayed
+across actions or links.
+
+**Counters (both derived from the SQLite store, never stdout):**
+`published_count()` is unchanged — the `publications` row count; a
+retraction never counts an effect away. `retracted_count()` is the
+`retractions` row count — exactly one retraction effect per retracted
+original.
+
 ## Reusable conformance tests
 
 `tests/adapter_conformance.py` provides `AdapterConformanceMixin`, a plain
