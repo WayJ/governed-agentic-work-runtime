@@ -706,4 +706,7 @@ ratified D67–D79.
   `card_withdrawal` recorded on a card-shaped work turns `invalid` at
   verification (never a `KeyError` through the card-only field access) and
   leaves S02 pending — mirroring the `card_approval`-never-satisfies-W02
-  pin in `GovernedWithdrawalFlowTests`.
+  pin in `GovernedWithdrawalFlowTests`; a near-miss withdrawal attempt at
+  admission (any discriminator-bearing document that is not well-formed)
+  is refused with the dedicated closed-shape requirement message, while
+  non-withdrawal documents fall to the card lint.
