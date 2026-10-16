@@ -407,3 +407,60 @@ Python ≥3.9.
 - Ratification, epic/sprint attachment and any amendment of D80–D91 are the
   master's; this draft does not self-ratify and expects an independent
   design review before any implementation dispatch.
+
+## MASTER ratification - 2026-10-16 D80-D91 (before implementation)
+
+Ratified on the independent design review
+[cf70b05](../../../.agents/notes/2026-10-16-s14-independent-design-review.md)
+(verdict: implementable with amendments; 50-check family-agnosticism probe
+re-proved; baseline 1015/3 reconfirmed). The DRAFT body above is ratified
+**as amended** by this section; where they differ, this section governs.
+
+- **D80–D86, D88, D89, D91** ratified **as drafted** (scope =
+  publishing-family linked compensation inside the active cancellation window,
+  post-closure/chains/cross-work/intervener deferred as non-goals;
+  `content.unpublish` paired capability; S10 `propose_action` variant reused
+  verbatim; current-owner authority; identical D6 business-key/replay rules
+  with no new codes; `withdrawn` proof kind reused; FakePublisher D46-pattern
+  additive migration; FilePublisher untouched; `PublishingPolicy` pairing
+  attribute with no new version; same-commit truthfulness docs with no
+  doc_sync_map row firing), with two additions: **D86+MD-2** — the
+  `FakePublisher` contract keeps `"content.publish"` FIRST in `actions`
+  (the conformance mixin derives forward context from `actions[0]`), and the
+  retraction receipt id prefix is pinned deterministically at implementation
+  and documented; **D91+MD-4** — `roadmap.md` 0.3 (the beyond-window
+  compensation sentence) joins the master-owned close-out doc set.
+- **D82+MD-5** — the `runtime.py`/`adapters.py` **byte-unchanged pin stays as
+  a DoD acceptance check** with the escalation rule: any implementation that
+  believes a runtime/adapters edit is unavoidable stops and asks the master
+  via Orca rather than editing.
+- **D87 (AMENDED per RF1/MD-1 — replaces the drafted byte-level pin)** — the
+  forward path is pinned at **behavior level**: no withdraw-by-store-state
+  branch in the forward path; same-content forward dedup still returns the
+  same receipt with identical dispositions and store state (result/store-state
+  identity); retraction remains append-only. The single mechanical
+  column-naming edit to the receipts INSERT is **allowed and must be
+  disclosed** in the report. The re-publish-after-retraction external-model
+  limit is documented **with the RF4 reachability note**: through the governed
+  runtime the interplay is unreachable (permanent-intent `CANCELLATION_ACTIVE`
+  refusal same-work; store-global forward business key collision
+  `OPERATION_CONTENT_CONFLICT` cross-work) — the limit binds the adapter
+  model, not the governed flow.
+- **D90 (SETTLED per RF2/MD-1)** — the demo structure is pinned to
+  **alternative (b), additive**: `publish-demo` KEEPS its existing
+  succeeded-completion story on the first work and APPENDS a second work
+  demonstrating cancellation + linked retraction + the exact two-id closure;
+  asserted counts are `published_count == 2, retracted_count == 1` (the
+  drafted (1,1) implied silently dropping the succeeded-completion path and
+  is rejected). The installer's existing publish-demo stage assertions
+  (publications/final line) are updated in the SAME commit, and a NEW console
+  stage is added — disclosed as new coverage (the current stage is
+  module-only), extending rather than matching the publication-demo
+  module+console precedent. Not a gate; no UI/browser claim.
+- **Q1–Q9 defaults ratified as drafted**, with Q4 sharpened by the RF4
+  reachability note above.
+
+No external fencing, no distributed guarantees, no chain/universal
+compensation, no tenant authentication, no history rewrite. Trusted-local
+principals are not identities; the S10/S12/S13 accepted boundaries carry
+over unchanged.
