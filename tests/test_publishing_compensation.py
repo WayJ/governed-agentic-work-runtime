@@ -9,8 +9,11 @@ distinct from S13's `sop.withdraw` (SOP authoring family).
 """
 
 import json
+import os
 import secrets
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -18,7 +21,7 @@ from pathlib import Path
 from threading import Barrier, Thread
 
 from work_runtime import Runtime
-from work_runtime.adapter_contract import receipt_is_valid
+from work_runtime.adapter_contract import AdapterContract, receipt_is_valid
 from work_runtime.file_adapter import FilePublisher
 from work_runtime.policy import canonical, digest
 from work_runtime.publishing import FakePublisher, PublishingPolicy
@@ -30,11 +33,14 @@ def article(article_id="ART-001", title="Release notes", body="Draft body",
             "requires_review": requires_review}
 
 
-def publishing_compensation_grants():
+def publishing_compensation_grants(extra=None):
     """Demo grants with the compensating capability held by the owner."""
-    return {"agent": {"work.manage", "content.publish", "content.unpublish"},
-            "reviewer": {"evidence.write"}, "author": {"evidence.write"},
-            "admin": {"work.intervene"}}
+    grants = {"agent": {"work.manage", "content.publish", "content.unpublish"},
+              "reviewer": {"evidence.write"}, "author": {"evidence.write"},
+              "admin": {"work.intervene"}}
+    if extra:
+        grants.update(extra)
+    return grants
 
 
 def pending_requirements():
@@ -818,6 +824,454 @@ class PublishingCompensationAuthorityTests(PublishingCompensationCase):
         receipt = self.propose_publish(work_id=other_work)
         self.assertEqual((receipt["decision"], receipt["code"]),
                          ("rejected", "OPERATION_CONTENT_CONFLICT"))
+
+
+class RecordingPublisher:
+    """Delegates to a real adapter while recording how the runtime called it."""
+
+    def __init__(self, inner, contract=None):
+        self.inner = inner
+        self._contract = contract if contract is not None else inner.contract
+        self.calls = []
+
+    @property
+    def contract(self):
+        return self._contract
+
+    def execute(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return self.inner.execute(*args, **kwargs)
+
+    def lookup(self, *args, **kwargs):
+        return self.inner.lookup(*args, **kwargs)
+
+
+class ContextDeclaringPublisher(FakePublisher):
+    """Declares the retraction action but NOT the execution-context opt-in."""
+
+    contract = AdapterContract(
+        actions=("content.publish", "content.unpublish"),
+        idempotency_scope="adapter-store:key",
+        retention="lifetime-of-store",
+        lookup_consistency="authoritative-by-key",
+        uniqueness=("document.id+content_digest",
+                    "retraction.original_external_id"))
+
+
+class MismatchedPublisher:
+    """Opted-in adapter returning receipts that bind the WRONG original."""
+
+    contract = AdapterContract(
+        actions=("content.publish", "content.unpublish"),
+        idempotency_scope="adapter-store:key",
+        retention="lifetime-of-store",
+        lookup_consistency="authoritative-by-key",
+        uniqueness=(), supports_action_context=True)
+
+    def __init__(self, original_id, status="accepted"):
+        self.original_id = original_id
+        self.status = status
+        self.stored = {}
+
+    def execute(self, key, document, content_digest, *, action=None,
+                compensates=None):
+        self.stored[key] = {"status": self.status,
+                            "external_id": "RTR-wrong00000001",
+                            "digest": content_digest,
+                            "original_external_id": self.original_id}
+        return self.stored[key]
+
+    def lookup(self, key):
+        return self.stored.get(key)
+
+
+class PublishingDispatchTests(PublishingCompensationCase):
+    def prepared_retraction(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        receipt = self.unpublish(target)
+        assert receipt["decision"] == "accepted", receipt
+        return target, receipt["operation_id"]
+
+    def test_file_publisher_holds_at_actions_preflight(self):
+        # D88: FilePublisher is forward-only; the linked retraction holds at
+        # the declared-capability preflight with zero attempts.
+        target, retraction_id = self.prepared_retraction()
+        directory = str(Path(self.temp.name) / "filepub")
+        held = self.runtime.dispatch(retraction_id, FilePublisher(directory))
+        self.assertEqual((held["dispatch_state"], held["reason"]),
+                         ("held", "ADAPTER_ACTION_UNSUPPORTED"))
+        self.assertEqual(self.runtime.get_operation(retraction_id)["attempts"], [])
+        self.assertEqual(os.listdir(directory), [])
+        resolved = self.runtime.dispatch(retraction_id,
+                                         FakePublisher(self.publisher_path))
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+
+    def test_context_declaring_publisher_holds_without_optin(self):
+        target, retraction_id = self.prepared_retraction()
+        held = self.runtime.dispatch(retraction_id,
+                                     ContextDeclaringPublisher(self.publisher_path))
+        self.assertEqual((held["dispatch_state"], held["reason"]),
+                         ("held", "ADAPTER_ACTION_CONTEXT_UNSUPPORTED"))
+        self.assertEqual(self.runtime.get_operation(retraction_id)["attempts"], [])
+        self.assertNotEqual(self.runtime.get_work(self.work_id)["status"],
+                            "needs_attention")
+        self.assertEqual(FakePublisher(self.publisher_path).retracted_count(), 0)
+        resolved = self.runtime.dispatch(retraction_id,
+                                         FakePublisher(self.publisher_path))
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+
+    def test_opted_in_publisher_receives_action_and_link(self):
+        recording = RecordingPublisher(FakePublisher(self.publisher_path))
+        target = self.confirmed_publish(publisher=recording)
+        (args, kwargs), = recording.calls
+        self.assertEqual(len(args), 3)
+        self.assertEqual(kwargs, {"action": "content.publish", "compensates": None})
+        self.request_cancel()
+        retraction_id = self.unpublish(target)["operation_id"]
+        snapshot = self.runtime.get_operation(retraction_id)["compensates"]
+        recording2 = RecordingPublisher(FakePublisher(self.publisher_path))
+        resolved = self.runtime.dispatch(retraction_id, recording2)
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        (_, kwargs2), = recording2.calls
+        self.assertEqual(kwargs2, {"action": "content.unpublish",
+                                   "compensates": snapshot})
+
+    def test_dispatch_holds_retraction_on_grant_loss(self):
+        target, retraction_id = self.prepared_retraction()
+        grants = publishing_compensation_grants()
+        grants["agent"] = grants["agent"] - {"content.unpublish"}
+        runtime = Runtime(self.path, PublishingPolicy(), grants)
+        held = runtime.dispatch(retraction_id, FakePublisher(self.publisher_path))
+        self.assertEqual((held["dispatch_state"], held["reason"]),
+                         ("held", "AUTHORITY_DENIED"))
+        self.assertEqual(runtime.get_operation(retraction_id)["attempts"], [])
+        self.assertEqual(FakePublisher(self.publisher_path).retracted_count(), 0)
+        restored = Runtime(self.path, PublishingPolicy(),
+                           publishing_compensation_grants())
+        resolved = restored.dispatch(retraction_id, FakePublisher(self.publisher_path))
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+
+    def test_dispatch_revalidates_link_and_holds_on_invalid_target(self):
+        # Two distinct confirmed targets (a document revision separates their
+        # business keys) before the window freezes revisions.
+        target = self.confirmed_publish(command_id="publish-one")
+        self.send("revise_document", {"document": article(body="Second body")})
+        self.approve_and_confirm()
+        second = self.propose_publish(command_id="publish-two")["operation_id"]
+        self.runtime.dispatch(second, FakePublisher(self.publisher_path))
+        self.request_cancel()
+        retraction_id = self.unpublish(target)["operation_id"]
+        retraction2 = self.unpublish(second)["operation_id"]
+        # Target truth re-derived at dispatch: a corrupted terminal status holds.
+        with sqlite3.connect(self.path) as db:
+            body = json.loads(db.execute("SELECT body FROM operations WHERE id=?",
+                                         (target,)).fetchone()[0])
+            body["status"] = "confirmed_failed"
+            db.execute("UPDATE operations SET body=? WHERE id=?",
+                       (canonical(body), target))
+            db.commit()
+        held = self.runtime.dispatch(retraction_id, FakePublisher(self.publisher_path))
+        self.assertEqual((held["dispatch_state"], held["reason"]),
+                         ("held", "COMPENSATION_TARGET_INVALID"))
+        self.assertEqual(self.runtime.get_operation(retraction_id)["attempts"], [])
+        # Snapshot corruption (external_id no longer the target's) too.
+        with sqlite3.connect(self.path) as db:
+            body = json.loads(db.execute("SELECT body FROM operations WHERE id=?",
+                                         (retraction2,)).fetchone()[0])
+            body["compensates"]["external_id"] = "PUB-mismatched"
+            db.execute("UPDATE operations SET body=? WHERE id=?",
+                       (canonical(body), retraction2))
+            db.commit()
+        held2 = self.runtime.dispatch(retraction2, FakePublisher(self.publisher_path))
+        self.assertEqual(held2["reason"], "COMPENSATION_TARGET_INVALID")
+        self.assertEqual(self.runtime.get_operation(retraction2)["attempts"], [])
+
+
+class PublishingResolutionTests(PublishingCompensationCase):
+    def operation_proofs(self, work_id=None):
+        work_id = work_id or self.work_id
+        with sqlite3.connect(self.path) as db:
+            return [json.loads(row[0]) for row in db.execute(
+                "SELECT body FROM evidence WHERE work_id=? AND event_id IN "
+                "(SELECT id FROM operations WHERE work_id=?)", (work_id, work_id))]
+
+    def withdrawn_proofs(self, operation_id):
+        return [p for p in self.operation_proofs() if p["event_id"] == operation_id]
+
+    def test_accepted_retraction_writes_withdrawn_proof_at_publisher(self):
+        target = self.confirmed_publish()
+        external = self.runtime.get_operation(target)["external_id"]
+        self.request_cancel()
+        retraction_id = self.unpublish(target)["operation_id"]
+        resolved = self.runtime.dispatch(retraction_id, FakePublisher(self.publisher_path))
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        self.assertTrue(resolved["external_id"].startswith("RTR-"))
+        proof, = self.withdrawn_proofs(retraction_id)
+        self.assertEqual((proof["kind"], proof["status"], proof["source"]),
+                         ("withdrawn", "verified", "publisher"))
+        self.assertEqual(proof["data"], {
+            "digest": self.runtime.get_work(self.work_id)["document_digest"],
+            "external_id": resolved["external_id"],
+            "original_external_id": external})
+
+    def test_withdrawn_kind_never_satisfies_c04(self):
+        # Forward acceptance at digest1; revise to digest2 (C04 pending there).
+        target = self.confirmed_publish()
+        self.send("revise_document", {"document": article(body="Revised body")})
+        self.approve_and_confirm()
+        requirements = {r["rule_id"]: r for r in
+                        self.runtime.get_work(self.work_id)["requirements"]}
+        self.assertEqual(requirements["C04"]["fulfillment"], "pending")
+        self.request_cancel()
+        retraction_id = self.unpublish(target)["operation_id"]
+        resolved = self.runtime.dispatch(retraction_id, FakePublisher(self.publisher_path))
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        # The withdrawn proof exists at digest2 but C04 stays pending.
+        proof, = self.withdrawn_proofs(retraction_id)
+        self.assertEqual(proof["kind"], "withdrawn")
+        requirements = {r["rule_id"]: r for r in
+                        self.runtime.get_work(self.work_id)["requirements"]}
+        self.assertEqual(requirements["C04"]["fulfillment"], "pending")
+        # The withdrawn proof is revocable only by an administrator; the
+        # configured accepted source actor (without work.intervene) is denied.
+        grants = publishing_compensation_grants(
+            extra={"publisher": {"evidence.write", "evidence.revoke"}})
+        runtime = Runtime(self.path, PublishingPolicy(), grants)
+        receipt = self.send("revoke_evidence",
+                            {"source": "publisher", "event_id": retraction_id,
+                             "reason": "attempt by source"}, actor="publisher",
+                            runtime=runtime)
+        self.assertEqual((receipt["decision"], receipt["code"]),
+                         ("rejected", "AUTHORITY_DENIED"))
+        admin_receipt = self.send("revoke_evidence",
+                                  {"source": "publisher", "event_id": retraction_id,
+                                   "reason": "admin withdraws it"}, actor="admin")
+        self.assertEqual(admin_receipt["decision"], "accepted")
+        # No actor can import a withdrawn proof through record_evidence.
+        import_receipt = self.send("record_evidence",
+                                   {"event_id": "evt-w", "kind": "withdrawn",
+                                    "data": {"digest": "x", "external_id": "RTR-1",
+                                             "original_external_id": "PUB-1"}},
+                                   actor="publisher", runtime=runtime)
+        self.assertEqual((import_receipt["decision"], import_receipt["code"]),
+                         ("rejected", "AUTHORITY_DENIED"))
+
+    def test_retraction_resolution_stores_adapter_result(self):
+        # Two distinct confirmed targets (separate revisions), both confirmed
+        # in the main publisher store; the refused leg dispatches against a
+        # different store that never saw its original forward receipt.
+        refused_target = self.confirmed_publish(command_id="publish-refused")
+        self.send("revise_document", {"document": article(body="Second body")})
+        self.approve_and_confirm()
+        target = self.propose_publish(command_id="publish-accepted")["operation_id"]
+        self.runtime.dispatch(target, FakePublisher(self.publisher_path))
+        self.request_cancel()
+        retraction_id = self.unpublish(target)["operation_id"]
+        self.runtime.dispatch(retraction_id, FakePublisher(self.publisher_path))
+        op = self.runtime.get_operation(retraction_id)
+        self.assertEqual(op["adapter_result"]["status"], "accepted")
+        self.assertEqual(op["adapter_result"]["original_external_id"],
+                         op["compensates"]["external_id"])
+        self.assertEqual(op["adapter_result"]["external_id"], op["external_id"])
+        # A refused retraction (ORIGINAL_ABSENT: a store without the original).
+        withdrawal2 = self.unpublish(refused_target)["operation_id"]
+        empty = FakePublisher(str(Path(self.temp.name) / "empty-publisher.sqlite"))
+        failed = self.runtime.dispatch(withdrawal2, empty)
+        self.assertEqual(failed["status"], "confirmed_failed")
+        op2 = self.runtime.get_operation(withdrawal2)
+        self.assertEqual(op2["adapter_result"]["reason"], "ORIGINAL_ABSENT")
+        self.assertEqual(self.runtime.get_work(self.work_id)["status"],
+                         "needs_attention")
+        # Ordinary forward operations never carry adapter_result.
+        self.assertNotIn("adapter_result", self.runtime.get_operation(target))
+        self.assertNotIn("adapter_result",
+                         self.runtime.get_operation(refused_target))
+
+    def test_binding_mismatch_is_quarantined(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        retraction_id = self.unpublish(target)["operation_id"]
+        adapter = MismatchedPublisher("PUB-not-the-original")
+        quarantined = self.runtime.dispatch(retraction_id, adapter)
+        self.assertEqual((quarantined["status"], quarantined["reason"]),
+                         ("outcome_unknown", "ADAPTER_RESULT_INVALID"))
+        self.assertEqual(self.runtime.get_work(self.work_id)["status"],
+                         "needs_attention")
+        op = self.runtime.get_operation(retraction_id)
+        self.assertNotIn("external_id", op)
+        self.assertNotIn("adapter_result", op)
+        # Repeated reconcile with the same mismatch is idempotent.
+        version = self.runtime.get_work(self.work_id)["state_version"]
+        events = len(self.runtime.events(self.work_id))
+        again = self.runtime.reconcile(retraction_id, adapter)
+        self.assertEqual((again["status"], again["reason"]),
+                         ("outcome_unknown", "ADAPTER_RESULT_INVALID"))
+        self.assertEqual(self.runtime.get_work(self.work_id)["state_version"],
+                         version)
+        self.assertEqual(len(self.runtime.events(self.work_id)), events)
+        self.assertEqual(self.withdrawn_proofs(retraction_id), [])
+
+
+class PublishingClosureTests(PublishingCompensationCase):
+    def finalize(self, ack=None, runtime=None):
+        runtime = runtime or self.runtime
+        with sqlite3.connect(self.path) as db:
+            operations = [json.loads(row[0]) for row in db.execute(
+                "SELECT body FROM operations WHERE work_id=?", (self.work_id,))]
+        succeeded = sorted(op["id"] for op in operations
+                           if op["status"] == "confirmed_succeeded")
+        return self.send("finalize_cancel",
+                         {"acknowledged_operations":
+                          ack if ack is not None else succeeded},
+                         actor="admin", runtime=runtime)
+
+    def completed_retraction(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        retraction_id = self.unpublish(target)["operation_id"]
+        self.runtime.dispatch(retraction_id, FakePublisher(self.publisher_path))
+        return target, retraction_id
+
+    def test_finalize_ack_includes_original_and_retraction(self):
+        target, retraction_id = self.completed_retraction()
+        partial = self.finalize(ack=[target])
+        self.assertEqual(partial["decision"], "rejected")
+        self.assertEqual(partial["code"], "CANCEL_ACKNOWLEDGEMENT_MISMATCH")
+        self.assertEqual(partial["blockers"], sorted([target, retraction_id]))
+        receipt = self.finalize()
+        self.assertEqual(receipt["decision"], "accepted")
+        work = self.runtime.get_work(self.work_id)
+        self.assertEqual((work["status"], work["outcome"]), ("closed", "cancelled"))
+        completion = work["completion"]
+        acknowledged = {entry["operation_id"]: entry["external_id"]
+                        for entry in completion["acknowledged_operations"]}
+        self.assertEqual(set(acknowledged), {target, retraction_id})
+        self.assertTrue(acknowledged[target].startswith("PUB-"))
+        self.assertTrue(acknowledged[retraction_id].startswith("RTR-"))
+        dispositions = {d["operation_id"]: d for d in
+                        completion["operation_dispositions"]}
+        self.assertEqual(dispositions[target],
+                         {"operation_id": target, "status": "confirmed_succeeded",
+                          "dispatch_state": "finished"})
+        self.assertEqual(dispositions[retraction_id],
+                         {"operation_id": retraction_id,
+                          "status": "confirmed_succeeded",
+                          "dispatch_state": "finished",
+                          "compensates":
+                              self.runtime.get_operation(retraction_id)["compensates"],
+                          "adapter_result":
+                              self.runtime.get_operation(retraction_id)["adapter_result"]})
+
+    def test_refused_retraction_closure_ack_is_original_only(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        retraction_id = self.unpublish(target)["operation_id"]
+        empty = FakePublisher(str(Path(self.temp.name) / "empty-publisher.sqlite"))
+        failed = self.runtime.dispatch(retraction_id, empty)
+        self.assertEqual(failed["status"], "confirmed_failed")
+        wrong = self.finalize(ack=[target, retraction_id])
+        self.assertEqual(wrong["code"], "CANCEL_ACKNOWLEDGEMENT_MISMATCH")
+        receipt = self.finalize(ack=[target])
+        self.assertEqual(receipt["decision"], "accepted")
+        completion = self.runtime.get_work(self.work_id)["completion"]
+        self.assertEqual([e["operation_id"] for e in
+                          completion["acknowledged_operations"]], [target])
+        disposition = next(d for d in completion["operation_dispositions"]
+                           if d["operation_id"] == retraction_id)
+        self.assertEqual(disposition["status"], "confirmed_failed")
+        self.assertEqual(disposition["adapter_result"]["reason"], "ORIGINAL_ABSENT")
+        self.assertEqual(disposition["compensates"]["operation_id"], target)
+        # Refusal is described, never a reversal: the publication stands.
+        self.assertEqual(FakePublisher(self.publisher_path).published_count(), 1)
+        self.assertEqual(self.runtime.get_operation(target)["status"],
+                         "confirmed_succeeded")
+
+    def test_unresolved_retraction_blocks_finalize(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        prepared = self.unpublish(target)["operation_id"]
+        blocked = self.finalize()
+        self.assertEqual((blocked["decision"], blocked["code"], blocked["blockers"]),
+                         ("rejected", "OUTCOME_UNRESOLVED", [prepared]))
+        # Held compensation blocks the same way.
+        self.runtime.dispatch(prepared, ContextDeclaringPublisher(self.publisher_path))
+        blocked = self.finalize()
+        self.assertEqual(blocked["code"], "OUTCOME_UNRESOLVED")
+        # And an outcome_unknown one.
+        self.runtime.reconcile(prepared, SilentPublisher())
+        blocked = self.finalize()
+        self.assertEqual(blocked["code"], "OUTCOME_UNRESOLVED")
+
+
+class PublishingRecoveryTests(PublishingCompensationCase):
+    def test_response_loss_recovers_once_by_lookup(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        retraction_id = self.unpublish(target)["operation_id"]
+        flaky = FakePublisher(self.publisher_path, timeout_after_commit=True)
+        unknown = self.runtime.dispatch(retraction_id, flaky)
+        self.assertEqual(unknown["status"], "outcome_unknown")
+        self.assertEqual(FakePublisher(self.publisher_path).retracted_count(), 1)
+        restarted = self.fresh_runtime()
+        recovered = restarted.reconcile(retraction_id,
+                                        FakePublisher(self.publisher_path))
+        self.assertEqual(recovered["status"], "confirmed_succeeded")
+        self.assertEqual(len(restarted.get_operation(retraction_id)["attempts"]), 1)
+        self.assertEqual(FakePublisher(self.publisher_path).retracted_count(), 1)
+
+    def crash_child(self, retraction_id):
+        script = (
+            "import sys\n"
+            "sys.path.insert(0, {root!r})\n"
+            "from work_runtime import Runtime\n"
+            "from work_runtime.publishing import FakePublisher, PublishingPolicy\n"
+            "GRANTS = {{'agent': {{'work.manage', 'content.publish',"
+            " 'content.unpublish'}},\n"
+            "          'reviewer': {{'evidence.write'}},"
+            " 'author': {{'evidence.write'}},\n"
+            "          'admin': {{'work.intervene'}}}}\n"
+            "import os\n"
+            "runtime = Runtime({path!r}, PublishingPolicy(), GRANTS)\n"
+            "runtime.dispatch({op!r}, FakePublisher({pub!r}),"
+            " fault=lambda: os._exit(73))\n")
+        return subprocess.run(
+            [sys.executable, "-c", script.format(
+                root=os.getcwd(), path=self.path, op=retraction_id,
+                pub=self.publisher_path)], check=False)
+
+    def test_real_crash_after_retraction_recovers_once(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        retraction_id = self.unpublish(target)["operation_id"]
+        child = self.crash_child(retraction_id)
+        self.assertEqual(child.returncode, 73)
+        publisher = FakePublisher(self.publisher_path)
+        self.assertEqual((publisher.published_count(), publisher.retracted_count()),
+                         (1, 1))
+        self.assertEqual(self.runtime.get_operation(retraction_id)["status"],
+                         "dispatched")
+        restarted = self.fresh_runtime()
+        restarted.recover(FakePublisher(self.publisher_path))
+        op = restarted.get_operation(retraction_id)
+        self.assertEqual(op["status"], "confirmed_succeeded")
+        self.assertEqual(op["attempts"][0]["status"], "confirmed_succeeded")
+        self.assertEqual(len(op["attempts"]), 1)
+        self.assertEqual((publisher.published_count(), publisher.retracted_count()),
+                         (1, 1))
+        # Finalize closes with the exact two-id ack.
+        receipt = restarted.command("admin", "finalize", self.work_id,
+                                    "finalize_cancel",
+                                    {"acknowledged_operations":
+                                     sorted([target, retraction_id])},
+                                    restarted.get_work(self.work_id)["state_version"])
+        self.assertEqual(receipt["decision"], "accepted")
+        completion = restarted.get_work(self.work_id)["completion"]
+        externals = {e["operation_id"]: e["external_id"]
+                     for e in completion["acknowledged_operations"]}
+        self.assertEqual(set(externals), {target, retraction_id})
+        self.assertTrue(externals[target].startswith("PUB-"))
+        self.assertTrue(externals[retraction_id].startswith("RTR-"))
 
 
 if __name__ == "__main__":
