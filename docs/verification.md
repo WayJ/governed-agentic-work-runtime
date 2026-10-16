@@ -625,3 +625,21 @@ ratified D67–D79.
   "rejected"`, `digest` binding the operation, `reason` code) at zero store
   writes, refuses a same-key changed record without overwrite (bounded
   `ValueError` at the raw delegate), and delegates `lookup` verbatim.
+- **Fail-closed loader withdrawal check and audit read (D72/RV-F5)**
+  (`LoaderWithdrawalTests`): the round trip loads unchanged pre-withdrawal;
+  after a committed withdrawal `load_published_card` raises the exact
+  withdrawn message (distinct from absent/corrupt/digest/identity) and
+  `pinned_card` raises it before any pin judgment (correct and wrong pins
+  alike); corrupt bytes, a tampered stale-digest record, a foreign
+  identity's record and a same-identity record binding a different
+  `published_digest` each raise the one invalid-record message by explicit
+  catch-and-re-raise (the adapter's parse/shape/digest vocabulary never
+  leaks); a digest-mismatching record is refused by the governed path
+  (rejected receipt) and, if committed by raw adapter use, fails closed
+  instead of withdrawing; an absent artifact reads absent even with a
+  record standing; a missing store directory is never created by
+  `withdrawal_record` or the loader; `withdrawal_record()` returns `None`
+  pre-withdrawal and the validated record post-withdrawal; no loader
+  function accepts an override keyword (TypeError on `allow_withdrawn`);
+  `published_card_matches` stays pure and never matches a withdrawal
+  record.

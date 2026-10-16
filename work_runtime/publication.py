@@ -199,10 +199,11 @@ class SopWithdrawalStore:
     def lookup(self, key):
         return self.publisher.lookup(key)
 
-# Fail-closed read path (D62): every failure below is a bounded ValueError
-# naming the violation class only. Absence, corruption, digest mismatch and
-# identity mismatch stay distinguishable; nothing degrades to an unpinned
-# card and no fallback or silent skip exists.
+# Fail-closed read path (D62/D72): every failure below is a bounded ValueError
+# naming the violation class only. Absence, corruption, digest mismatch,
+# identity mismatch, withdrawal and an invalid withdrawal record stay
+# distinguishable; nothing degrades to an unpinned card and no fallback or
+# silent skip exists.
 ABSENT_MESSAGE = "no published card is committed for this policy version"
 DIGEST_MISMATCH_MESSAGE = "published card digest does not match the stored artifact"
 IDENTITY_MISMATCH_MESSAGE = ("published card identity does not match the "
@@ -237,7 +238,53 @@ def _read_publication_artifact(directory, policy_id, policy_version):
     policy = card["policy"]
     if policy["id"] != policy_id or policy["version"] != policy_version:
         raise ValueError(IDENTITY_MISMATCH_MESSAGE)
+    record = _read_withdrawal_record(directory, policy_id, policy_version)
+    if record is not None:
+        # A standing record that binds this exact artifact withdraws it;
+        # a record that does not bind it leaves the version under dispute
+        # and is never silently served as valid (D72, fail-closed).
+        if record["published_digest"] == artifact["content_digest"]:
+            raise ValueError(WITHDRAWN_MESSAGE)
+        raise ValueError(WITHDRAWAL_RECORD_INVALID_MESSAGE)
     return artifact
+
+
+def _read_withdrawal_record(directory, policy_id, policy_version):
+    """The validated withdrawal record for one version, or ``None``.
+
+    Missing-store reads return ``None`` without creating the directory.
+    Every adapter violation class on the record maps by explicit
+    catch-and-re-raise onto this module's one invalid-record error, so the
+    adapter's internal vocabulary never leaks as extra loader classes
+    (RV-F5). A record that does not carry this version's identity is
+    equally refused.
+    """
+    if not isinstance(directory, str) or not directory or not os.path.isdir(directory):
+        return None
+    try:
+        artifact = FilePublisher(directory).read_validated(
+            withdrawal_key(policy_id, policy_version))
+    except ValueError:
+        raise ValueError(WITHDRAWAL_RECORD_INVALID_MESSAGE) from None
+    if artifact is None:
+        return None
+    record = artifact["document"]
+    if (not is_withdrawal_request(record)
+            or record["policy_id"] != policy_id
+            or record["policy_version"] != policy_version):
+        raise ValueError(WITHDRAWAL_RECORD_INVALID_MESSAGE)
+    return record
+
+
+def withdrawal_record(directory, policy_id, policy_version):
+    """Audit read: the validated withdrawal record of record, or ``None``.
+
+    Current validity is not negotiable at the loader, so there is
+    deliberately no override parameter on the read surface — an operator
+    sees *that* a version was withdrawn (and, via the governed ledger, who
+    and when) through this dedicated function instead.
+    """
+    return _read_withdrawal_record(directory, policy_id, policy_version)
 
 
 def load_published_card(directory, policy_id, policy_version):
@@ -245,10 +292,11 @@ def load_published_card(directory, policy_id, policy_version):
 
     Raises a bounded ``ValueError`` when the version is absent (including a
     missing store directory — never created by a read), the artifact is
-    corrupt, the recomputed digest disagrees with the stored artifact, or
-    the stored card's identity does not match the request. Returns the bare
-    stored card; the approval audit lives in the runtime evidence store,
-    not here (D59).
+    corrupt, the recomputed digest disagrees with the stored artifact, the
+    stored card's identity does not match the request, the version is
+    withdrawn (D72), or the standing withdrawal record does not bind this
+    artifact. Returns the bare stored card; the approval audit lives in the
+    runtime evidence store, not here (D59).
     """
     return _read_publication_artifact(directory, policy_id,
                                       policy_version)["document"]

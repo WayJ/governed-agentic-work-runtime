@@ -16,14 +16,20 @@ from work_runtime.policy import digest
 from work_runtime.publication import (
     WITHDRAWAL_DISCRIMINATOR,
     WITHDRAWAL_KEY_PREFIX,
+    WITHDRAWAL_RECORD_INVALID_MESSAGE,
     WITHDRAWAL_REQUEST_KEYS,
     WITHDRAWAL_TARGET_ABSENT,
     WITHDRAWAL_TARGET_DIGEST,
+    WITHDRAWN_MESSAGE,
     SopPublicationStore,
     SopWithdrawalStore,
     is_withdrawal_request,
+    load_published_card,
+    pinned_card,
     publication_key,
+    published_card_matches,
     withdrawal_key,
+    withdrawal_record,
 )
 from tests.test_publication import (
     artifact_name,
@@ -228,6 +234,150 @@ class SopWithdrawalStoreTests(WithdrawalTestCase):
         receipt = store.execute(self.wkey, self.request, digest(self.request))
         self.assertEqual(store.lookup(self.wkey), receipt)
         self.assertIsNone(store.lookup(WITHDRAWAL_KEY_PREFIX + "0" * 64))
+
+
+class LoaderWithdrawalTests(WithdrawalTestCase):
+    """Fail-closed loader matrix with withdrawal (D72): six bounded
+    distinguishable classes, absent precedence, audit read, no override."""
+
+    def setUp(self):
+        super().setUp()
+        self.card = card_with()
+        self.publish(self.card)
+        self.pkey = publication_key(self.card)
+        self.wkey = withdrawal_key("expense-submit", "demo-1")
+
+    def withdraw(self):
+        request = withdrawal_request(published_digest=sop_digest(self.card))
+        receipt = SopWithdrawalStore(self.store_dir).execute(
+            self.wkey, request, digest(request))
+        self.assertEqual(receipt["status"], "accepted")
+        return request
+
+    def rewrite(self, key, raw):
+        with open(os.path.join(self.store_dir, artifact_name(key)), "w") as handle:
+            json.dump(raw, handle)
+
+    def test_round_trip_before_withdrawal_still_loads(self):
+        self.assertEqual(load_published_card(self.store_dir,
+                                             "expense-submit", "demo-1"),
+                         self.card)
+        self.assertIsNone(withdrawal_record(self.store_dir,
+                                            "expense-submit", "demo-1"))
+
+    def test_after_withdrawal_the_loader_raises_the_exact_withdrawn_error(self):
+        self.withdraw()
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(self.store_dir, "expense-submit", "demo-1")
+        self.assertIs(type(raised.exception), ValueError)
+        self.assertEqual(str(raised.exception), WITHDRAWN_MESSAGE)
+
+    def test_pinned_card_raises_withdrawn_before_any_pin_judgment(self):
+        self.withdraw()
+        for pin in (sop_digest(self.card), "0" * 64):
+            with self.assertRaises(ValueError) as raised:
+                pinned_card(self.store_dir, "expense-submit", "demo-1", pin)
+            self.assertEqual(str(raised.exception), WITHDRAWN_MESSAGE)
+
+    def test_corrupt_withdrawal_record_maps_to_the_invalid_record_error(self):
+        self.withdraw()
+        with open(os.path.join(self.store_dir, artifact_name(self.wkey)),
+                  "wb") as handle:
+            handle.write(b"not json")
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(self.store_dir, "expense-submit", "demo-1")
+        self.assertEqual(str(raised.exception),
+                         WITHDRAWAL_RECORD_INVALID_MESSAGE)
+
+    def test_tampered_stale_digest_record_maps_to_the_invalid_record_error(self):
+        self.withdraw()
+        raw = json_read(self.store_dir, self.wkey)
+        raw["document"]["policy_id"] = "doctored.after.commit"
+        self.rewrite(self.wkey, raw)
+        with self.assertRaises(ValueError) as raised:
+            withdrawal_record(self.store_dir, "expense-submit", "demo-1")
+        self.assertEqual(str(raised.exception),
+                         WITHDRAWAL_RECORD_INVALID_MESSAGE)
+        self.assertNotEqual(str(raised.exception), WITHDRAWN_MESSAGE)
+
+    def test_foreign_record_under_the_withdrawal_key_fails_closed(self):
+        # Raw adapter use can commit any record under any key; this one
+        # carries another version's identity and must not withdraw ours.
+        foreign = withdrawal_request(policy_id="other-policy",
+                                     policy_version="v9",
+                                     published_digest="c" * 64)
+        FilePublisher(self.store_dir).execute(self.wkey, foreign,
+                                              digest(foreign))
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(self.store_dir, "expense-submit", "demo-1")
+        self.assertEqual(str(raised.exception),
+                         WITHDRAWAL_RECORD_INVALID_MESSAGE)
+
+    def test_digest_mismatched_record_is_invalid_never_silently_served(self):
+        # The governed path refuses to commit a record binding a different
+        # published_digest (D74 receipt); raw adapter use bypasses it, and
+        # such a standing record fails closed instead of withdrawing.
+        wrong = withdrawal_request(published_digest="d" * 64)
+        receipt = SopWithdrawalStore(self.store_dir).execute(
+            self.wkey, wrong, digest(wrong))
+        self.assertEqual(receipt["status"], "rejected")
+        self.assertEqual(receipt["reason"], WITHDRAWAL_TARGET_DIGEST)
+        FilePublisher(self.store_dir).execute(self.wkey, wrong,
+                                              digest(wrong))
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(self.store_dir, "expense-submit", "demo-1")
+        self.assertEqual(str(raised.exception),
+                         WITHDRAWAL_RECORD_INVALID_MESSAGE)
+
+    def test_absent_artifact_reads_absent_even_with_a_record_present(self):
+        self.withdraw()
+        os.unlink(os.path.join(self.store_dir, artifact_name(self.pkey)))
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(self.store_dir, "expense-submit", "demo-1")
+        self.assertIn("no published card", str(raised.exception))
+
+    def test_missing_directory_is_never_created_by_withdrawal_reads(self):
+        missing = os.path.join(self.root, "never-created")
+        self.assertIsNone(withdrawal_record(missing, "expense-submit",
+                                            "demo-1"))
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(missing, "expense-submit", "demo-1")
+        self.assertIn("no published card", str(raised.exception))
+        self.assertFalse(os.path.exists(missing))
+
+    def test_withdrawal_record_audit_read_returns_the_stored_record(self):
+        request = self.withdraw()
+        record = withdrawal_record(self.store_dir, "expense-submit",
+                                   "demo-1")
+        self.assertEqual(record, request)
+
+    def test_loaders_accept_no_override_keyword(self):
+        self.withdraw()
+        for call in (
+                lambda: load_published_card(self.store_dir, "expense-submit",
+                                            "demo-1", allow_withdrawn=True),
+                lambda: pinned_card(self.store_dir, "expense-submit",
+                                    "demo-1", sop_digest(self.card),
+                                    allow_withdrawn=True),
+                lambda: withdrawal_record(self.store_dir, "expense-submit",
+                                          "demo-1", allow_withdrawn=True)):
+            with self.assertRaises(TypeError):
+                call()
+            with self.assertRaises(ValueError):
+                load_published_card(self.store_dir, "expense-submit",
+                                    "demo-1")
+
+    def test_published_card_matches_stays_pure_and_refuses_records(self):
+        request = self.withdraw()
+        self.assertFalse(published_card_matches(request, None))
+        self.assertTrue(published_card_matches(self.card,
+                                               type("P", (), {
+                                                   "id": self.card["policy"]["id"],
+                                                   "version": self.card["policy"]["version"],
+                                                   "goal": self.card["policy"]["goal"],
+                                               })()))
+        with self.assertRaises(ValueError):
+            load_published_card(self.store_dir, "expense-submit", "demo-1")
 
 
 if __name__ == "__main__":

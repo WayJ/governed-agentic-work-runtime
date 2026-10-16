@@ -225,6 +225,41 @@ committed. The drafted `ValueError` refusal channel was **rejected** at
 ratification (RV-F1): it would strand the work at an outcome neither
 completion nor cancellation can resolve.
 
+### Loading after withdrawal (fail-closed, D72)
+
+The loader's validation chain gains exactly one step after full artifact
+validation and the identity check: it reads the withdrawal record for the
+requested version. The bounded, distinguishable error classes become six:
+**absent** (including a missing store directory — a read never creates
+it), **corrupt artifact**, **digest mismatch**, **identity mismatch**,
+**withdrawn** ("this published version is withdrawn; corrected content
+requires a new version"), and **invalid withdrawal record**. A standing
+record that validates and binds the exact artifact — same identity, same
+`published_digest` as the stored `content_digest` — raises the withdrawn
+error; a record that is corrupt, malformed or does not bind this artifact
+(unknown identity, mismatching digest) raises the invalid-record error, so
+a disputed version is **never silently served as valid**. Every adapter
+violation class on the record maps onto the one invalid-record error by
+explicit catch-and-re-raise — the adapter's internal vocabulary never
+leaks as extra loader classes (RV-F5).
+
+- **`pinned_card` inherits:** the load raises the withdrawn (or
+  invalid-record) error before any pin comparison, so a withdrawn version
+  fails closed regardless of pin match. `published_card_matches` stays a
+  pure structural `(id, version, goal)` check — withdrawal binds at the
+  load surface that feeds it, and a withdrawal record is never a card.
+- **Order note:** a version whose artifact is absent reads **absent** even
+  if a withdrawal record stands (the artifact read comes first); deleting
+  files is operator misuse outside the trust boundary.
+- **Audit read:** `withdrawal_record(directory, policy_id, policy_version)`
+  returns the validated record or `None`, raising the invalid-record error
+  on a corrupt record. There is deliberately **no `allow_withdrawn`
+  override** on any read function — current validity is not negotiable at
+  the loader.
+- **No Runtime wiring change (D62/D73):** the Runtime still never consults
+  the store; withdrawal fences no executing policy, no completed pin
+  check and no in-flight work.
+
 ### Loading and pinning (fail-closed, D62)
 
 Reading a publication back is a set of functions with **no Runtime wiring**
