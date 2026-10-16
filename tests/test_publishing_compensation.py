@@ -8,6 +8,7 @@ authority remain deferred scope. `content.unpublish` (content family) is
 distinct from S13's `sop.withdraw` (SOP authoring family).
 """
 
+import hashlib
 import json
 import os
 import secrets
@@ -1272,6 +1273,42 @@ class PublishingRecoveryTests(PublishingCompensationCase):
         self.assertEqual(set(externals), {target, retraction_id})
         self.assertTrue(externals[target].startswith("PUB-"))
         self.assertTrue(externals[retraction_id].startswith("RTR-"))
+
+
+class BoundaryPins(unittest.TestCase):
+    """D82/D88 byte pins at the sprint baseline 7f547cb.
+
+    These assert the protected surface is byte-unchanged this sprint: the
+    runtime and adapters (D82, with the master's strict clarification that
+    BOTH files stay untouched — FakePublisher lives in publishing.py), and
+    the file adapter (D88) plus the shared policy module. A future sprint
+    that legitimately edits one of these must consciously update the pinned
+    digest, never delete the pin.
+    """
+
+    BASELINE = "7f547cb9c41ee900e48571dea6235cf7ec2f6cdc"
+
+    PINNED = {
+        "work_runtime/runtime.py":
+            "80bf721b3369a6fb865fd6aba0e57804a69eb8587431f8fa6edf1183fc53f4b3",
+        "work_runtime/adapters.py":
+            "ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e",
+        "work_runtime/file_adapter.py":
+            "7044a92b97af266df896704ab84eb842d2e4754a204b54377649da93c0b476e2",
+        "work_runtime/policy.py":
+            "76d4e9c605855ba19580591988cadc1d33ab81dd3672ddf84559eeb28cffdc82",
+    }
+
+    def test_protected_surface_is_byte_unchanged_at_baseline(self):
+        root = Path(__file__).resolve().parents[1]
+        for relative, expected in self.PINNED.items():
+            with self.subTest(path=relative):
+                actual = hashlib.sha256(
+                    (root / relative).read_bytes()).hexdigest()
+                self.assertEqual(actual, expected,
+                                 relative + " differs from the " + self.BASELINE
+                                 + " truth; update the pin consciously, never"
+                                 " silently")
 
 
 if __name__ == "__main__":

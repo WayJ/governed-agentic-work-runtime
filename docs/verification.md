@@ -236,6 +236,38 @@ only and rejects deleted withdrawal rows, wrong linked targets, swapped
 link digests, forged receipts, flipped proof kinds and refusal-store
 effects, each exercised by a named negative test.
 
+## S14 coverage — publishing-family linked retraction (W1 core)
+
+The S14 core wave adds the publishing family's in-window linked
+retraction on the unchanged S10 machinery: the `PublishingPolicy` pairing
+attribute, the `FakePublisher` paired action with its additive store
+migration, and the governed flow end to end
+(`tests/test_publishing_compensation.py`), with
+`work_runtime/runtime.py` and `work_runtime/adapters.py` byte-unchanged
+(D82, hash-pinned in `BoundaryPins` together with the untouched
+`file_adapter.py`/`policy.py`), runtime schema 1 and zero dependencies.
+Semantics and boundaries:
+[runtime boundaries](runtime-boundaries.md),
+[adapter contract](adapter-contract.md), [interventions](interventions.md).
+
+| guarantee | test (all in `tests/test_publishing_compensation.py`) |
+|---|---|
+| pairing attribute, empty paired blockers, off-family degrade, unchanged version, FilePublisher forward-only | `PolicyPairingTests` |
+| additive serialized migration, no legacy row rewritten, idempotent reopen, concurrent first-open, fresh schema | `FakePublisherMigrationTests` |
+| forward identity: NULL-tagged rows, positional/kwargs replay, same-content dedup, contract order (`content.publish` first) and opt-in | `ForwardIdentityTests` |
+| retraction execution: one effect, RTR- prefix, input guards before any write, alias receipts, link-fingerprint conflict, cross-action replay, ORIGINAL_ABSENT, scan + short-circuit existence | `RetractionExecutionTests` |
+| append-only retraction, truthful counts, re-publish-after-retraction artifact-id reuse (adapter-model limit, RF4) | `RetractionAppendOnlyTests` |
+| window/windowless admission, forward CANCELLATION_ACTIVE, exact payload, target matrix incl. chain, stable D6 key, immutable snapshot | `PublishingCompensationAdmissionTests` |
+| owner+grant authority, transfer re-admission, replay after grant loss, both RF4 reachability legs (CANCELLATION_ACTIVE / cross-work OPERATION_CONTENT_CONFLICT) | `PublishingCompensationAuthorityTests` |
+| FilePublisher hold at the actions preflight, context hold, kwargs call shape, dispatch grant loss, link revalidation holds | `PublishingDispatchTests` |
+| withdrawn proof at `publisher`, C04 inertness, import denial, admin-only revoke, adapter_result legs, binding mismatch quarantine | `PublishingResolutionTests` |
+| exact two-id ack, compensation dispositions, refused-not-reversed closure, unresolved blockers | `PublishingClosureTests` |
+| response-loss reconcile, real child crash (exit 73) recovered once, one publication + one retraction effect | `PublishingRecoveryTests` |
+| D82/D88 byte pins at the sprint baseline | `BoundaryPins` |
+
+The S14 demo wave (W2) appends the publish-demo retraction chapter,
+installer stages and README entries; the five AGENTS gates are unchanged.
+
 ## S9 coverage — accepted-evidence collision prevention and recovery
 
 The S9 core wave added the accepted-source operation-id reservation and
