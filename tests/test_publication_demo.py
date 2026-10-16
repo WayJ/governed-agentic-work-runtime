@@ -4,7 +4,10 @@ The demo drives the frozen W1 publication core through its public API with an
 injected deterministic clock and ephemeral never-printed approver keys; these
 tests read the SQLite store and the artifact directory directly to assert
 what the public path actually produced, never trusting the printed text for
-state, and re-derive every count, key and digest locally.
+state, and re-derive every count, key and digest locally. Since the S13 demo
+wave the same run also carries the withdrawal chapter
+(tests/test_publication_withdrawal_demo.py pins that half); the counts below
+therefore describe the whole extended store.
 """
 
 import contextlib
@@ -26,6 +29,8 @@ from work_runtime.adoption_demo import packaged_card
 from work_runtime.publication_demo import (
     CONFLICT_WORK_ID,
     FINAL_LINE,
+    REPUBLICATION_WORK_ID,
+    WITHDRAWAL_WORK_ID,
     WORK_ID,
     run_publication_demo,
 )
@@ -46,8 +51,12 @@ RUNTIME_COMMAND_IDS = (
     "cmd-create-pub", "cmd-bind-pub", "cmd-propose-blocked", "publish-once",
     "cmd-complete-pub", "cmd-create-pub2", "cmd-bind-pub2",
     "cmd-propose-conflict-blocked", "cmd-propose-conflict",
+    "cmd-create-wd1", "cmd-bind-wd1", "cmd-propose-wd1-blocked",
+    "withdraw-once", "cmd-complete-wd1", "cmd-create-pub3", "cmd-bind-pub3",
+    "cmd-propose-pub3-blocked", "cmd-propose-pub3",
 )
-GATEWAY_COMMAND_IDS = ("cmd-approve-valid", "cmd-approve-conflict")
+GATEWAY_COMMAND_IDS = ("cmd-approve-valid", "cmd-approve-conflict",
+                       "cmd-approve-wd1", "cmd-approve-pub3")
 ABSENT_LINE = re.compile(r"^absent version: (.+)$", re.MULTILINE)
 TAMPERED_LINE = re.compile(r"^tampered file: (.+)$", re.MULTILINE)
 
@@ -79,6 +88,11 @@ def committed_artifacts(directory):
 def publication_key_of(card):
     return "sop-pub:" + local_digest([card["policy"]["id"],
                                       card["policy"]["version"]])
+
+
+def withdrawal_key_of(card):
+    return "sop-withdrawn:" + local_digest([card["policy"]["id"],
+                                            card["policy"]["version"]])
 
 
 def artifact_name(key):
@@ -121,19 +135,21 @@ class PublicationDemoTests(unittest.TestCase):
                      "OPERATION_CONTENT_CONFLICT", "EVIDENCE_KEY_RETIRED",
                      "outcome_unknown", "confirmed_succeeded"):
             self.assertIn(code, self.stdout)
-        self.assertEqual(self.stdout.count("inspect --db"), 1)
+        self.assertEqual(self.stdout.count("inspect --db"), 2)
 
-    def test_store_holds_exactly_one_hash_named_artifact_and_zero_stage(self):
+    def test_store_holds_exactly_two_hash_named_artifacts_and_zero_stage(self):
         files = list(self.store_dir.iterdir())
-        self.assertEqual([path.name for path in committed_artifacts(self.store_dir)],
-                         [artifact_name(publication_key_of(
-                             packaged_card("publishing.json")))])
+        card = packaged_card("publishing.json")
+        self.assertEqual({path.name for path in committed_artifacts(self.store_dir)},
+                         {artifact_name(publication_key_of(card)),
+                          artifact_name(withdrawal_key_of(card))})
         self.assertFalse([path for path in files if path.suffix == ".stage"])
 
     def test_artifact_is_the_bare_card_with_recomputed_key_and_digests(self):
-        artifact = json.loads(committed_artifacts(self.store_dir)[0]
-                              .read_text(encoding="utf-8"))
         card = packaged_card("publishing.json")
+        artifact_file = (self.store_dir
+                         / artifact_name(publication_key_of(card)))
+        artifact = json.loads(artifact_file.read_text(encoding="utf-8"))
         self.assertEqual(set(artifact), {"artifact_version", "key",
                                          "content_digest", "document",
                                          "receipt"})
@@ -147,27 +163,34 @@ class PublicationDemoTests(unittest.TestCase):
         self.assertEqual(artifact["receipt"]["digest"],
                          artifact["content_digest"])
         operations = self.operations()
-        self.assertEqual(len(operations), 1)
-        self.assertEqual(operations[0]["business_key"], artifact["key"])
+        self.assertEqual(len(operations), 2)
+        publication = [operation for operation in operations
+                       if operation["business_key"] == artifact["key"]][0]
+        self.assertEqual(publication["work_id"], WORK_ID)
 
     def test_works_states_and_operation_recovery(self):
         ids = {row[0] for row in rows(self.runtime_path, "SELECT id FROM works")}
-        self.assertEqual(ids, {WORK_ID, CONFLICT_WORK_ID})
+        self.assertEqual(ids, {WORK_ID, CONFLICT_WORK_ID, WITHDRAWAL_WORK_ID,
+                               REPUBLICATION_WORK_ID})
         self.assertEqual((self.work_state(WORK_ID)["status"],
                           self.work_state(WORK_ID)["outcome"]),
                          ("closed", "succeeded"))
         self.assertEqual(self.work_state(CONFLICT_WORK_ID)["status"], "active")
+        card = packaged_card("publishing.json")
         operations = self.operations()
-        self.assertEqual(operations[0]["status"], "confirmed_succeeded")
-        self.assertEqual(len(operations[0]["attempts"]), 1)
-        self.assertEqual(operations[0]["work_id"], WORK_ID)
+        publication = [operation for operation in operations
+                       if operation["business_key"]
+                       == publication_key_of(card)][0]
+        self.assertEqual(publication["status"], "confirmed_succeeded")
+        self.assertEqual(len(publication["attempts"]), 1)
+        self.assertEqual(publication["work_id"], WORK_ID)
 
     def test_evidence_rows_exact(self):
         card = packaged_card("publishing.json")
         doctored = copy.deepcopy(card)
         doctored["policy"]["goal"] = DOCTORED_GOAL
         bodies = self.evidence_bodies()
-        self.assertEqual(len(bodies), 3)
+        self.assertEqual(len(bodies), 6)
         by_event = {body["event_id"]: body for body in bodies}
         valid = by_event["evt-approve-valid"]
         self.assertEqual((valid["source"], valid["kind"], valid["status"]),
@@ -182,14 +205,32 @@ class PublicationDemoTests(unittest.TestCase):
         self.assertEqual(conflict["data"],
                          {"digest": local_digest(doctored),
                           "policy_version": card["policy"]["version"]})
-        operation = self.operations()[0]
-        accepted = by_event[operation["id"]]
-        self.assertEqual((accepted["source"], accepted["kind"],
-                          accepted["status"]),
-                         ("sop-store", "accepted", "verified"))
+        republish = by_event["evt-approve-pub3"]
+        self.assertEqual((republish["source"], republish["kind"],
+                          republish["status"]),
+                         ("sop-owner", "card_approval", "verified"))
+        self.assertEqual(republish["data"],
+                         {"digest": local_digest(card),
+                          "policy_version": card["policy"]["version"]})
+        withdrawal = by_event["evt-approve-wd1"]
+        self.assertEqual((withdrawal["source"], withdrawal["kind"],
+                          withdrawal["status"]),
+                         ("sop-owner", "card_withdrawal", "verified"))
+        self.assertEqual(withdrawal["data"],
+                         {"digest": local_digest(card),
+                          "policy_version": card["policy"]["version"]})
+        artifact = json.loads(
+            (self.store_dir / artifact_name(publication_key_of(card)))
+            .read_text(encoding="utf-8"))
+        operations = {operation["id"]: operation
+                      for operation in self.operations()}
+        for proof in (body for body in bodies if body["source"] == "sop-store"):
+            self.assertEqual((proof["kind"], proof["status"]),
+                             ("accepted", "verified"))
+            operation = operations[proof["event_id"]]
+            if operation["business_key"] == publication_key_of(card):
+                accepted = proof
         self.assertEqual(accepted["data"]["digest"], local_digest(card))
-        artifact = json.loads(committed_artifacts(self.store_dir)[0]
-                              .read_text(encoding="utf-8"))
         self.assertEqual(accepted["data"]["external_id"],
                          artifact["receipt"]["external_id"])
 
@@ -200,27 +241,28 @@ class PublicationDemoTests(unittest.TestCase):
                           for command_id in RUNTIME_COMMAND_IDS} |
                          {("sop-owner", command_id)
                           for command_id in GATEWAY_COMMAND_IDS})
-        self.assertEqual(len(found),
-                         len(RUNTIME_COMMAND_IDS) + len(GATEWAY_COMMAND_IDS))
+        self.assertEqual(len(found), 22)
         conflict_receipt = json.loads(rows(
             self.runtime_path, "SELECT receipt FROM commands "
             "WHERE id='cmd-propose-conflict'")[0][0])
         self.assertEqual(conflict_receipt["decision"], "rejected")
         self.assertEqual(conflict_receipt["code"], "OPERATION_CONTENT_CONFLICT")
-        for blocked_id in ("cmd-propose-blocked",
-                           "cmd-propose-conflict-blocked"):
+        for blocked_id in ("cmd-propose-blocked", "cmd-propose-conflict-blocked",
+                           "cmd-propose-wd1-blocked", "cmd-propose-pub3-blocked"):
             receipt = json.loads(rows(self.runtime_path, "SELECT receipt "
                                       "FROM commands WHERE id=?",
                                       (blocked_id,))[0][0])
             self.assertEqual(receipt["code"], "REQUIREMENT_UNSATISFIED")
 
     def test_conflict_left_the_winner_artifact_unchanged(self):
-        raw = committed_artifacts(self.store_dir)[0].read_bytes()
+        card = packaged_card("publishing.json")
+        raw = (self.store_dir / artifact_name(publication_key_of(card))
+               ).read_bytes()
         self.assertNotIn(DOCTORED_GOAL.encode("utf-8"), raw)
         self.assertNotIn(b"doctored", raw)
         artifact = json.loads(raw.decode("utf-8"))
-        self.assertEqual(artifact["document"], packaged_card("publishing.json"))
-        self.assertEqual(len(committed_artifacts(self.store_dir)), 1)
+        self.assertEqual(artifact["document"], card)
+        self.assertEqual(len(committed_artifacts(self.store_dir)), 2)
 
     def test_printed_inspect_command_runs_verbatim(self):
         match = INSPECT_COMMAND.search(self.stdout)
@@ -239,7 +281,9 @@ class PublicationDemoTests(unittest.TestCase):
         self.assertIsNotNone(match, self.stdout)
         printed = Path(match.group(1))
         self.assertTrue(printed.exists(), str(printed))
-        self.assertEqual(printed, committed_artifacts(self.store_dir)[0])
+        card = packaged_card("publishing.json")
+        self.assertEqual(printed,
+                         self.store_dir / artifact_name(publication_key_of(card)))
 
     def test_prologue_pins_digest_and_static_boundary(self):
         self.assertIn(PINNED_PUBLISHING_DIGEST, self.stdout)
@@ -260,8 +304,8 @@ class PublicationDemoTests(unittest.TestCase):
                               + table)[0][0]
                   for table in ("works", "commands", "evidence", "operations",
                                 "events", "metadata")}
-        self.assertEqual(counts, {"works": 2, "commands": 11, "evidence": 3,
-                                  "operations": 1, "events": 11,
+        self.assertEqual(counts, {"works": 4, "commands": 22, "evidence": 6,
+                                  "operations": 2, "events": 21,
                                   "metadata": 1})
         self.assertEqual(rows(self.runtime_path, "SELECT * FROM metadata"),
                          [("schema_version", "1")])
@@ -279,14 +323,14 @@ class PublicationDemoHygieneTests(unittest.TestCase):
             run_publication_demo(directory=self.temp.name)
         self.assertEqual(sentinel.read_text(encoding="utf-8"), "user data")
 
-    def test_two_runs_use_fresh_stores_each_holding_one_artifact(self):
+    def test_two_runs_use_fresh_stores_each_holding_two_artifacts(self):
         with contextlib.redirect_stdout(io.StringIO()):
             folders = {run_publication_demo(directory=self.temp.name),
                        run_publication_demo(directory=self.temp.name)}
         self.assertEqual(len(folders), 2)
         for folder in folders:
             self.assertEqual(len(committed_artifacts(
-                Path(folder) / "publication" / "store")), 1)
+                Path(folder) / "publication" / "store")), 2)
 
     def test_demo_runs_with_cwd_outside_the_repository(self):
         previous = os.getcwd()
@@ -297,7 +341,7 @@ class PublicationDemoHygieneTests(unittest.TestCase):
         finally:
             os.chdir(previous)
         self.assertEqual(len(committed_artifacts(
-            Path(folder) / "publication" / "store")), 1)
+            Path(folder) / "publication" / "store")), 2)
 
     def test_output_never_echoes_secret_material(self):
         """Planted-marker discipline: patch the key generator, run, grep."""
