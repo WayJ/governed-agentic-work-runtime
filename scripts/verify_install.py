@@ -16,24 +16,36 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
 5. Run `python -m work_runtime demo` outside the checkout and assert both the
    printed result and — independently of the printed text — that the demo's
    fake OA database contains exactly one accepted application.
-6. Run `python -m work_runtime publish-demo` outside the checkout and assert
-   both the printed result and — independently of the printed text — that the
-   demo's publisher database contains exactly one publication.
-7. Run `python -m work_runtime intervention-demo` outside the checkout, assert
+6. Run `python -m work_runtime publish-demo` outside the checkout and verify
+   it INDEPENDENTLY of the printed text: read both stores directly — two
+   publications across both works' documents, exactly one retraction effect
+   bound to the second publication, the retraction receipt tagged with the
+   action and the recomputed link digest, article-1 closed/succeeded with
+   its story intact and article-2 closed/cancelled with the recomputed
+   forward and compensation business keys, the immutable link, the stored
+   adapter result, the withdrawn-kind proof at the publisher source and the
+   exact two-id closure — and re-run both printed inspect commands verbatim
+   (since S14 the demo carries the retraction chapter).
+7. Run the `work-runtime publish-demo` console entry point outside the
+   checkout and apply the same independent store proof and verbatim inspect
+   re-runs. NEW coverage since S14: publish-demo previously had a
+   module-only stage; the console stage is added, disclosed here, rather
+   than silently matched to the publication-demo module+console precedent.
+8. Run `python -m work_runtime intervention-demo` outside the checkout, assert
    the printed result, require exactly three printed scenario databases, and
    count each scenario's fake OA database independently: exactly one accepted
    application per store. Also run the installed `inspect --policy-versions
    demo-1,demo-2` against the migrated store and assert it reads the demo-2 pin.
-8. Run the `work-runtime demo` console entry point outside the checkout and
+9. Run the `work-runtime demo` console entry point outside the checkout and
    assert the same printed result.
-9. Run the `work-runtime intervention-demo` console entry point outside the
-   checkout and assert the same printed result and the same independent
-   per-store counts as stage 7.
-10. Assert the packaged SOP example cards ship inside the (non-editable)
+10. Run the `work-runtime intervention-demo` console entry point outside the
+    checkout and assert the same printed result and the same independent
+    per-store counts as stage 8.
+11. Assert the packaged SOP example cards ship inside the (non-editable)
     install — `importlib.resources.files("work_runtime")` resolves inside the
     venv and both data/sop cards are present — and the installed `lint-sop`
     on an extracted copy of publishing.json exits 0 with the pinned digest.
-11. Run `python -m work_runtime adoption-demo` outside the checkout and verify
+12. Run `python -m work_runtime adoption-demo` outside the checkout and verify
     it INDEPENDENTLY of the printed text: enumerate the printed artifact
     directory (exactly one hash-named committed .json, zero .stage leftovers),
     parse the artifact with the standard library only (exact keys, version 1,
@@ -41,9 +53,9 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     accepted FILE- receipt), read the runtime database directly (work
     article-1 closed/succeeded, operation confirmed_succeeded), and re-run the
     demo's printed inspect command verbatim.
-12. Run the `work-runtime adoption-demo` console entry point outside the
+13. Run the `work-runtime adoption-demo` console entry point outside the
     checkout and apply the same independent enumeration/parse checks.
-13. Run `python -m work_runtime revocation-demo` outside the checkout and
+14. Run `python -m work_runtime revocation-demo` outside the checkout and
     verify it INDEPENDENTLY of the printed text: parse each of the three
     scenario stores (hold, uncertain, publish) directly — revoked/verified
     evidence statuses, preserved source-event fingerprints (recomputed with
@@ -51,9 +63,9 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     (recomputed from the policy family, document id and revision/digest),
     closed-work completion still citing the revoked acceptance, and each
     external store holding exactly one accepted effect.
-14. Run the `work-runtime revocation-demo` console entry point outside the
+15. Run the `work-runtime revocation-demo` console entry point outside the
     checkout and apply the same independent store proof.
-15. Run `python -m work_runtime compensation-demo` outside the checkout and
+16. Run `python -m work_runtime compensation-demo` outside the checkout and
     verify it INDEPENDENTLY of the printed text: parse both scenario stores
     (crash, refusal) directly with locally recomputed business keys
     (forward key vs the S10 compensation key digest([family, capability,
@@ -66,12 +78,12 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     refusal scenario the authoritative ORIGINAL_ABSENT rejection with a
     single-id ack and zero effects; also re-run the demo's printed inspect
     command verbatim against the installed entry point.
-16. Run the `work-runtime compensation-demo` console entry point outside the
+17. Run the `work-runtime compensation-demo` console entry point outside the
     checkout and apply the same independent store proof.
-17. Assert the packaged GUI web assets ship inside the (non-editable)
+18. Assert the packaged GUI web assets ship inside the (non-editable)
     install — `work_runtime/web/{index.html,app.js,app.css}` resolve inside
     the venv — so the read-only viewer is never served from this checkout.
-18. Installed UI (module AND console): when the read-only backend
+19. Installed UI (module AND console): when the read-only backend
     (`work_runtime.ui_server`) is present in the install, start `ui-demo` as
     a real subprocess outside the checkout, read the printed URL, fetch
     HTML/JS/CSS/summary/works/work/events over real HTTP (five seeded works),
@@ -82,7 +94,7 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     this build the stage prints an explicit SKIPPED line and the final
     summary discloses the skip — it never reports UI coverage it did not
     actually run.
-19. Run `python -m work_runtime rotation-demo` outside the checkout and
+20. Run `python -m work_runtime rotation-demo` outside the checkout and
     verify it INDEPENDENTLY of the printed text: read the runtime store
     directly — the six-table history digest recomputed locally and matched
     against the printed digest, exactly two verified approval-evidence rows
@@ -90,9 +102,9 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     per rotation command id with the original cached receipt still
     pending_verification while its evidence row is verified, zero operations —
     and re-run the demo's printed inspect command verbatim.
-20. Run the `work-runtime rotation-demo` console entry point outside the
+21. Run the `work-runtime rotation-demo` console entry point outside the
     checkout and apply the same independent store proof.
-21. Run `python -m work_runtime publication-demo` outside the checkout and
+22. Run `python -m work_runtime publication-demo` outside the checkout and
     verify it INDEPENDENTLY of the printed text: parse the committed
     artifact and the runtime store directly — exactly one hash-named
     artifact with the recomputed bare-card digest, digest-based publication
@@ -102,7 +114,7 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     (OPERATION_CONTENT_CONFLICT) and both blocked proposals; the printed
     absent-vs-tampered loader lines distinguishable — and re-run the demo's
     printed `inspect --policy sop-publish` command verbatim.
-22. Run the `work-runtime publication-demo` console entry point outside the
+23. Run the `work-runtime publication-demo` console entry point outside the
     checkout and apply the same independent store proof.
 
 Usage: python3 scripts/verify_install.py [--python INTERP] [--repo PATH] [--keep]
@@ -126,7 +138,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEMO_FINAL_LINE = "external applications created: 1"
-PUBLISH_FINAL_LINE = "published artifacts: 1"
+PUBLISH_FINAL_LINE = ("2 works; published artifacts: 2; retraction effects: 1; "
+                      "bounded in-window retraction, not reversal")
+PUBLISH_INSPECT_MARKER = {"article-1": '"outcome": "succeeded"',
+                          "article-2": '"outcome": "cancelled"'}
 INTERVENTION_FINAL_LINE = "accepted applications: 3 (one per store)"
 ADOPTION_FINAL_LINE = "committed file artifacts: 1"
 REVOCATION_FINAL_LINE = ("retained external effects: 2 accepted applications, "
@@ -218,6 +233,15 @@ def count_publications(publisher_db):
     db = sqlite3.connect(str(publisher_db))
     try:
         return db.execute("SELECT COUNT(*) FROM publications").fetchone()[0]
+    finally:
+        db.close()
+
+
+def count_retractions(publisher_db):
+    """Count retraction effects directly in the demo's publisher database."""
+    db = sqlite3.connect(str(publisher_db))
+    try:
+        return db.execute("SELECT COUNT(*) FROM retractions").fetchone()[0]
     finally:
         db.close()
 
@@ -1283,6 +1307,203 @@ def require_publication_proof(stdout, source):
     return str(runtime_db)
 
 
+def require_publishing_retraction_operations(runtime_db, source):
+    """(work-two state, forward, retraction) with locally recomputed keys.
+
+    The forward key embeds document id + digest (store-global, no work id);
+    the retraction key is the S14 compensation key
+    digest([family, capability, original operation id]) — structurally
+    distinct and stable across re-admission.
+    """
+    state = require_work_state(runtime_db, "article-2", source)
+    require((state["status"], state["outcome"]) == ("closed", "cancelled"),
+            "%s work article-2 is %s/%s (expected closed/cancelled)"
+            % (source, state["status"], state["outcome"]))
+    operations = [json.loads(row[0]) for row in
+                  db_rows(runtime_db, "SELECT body FROM operations", source=source)]
+    require(len(operations) == 3,
+            "%s store %s holds %d operations (expected exactly 3: two "
+            "publications + one retraction)" % (source, runtime_db, len(operations)))
+    forward = next((op for op in operations if op["work_id"] == "article-2"
+                    and op["capability"] == "content.publish"), None)
+    retraction = next((op for op in operations
+                       if op["capability"] == "content.unpublish"), None)
+    require(forward is not None and retraction is not None,
+            "%s store %s does not hold the second publication and the linked "
+            "retraction" % (source, runtime_db))
+    require(forward["business_key"] == local_digest(
+        ["content-publish", "content.publish",
+         state["document"]["id"], state["document_digest"]]),
+        "%s forward business key does not equal the recomputed publishing "
+        "operation key" % source)
+    require(retraction["business_key"] == local_digest(
+        ["content-publish", "content.unpublish", forward["id"]]),
+        "%s retraction business key does not equal the recomputed compensation "
+        "key digest([family, capability, original id])" % source)
+    require(forward["business_key"] != retraction["business_key"],
+            "%s retraction reuses the forward business key" % source)
+    for operation, prefix, label in ((forward, "PUB-", "publication"),
+                                     (retraction, "RTR-", "retraction")):
+        require(operation["status"] == "confirmed_succeeded"
+                and operation["dispatch_state"] == "finished"
+                and len(operation["attempts"]) == 1
+                and str(operation.get("external_id", "")).startswith(prefix),
+                "%s %s operation is not confirmed_succeeded/finished with "
+                "exactly one attempt and a retained %s external id"
+                % (source, label, prefix))
+    require(retraction["compensates"] == {
+        "operation_id": forward["id"],
+        "external_id": forward["external_id"],
+        "capability": "content.publish"},
+        "%s retraction compensates link is not the immutable original snapshot "
+        "(operation id, external id, capability)" % source)
+    require(retraction["adapter_result"] == {
+        "status": "accepted", "external_id": retraction["external_id"],
+        "digest": forward["document_digest"],
+        "original_external_id": forward["external_id"]},
+        "%s retraction adapter_result does not bind the original external id "
+        "and the retraction id truthfully" % source)
+    return state, forward, retraction
+
+
+def require_publishing_proof(stdout, source):
+    """Independent module/console publish-demo proof, never stdout-only.
+
+    Requires the demo's exact final line and exactly two printed inspect
+    commands naming one runtime database and the two works, then verifies
+    both stores directly with locally recomputed keys: article-1
+    closed/succeeded; article-2 closed/cancelled with the second publication
+    and the linked retraction (one attempt each, PUB-/RTR- external ids,
+    immutable link, stored adapter result, recomputed forward and
+    compensation keys); the forward accepted proof plus the appended
+    withdrawn-kind proof at the publisher source; the publisher store read
+    directly (two publications across ART-001/ART-002, exactly one retraction
+    row bound to the original, the tagged retraction receipt with the
+    recomputed link digest); and the exact two-id closure with the
+    compensation disposition. Returns the runtime database path.
+    """
+    require(PUBLISH_FINAL_LINE in stdout,
+            "%s output lacks %r" % (source, PUBLISH_FINAL_LINE))
+    commands = INSPECT_COMMAND.findall(stdout)
+    require(len(commands) == 2,
+            "%s printed %d inspect commands (expected exactly 2: article-1, "
+            "article-2)" % (source, len(commands)))
+    dbs = INSPECT_DB.findall(stdout)
+    require(len(dbs) == 2 and dbs[0] == dbs[1],
+            "%s printed inspect databases %s (expected the same one twice)"
+            % (source, dbs))
+    works = []
+    for command in commands:
+        words = shlex.split(command)
+        works.append(words[words.index("--work") + 1])
+    require(sorted(works) == ["article-1", "article-2"],
+            "%s printed inspect works %s (expected article-1 and article-2)"
+            % (source, works))
+    runtime_db = Path(dbs[0])
+    require(runtime_db.exists(),
+            "%s runtime database %s does not exist" % (source, runtime_db))
+    first = require_work_state(runtime_db, "article-1", source)
+    require((first["status"], first["outcome"]) == ("closed", "succeeded"),
+            "%s work article-1 is %s/%s (expected closed/succeeded — the "
+            "succeeded-completion story must stay intact)"
+            % (source, first["status"], first["outcome"]))
+    state, forward, retraction = require_publishing_retraction_operations(
+        runtime_db, source)
+    require_runtime_proof(runtime_db, "publisher", forward["id"], "accepted",
+                          {"digest": forward["document_digest"],
+                           "external_id": forward["external_id"]}, source)
+    require_runtime_proof(runtime_db, "publisher", retraction["id"], "withdrawn",
+                          {"digest": retraction["document_digest"],
+                           "external_id": retraction["external_id"],
+                           "original_external_id": forward["external_id"]}, source)
+    publisher_db = runtime_db.parent / "publisher.sqlite"
+    require(publisher_db.exists(),
+            "%s publish store has no publisher database at %s"
+            % (source, publisher_db))
+    publications = count_publications(publisher_db)
+    require(publications == 2,
+            "publisher database %s holds %d publications (expected exactly 2)"
+            % (publisher_db, publications))
+    require(count_retractions(publisher_db) == 1,
+            "publisher database %s does not hold exactly 1 retraction effect"
+            % publisher_db)
+    document_ids = sorted(row[0] for row in db_rows(
+        publisher_db, "SELECT document_id FROM publications", source=source))
+    require(document_ids == ["ART-001", "ART-002"],
+            "%s published document ids are %s (expected ART-001 and ART-002)"
+            % (source, document_ids))
+    receipts = db_rows(publisher_db,
+                       "SELECT key,digest,action,link_digest,result FROM receipts",
+                       source=source)
+    require(len(receipts) == 3,
+            "%s publisher store holds %d receipts (expected exactly 3: two "
+            "forward + one retraction)" % (source, len(receipts)))
+    row = next((r for r in receipts if r[0] == retraction["business_key"]), None)
+    require(row is not None,
+            "%s publisher store holds no receipt under the retraction key" % source)
+    require(row[2] == "content.unpublish"
+            and row[3] == local_digest(retraction["compensates"]),
+            "%s retraction receipt is not tagged with the action and the "
+            "recomputed link digest" % source)
+    require(json.loads(row[4]) == retraction["adapter_result"],
+            "%s retraction receipt result differs from the stored adapter_result"
+            % source)
+    require(db_rows(publisher_db,
+                    "SELECT original_external_id,external_id,key,digest "
+                    "FROM retractions", source=source)
+            == [(forward["external_id"], retraction["external_id"],
+                 retraction["business_key"], retraction["document_digest"])],
+            "%s publisher store does not hold exactly one retraction row bound "
+            "to the original under the retraction key" % source)
+    completion = state["completion"]
+    acknowledged = {entry["operation_id"]: entry["external_id"]
+                    for entry in completion["acknowledged_operations"]}
+    require(sorted(acknowledged) == sorted([forward["id"], retraction["id"]]),
+            "%s closure ack names %s (expected exactly the second publication "
+            "and the retraction)" % (source, sorted(acknowledged)))
+    require(acknowledged[forward["id"]] == forward["external_id"]
+            and acknowledged[retraction["id"]] == retraction["external_id"],
+            "%s closure ack external ids do not match the operations" % source)
+    dispositions = {entry["operation_id"]: entry
+                    for entry in completion["operation_dispositions"]}
+    require(set(dispositions[forward["id"]])
+            == {"operation_id", "status", "dispatch_state"},
+            "%s forward disposition is not the ordinary three-field shape"
+            % source)
+    require(set(dispositions[retraction["id"]])
+            == {"operation_id", "status", "dispatch_state",
+                "compensates", "adapter_result"},
+            "%s retraction disposition does not carry compensates and "
+            "adapter_result" % source)
+    require(dispositions[retraction["id"]]["compensates"] == retraction["compensates"]
+            and dispositions[retraction["id"]]["adapter_result"]
+            == retraction["adapter_result"],
+            "%s retraction disposition does not restate the link and the "
+            "stored adapter result" % source)
+    return str(runtime_db)
+
+
+def run_printed_publish_inspects(stdout, venv_python, outside, source):
+    """Re-run the demo's two printed inspect commands verbatim (python3
+    swapped), each checked against its own work's outcome marker."""
+    commands = INSPECT_COMMAND.findall(stdout)
+    require(len(commands) == 2,
+            "%s printed %d inspect commands (expected exactly 2)"
+            % (source, len(commands)))
+    for command in commands:
+        words = shlex.split(command)
+        require(words[0] == "python3",
+                "%s inspect command is not python3-based" % source)
+        work = words[words.index("--work") + 1]
+        require(work in PUBLISH_INSPECT_MARKER,
+                "%s inspect command names unknown work %s" % (source, work))
+        words[0] = str(venv_python)
+        result = run(words, outside)
+        require(PUBLISH_INSPECT_MARKER[work] in result.stdout,
+                "%s installed inspect did not report %s for %s"
+                % (source, PUBLISH_INSPECT_MARKER[work], work))
+
+
 def run_printed_inspect_command(stdout, venv_python, outside, source,
                                 outcome_marker='"outcome": "succeeded"'):
     """Re-run every printed inspect command verbatim (python3 swapped)."""
@@ -1538,17 +1759,19 @@ def main(argv=None):
         print("=== module publish-demo outside the checkout ===")
         module_publish = run([venv_python, "-m", "work_runtime", "publish-demo"],
                              outside, show=True)
-        require(PUBLISH_FINAL_LINE in module_publish.stdout,
-                "module publish-demo output lacks %r" % PUBLISH_FINAL_LINE)
-        pub_match = INSPECT_DB.search(module_publish.stdout)
-        require(pub_match is not None,
-                "publish-demo printed no inspect --db path to locate its databases")
-        publisher_db = Path(pub_match.group(1)).parent / "publisher.sqlite"
-        publications = count_publications(publisher_db)
-        require(publications == 1,
-                "publisher database %s holds %d publications (expected exactly 1)"
-                % (publisher_db, publications))
-        print("independent check: published artifacts = %d" % publications)
+        require_publishing_proof(module_publish.stdout, "module publish-demo")
+        run_printed_publish_inspects(module_publish.stdout, venv_python, outside,
+                                     "module publish-demo")
+        print("independent check: published artifacts = 2, retraction effects "
+              "= 1; recomputed keys, immutable link, withdrawn-kind proof, "
+              "exact two-id closure and both printed inspect commands re-run "
+              "verbatim")
+
+        print("=== console publish-demo outside the checkout ===")
+        console_publish = run([console, "publish-demo"], outside, show=True)
+        require_publishing_proof(console_publish.stdout, "console publish-demo")
+        run_printed_publish_inspects(console_publish.stdout, venv_python, outside,
+                                     "console publish-demo")
 
         print("=== module intervention-demo outside the checkout ===")
         module_intervention = run([venv_python, "-m", "work_runtime", "intervention-demo"],
@@ -1694,9 +1917,16 @@ def main(argv=None):
         print("=== PASS ===")
         print("fresh venv install; import origin inside the venv; no third-party runtime "
               "dependencies; module and console demos outside the checkout with exactly "
-              "one external application, one published artifact, one accepted "
+              "one external application, one accepted "
               "application per intervention store and one independently parsed "
               "committed file artifact per adoption entry point; module and console "
+              "publish-demo stores re-verified (two publications across both works, "
+              "exactly one retraction effect bound to the original, recomputed "
+              "forward and compensation keys, the immutable link and stored "
+              "adapter result, the withdrawn-kind proof at the publisher source, "
+              "the exact two-id closure, both printed inspect commands re-run "
+              "verbatim; the console publish-demo stage is NEW coverage since "
+              "S14, previously the stage was module-only); module and console "
               "revocation-demo stores re-verified (revoked statuses, preserved "
               "fingerprints, stable business keys, one retained effect per store); "
               "module and console compensation-demo stores re-verified (recomputed "

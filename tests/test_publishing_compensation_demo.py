@@ -282,5 +282,98 @@ class PublishingRetractionCliTests(unittest.TestCase):
             self.assertIn(markers[work], result.stdout)
 
 
+def _load_verify_install():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "verify_install", REPO_ROOT / "scripts" / "verify_install.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class VerifyInstallPublishingProofTests(unittest.TestCase):
+    """The installer proof reads the demo's real stores, never its stdout."""
+
+    def setUp(self):
+        self.verify_install = _load_verify_install()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.folder = run_demo(directory=self.temp.name)
+        self.stdout = out.getvalue()
+
+    def mutate(self, relative, sql, args=()):
+        db = sqlite3.connect(str(self.folder / relative))
+        with db:
+            db.execute(sql, args)
+        db.close()
+
+    def proof(self, stdout=None):
+        return self.verify_install.require_publishing_proof(
+            stdout if stdout is not None else self.stdout, "test")
+
+    def test_proof_passes_on_real_demo_output(self):
+        runtime_db = Path(self.proof())
+        self.assertEqual(runtime_db.name, "runtime.sqlite")
+        self.assertEqual(runtime_db.parent.name.split("-")[:2],
+                         ["governed", "publish"])
+
+    def test_proof_rejects_missing_final_line(self):
+        stripped = "\n".join(line for line in self.stdout.splitlines()
+                             if FINAL_LINE not in line) + "\n"
+        with self.assertRaises(SystemExit) as raised:
+            self.proof(stripped)
+        self.assertIn("not reversal", str(raised.exception))
+
+    def test_proof_rejects_deleted_retraction_row(self):
+        self.mutate("publisher.sqlite", "DELETE FROM retractions")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("retraction", str(raised.exception).lower())
+
+    def test_proof_rejects_missing_second_publication(self):
+        self.mutate("publisher.sqlite",
+                    "DELETE FROM publications WHERE document_id='ART-002'")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("publication", str(raised.exception).lower())
+
+    def test_proof_rejects_flipped_proof_kind(self):
+        self.mutate("runtime.sqlite",
+                    "UPDATE evidence SET body=replace(body, "
+                    "'\"kind\":\"withdrawn\"', '\"kind\":\"accepted\"') "
+                    "WHERE source='publisher' AND body LIKE "
+                    "'%\"kind\":\"withdrawn\"%'")
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("withdrawn", str(raised.exception))
+
+    def test_proof_rejects_forged_closure_ack(self):
+        """Dropping the retraction id from the closure ack must fail the
+        proof: the acknowledgement is store truth, not narration."""
+        runtime_db = self.folder / "runtime.sqlite"
+        db = sqlite3.connect(str(runtime_db))
+        with db:
+            state = json.loads(db.execute(
+                "SELECT state FROM works WHERE id='article-2'").fetchone()[0])
+            retraction_id = next(
+                json.loads(row[0])["id"] for row in
+                db.execute("SELECT body FROM operations")
+                if json.loads(row[0])["capability"] == "content.unpublish")
+        db.close()
+        state["completion"]["acknowledged_operations"] = [
+            entry for entry in state["completion"]["acknowledged_operations"]
+            if entry["operation_id"] != retraction_id]
+        db = sqlite3.connect(str(runtime_db))
+        with db:
+            db.execute("UPDATE works SET state=? WHERE id='article-2'",
+                       (canonical_json(state),))
+        db.close()
+        with self.assertRaises(SystemExit) as raised:
+            self.proof()
+        self.assertIn("ack", str(raised.exception).lower())
+
+
 if __name__ == "__main__":
     unittest.main()
