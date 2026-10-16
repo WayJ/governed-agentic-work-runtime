@@ -8,12 +8,16 @@ authority remain deferred scope. `content.unpublish` (content family) is
 distinct from S13's `sop.withdraw` (SOP authoring family).
 """
 
+import json
+import secrets
 import sqlite3
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from threading import Barrier, Thread
 
+from work_runtime import Runtime
 from work_runtime.adapter_contract import receipt_is_valid
 from work_runtime.file_adapter import FilePublisher
 from work_runtime.policy import canonical, digest
@@ -437,6 +441,383 @@ class RetractionAppendOnlyTests(unittest.TestCase):
         self.assertEqual((self.publisher.published_count(),
                           self.publisher.retracted_count()), (1, 1))
         self.assertEqual(self.rows("publications"), publications_before)
+
+
+class RejectingPublisher:
+    """Legacy adapter returning a digest-valid business rejection."""
+
+    def execute(self, key, document, content_digest):
+        return {"status": "rejected", "external_id": "PUB-rejected",
+                "digest": content_digest}
+
+    def lookup(self, key):
+        return None
+
+
+class SilentPublisher:
+    """External call lost; no authoritative answer is ever available."""
+
+    def execute(self, key, document, content_digest):
+        raise TimeoutError()
+
+    def lookup(self, key):
+        return None
+
+
+class PublishingCompensationCase(unittest.TestCase):
+    """A confirmed publishing effect inside the active cancellation window."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.publisher_path = str(Path(self.temp.name) / "publisher.sqlite")
+        self.runtime = self.fresh_runtime()
+        self.work_id = "article-1"
+        self.initialize(self.work_id)
+
+    def fresh_runtime(self, grants=None):
+        return Runtime(self.path, PublishingPolicy(),
+                       grants if grants is not None else publishing_compensation_grants())
+
+    def send(self, kind, payload=None, actor="agent", command_id=None,
+             work_id=None, runtime=None):
+        runtime = runtime or self.runtime
+        work_id = work_id or self.work_id
+        version = None if kind in ("create_work", "record_evidence") \
+            else runtime.get_work(work_id)["state_version"]
+        return runtime.command(actor, command_id or uuid.uuid4().hex, work_id,
+                               kind, payload, version)
+
+    def initialize(self, work_id, requires_review=True):
+        self.send("create_work", {"document": article(requires_review=requires_review)},
+                  work_id=work_id)
+        self.send("bind_contract", {"policy_id": "content-publish",
+                                    "policy_version": "demo-1",
+                                    "goal": "content.published"}, work_id=work_id)
+        self.send("revise_plan", {"steps": ["draft", "review", "confirm", "publish"],
+                                  "open_requirements": ["C02"],
+                                  "replan_when": ["reviewer rejects"]}, work_id=work_id)
+
+    def record_proof(self, kind, source, work_id=None):
+        work_id = work_id or self.work_id
+        current = self.runtime.get_work(work_id)["document_digest"]
+        return self.send("record_evidence",
+                         {"event_id": uuid.uuid4().hex, "kind": kind,
+                          "data": {"digest": current}},
+                         actor=source, work_id=work_id)
+
+    def approve_and_confirm(self, work_id=None):
+        work_id = work_id or self.work_id
+        self.record_proof("approval", "reviewer", work_id=work_id)
+        self.record_proof("confirmation", "author", work_id=work_id)
+        self.runtime.verify_pending(work_id)
+
+    def propose_publish(self, work_id=None, runtime=None, actor="agent",
+                        command_id=None):
+        runtime = runtime or self.runtime
+        work = runtime.get_work(work_id or self.work_id)
+        return self.send("propose_action", {
+            "capability": "content.publish", "document_digest": work["document_digest"],
+            "contract_revision": work["contract"]["revision"],
+            "plan_revision": work["plan_revision"]}, actor=actor,
+            command_id=command_id, work_id=work_id, runtime=runtime)
+
+    def confirmed_publish(self, work_id=None, publisher=None, command_id=None):
+        work_id = work_id or self.work_id
+        self.approve_and_confirm(work_id=work_id)
+        receipt = self.propose_publish(work_id=work_id, command_id=command_id)
+        assert receipt["decision"] == "accepted", receipt
+        operation_id = receipt["operation_id"]
+        resolved = self.runtime.dispatch(
+            operation_id, publisher or FakePublisher(self.publisher_path))
+        assert resolved["status"] == "confirmed_succeeded", resolved
+        return operation_id
+
+    def request_cancel(self, reason="content must come down", work_id=None,
+                       runtime=None):
+        receipt = self.send("request_cancel", {"reason": reason},
+                            work_id=work_id, runtime=runtime)
+        assert (receipt["decision"] == "accepted"
+                or receipt["code"] == "CANCELLATION_ALREADY_REQUESTED"), receipt
+        return receipt
+
+    def unpublish(self, target_id, actor="agent", command_id=None,
+                  capability="content.unpublish", work_id=None, runtime=None):
+        runtime = runtime or self.runtime
+        work = runtime.get_work(work_id or self.work_id)
+        return self.send("propose_action", {
+            "capability": capability,
+            "document_digest": work["document_digest"],
+            "contract_revision": work["contract"]["revision"],
+            "plan_revision": work["plan_revision"],
+            "compensates": target_id}, actor=actor, command_id=command_id,
+            work_id=work_id, runtime=runtime)
+
+
+class PublishingCompensationAdmissionTests(PublishingCompensationCase):
+    def test_linked_retraction_proposal_accepted_during_window(self):
+        target = self.confirmed_publish(command_id="publish-1")
+        self.request_cancel()
+        receipt = self.unpublish(target, command_id="unpublish-1")
+        self.assertEqual(receipt["decision"], "accepted")
+        self.assertEqual(receipt["operation_status_at_decision"], "prepared")
+        operation = self.runtime.get_operation(receipt["operation_id"])
+        self.assertEqual(operation["compensates"], {
+            "operation_id": target,
+            "external_id": self.runtime.get_operation(target)["external_id"],
+            "capability": "content.publish"})
+        event = [e for e in self.runtime.events(self.work_id)
+                 if e["type"] == "OperationPrepared"][-1]
+        self.assertEqual(json.loads(event["body"])["compensates"],
+                         operation["compensates"])
+
+    def test_linked_retraction_requires_active_cancellation(self):
+        target = self.confirmed_publish()
+        receipt = self.unpublish(target)
+        self.assertEqual((receipt["decision"], receipt["code"], receipt["blockers"]),
+                         ("rejected", "CANCELLATION_NOT_REQUESTED", []))
+        self.assertEqual(receipt["observed_state_version"],
+                         self.runtime.get_work(self.work_id)["state_version"])
+
+    def test_forward_proposal_still_rejected_in_window(self):
+        self.confirmed_publish()
+        self.request_cancel()
+        receipt = self.propose_publish(command_id="forward-in-window")
+        self.assertEqual((receipt["decision"], receipt["code"]),
+                         ("rejected", "CANCELLATION_ACTIVE"))
+
+    def test_compensation_payload_shape_is_exact(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        work = self.runtime.get_work(self.work_id)
+        base = {"capability": "content.unpublish",
+                "document_digest": work["document_digest"],
+                "contract_revision": work["contract"]["revision"],
+                "plan_revision": work["plan_revision"], "compensates": target}
+        from work_runtime import CommandError
+        bad_payloads = [
+            {**base, "note": "extra"},                      # extra key
+            {k: v for k, v in base.items() if k != "plan_revision"},  # missing key
+            {**base, "compensates": 42},                    # non-string target
+            {**base, "compensates": ""},                    # empty target
+        ]
+        version = work["state_version"]
+        events_before = len(self.runtime.events(self.work_id))
+        for payload in bad_payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(CommandError):
+                    self.send("propose_action", payload)
+        # Nothing persisted: no state bump, no events, no command rows.
+        self.assertEqual(self.runtime.get_work(self.work_id)["state_version"], version)
+        self.assertEqual(len(self.runtime.events(self.work_id)), events_before)
+        self.assertIsNone(self.runtime.get_command("agent", "shape-probe"))
+
+    def test_retraction_target_must_be_confirmed_succeeded_same_work(self):
+        # A prepared, never-dispatched target at the first content revision.
+        self.approve_and_confirm()
+        prepared = self.propose_publish(command_id="prepared-only")["operation_id"]
+        # A confirmed target needs its own revision: a second proposal of the
+        # same document re-admits the same business key (forward dedup).
+        self.send("revise_document", {"document": article(body="Second body")})
+        confirmed = self.confirmed_publish(command_id="confirmed")
+        # A stuck-at-dispatched target: another revision makes this a third
+        # distinct operation; the fault dies between the attempt commit and
+        # resolution.
+        self.send("revise_document", {"document": article(body="Third body")})
+        self.approve_and_confirm()
+        stuck = self.propose_publish(command_id="stuck")["operation_id"]
+
+        def boom():
+            raise RuntimeError("died between attempt commit and resolve")
+
+        with self.assertRaises(RuntimeError):
+            self.runtime.dispatch(stuck, FakePublisher(self.publisher_path), fault=boom)
+        self.assertEqual(self.runtime.get_operation(stuck)["status"], "dispatched")
+        # A confirmed_failed target in a second work of the same store.
+        for work_id in ("failedwork", "unknownwork"):
+            self.send("create_work",
+                      {"document": article(article_id="ART-" + work_id,
+                                           body="Body of " + work_id)},
+                      work_id=work_id)
+            self.send("bind_contract", {"policy_id": "content-publish",
+                                        "policy_version": "demo-1",
+                                        "goal": "content.published"}, work_id=work_id)
+            self.send("revise_plan", {"steps": ["review", "confirm", "publish"],
+                                      "open_requirements": ["C02"],
+                                      "replan_when": []}, work_id=work_id)
+            self.approve_and_confirm(work_id=work_id)
+        failed = self.propose_publish(work_id="failedwork")["operation_id"]
+        self.assertEqual(self.runtime.dispatch(failed, RejectingPublisher())["status"],
+                         "confirmed_failed")
+        uncertain = self.propose_publish(work_id="unknownwork")["operation_id"]
+        self.runtime.dispatch(uncertain, SilentPublisher())
+        self.assertEqual(self.runtime.get_operation(uncertain)["status"],
+                         "outcome_unknown")
+        self.request_cancel()
+        self.request_cancel(work_id="failedwork", reason="also cancelling")
+        self.request_cancel(work_id="unknownwork", reason="also cancelling")
+        for name, target_id, work_id in (
+                ("prepared", prepared, self.work_id),
+                ("dispatched", stuck, self.work_id),
+                ("confirmed_failed", failed, self.work_id),
+                ("unknown-id", "no-such-operation", self.work_id),
+                ("outcome_unknown", uncertain, "unknownwork")):
+            with self.subTest(target=name):
+                receipt = self.unpublish(target_id, work_id=work_id)
+                self.assertEqual(receipt["decision"], "rejected")
+                self.assertEqual(receipt["code"], "COMPENSATION_TARGET_INVALID")
+                self.assertEqual(receipt["blockers"], [target_id])
+        # Cross-work: unknownwork's window cannot compensate the main work's effect.
+        receipt = self.unpublish(confirmed, work_id="unknownwork")
+        self.assertEqual((receipt["decision"], receipt["code"], receipt["blockers"]),
+                         ("rejected", "COMPENSATION_TARGET_INVALID", [confirmed]))
+
+    def test_retraction_target_must_not_be_compensation(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        retraction = self.unpublish(target)["operation_id"]
+        receipt = self.unpublish(retraction)
+        self.assertEqual((receipt["decision"], receipt["code"], receipt["blockers"]),
+                         ("rejected", "COMPENSATION_TARGET_INVALID", [retraction]))
+
+    def test_retraction_business_key_stable_and_distinct(self):
+        target = self.confirmed_publish(command_id="publish-a")
+        other_work = "article-2"
+        self.send("create_work", {"document": article(article_id="ART-2",
+                                                      body="Second article")},
+                  work_id=other_work)
+        self.send("bind_contract", {"policy_id": "content-publish",
+                                    "policy_version": "demo-1",
+                                    "goal": "content.published"}, work_id=other_work)
+        self.send("revise_plan", {"steps": ["review", "confirm", "publish"],
+                                  "open_requirements": ["C02"],
+                                  "replan_when": []}, work_id=other_work)
+        self.approve_and_confirm(work_id=other_work)
+        other = self.propose_publish(work_id=other_work)["operation_id"]
+        self.runtime.dispatch(other, FakePublisher(self.publisher_path))
+        self.request_cancel()
+        self.request_cancel(work_id=other_work, reason="second article too")
+        first = self.unpublish(target, command_id="u1")
+        second = self.unpublish(target, command_id="u2")
+        self.assertEqual(first["operation_id"], second["operation_id"])
+        operation = self.runtime.get_operation(first["operation_id"])
+        self.assertEqual(operation["business_key"],
+                         digest(["content-publish", "content.unpublish", target]))
+        forward = self.runtime.get_operation(target)
+        self.assertNotEqual(operation["business_key"], forward["business_key"])
+        third = self.unpublish(other, work_id=other_work, command_id="u3")
+        self.assertNotEqual(third["operation_id"], first["operation_id"])
+        with sqlite3.connect(self.path) as db:
+            rows = db.execute("SELECT COUNT(*) FROM operations WHERE business_key=?",
+                              (operation["business_key"],)).fetchone()[0]
+        self.assertEqual(rows, 1)
+
+    def test_retraction_link_snapshot_is_immutable(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        first = self.unpublish(target, command_id="retract-1")
+        before = self.runtime.get_operation(first["operation_id"])["compensates"]
+        replay = self.unpublish(target, command_id="re-admit-1")
+        self.assertEqual(replay["operation_id"], first["operation_id"])
+        self.assertEqual(replay["operation_status_at_decision"], "prepared")
+        self.assertEqual(self.runtime.get_operation(first["operation_id"])["compensates"],
+                         before)
+
+
+class PublishingCompensationAuthorityTests(PublishingCompensationCase):
+    def test_retraction_authority_is_current_owner_with_grant(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        # An intervener holding work.intervene but not the capability.
+        receipt = self.unpublish(target, actor="admin", command_id="by-admin")
+        self.assertEqual((receipt["decision"], receipt["code"]),
+                         ("rejected", "AUTHORITY_DENIED"))
+        # A former owner after transfer: transfer needs a grant-holding target.
+        grants = publishing_compensation_grants()
+        grants["agent2"] = {"work.manage", "content.publish", "content.unpublish"}
+        runtime = Runtime(self.path, PublishingPolicy(), grants)
+        self.send("transfer_owner", {"owner": "agent2", "reason": "reassign"},
+                  actor="admin", runtime=runtime)
+        receipt = self.unpublish(target, runtime=runtime, command_id="by-former")
+        self.assertEqual((receipt["decision"], receipt["code"]),
+                         ("rejected", "AUTHORITY_DENIED"))
+        # The new owner with the grant re-admits inside the window.
+        receipt = self.unpublish(target, runtime=runtime, actor="agent2",
+                                 command_id="by-new-owner")
+        self.assertEqual(receipt["decision"], "accepted")
+        # An owner whose grants lack the capability entirely (fresh store).
+        no_unpublish = {actor: caps - {"content.unpublish"} if actor == "agent" else caps
+                        for actor, caps in publishing_compensation_grants().items()}
+        fresh = tempfile.TemporaryDirectory()
+        self.addCleanup(fresh.cleanup)
+        runtime2 = Runtime(str(Path(fresh.name) / "runtime.sqlite"),
+                           PublishingPolicy(), no_unpublish)
+        case = PublishingCompensationCase()
+        case.path = runtime2.path
+        case.runtime = runtime2
+        case.work_id = "fresh-article"
+        case.initialize("fresh-article")
+        case.approve_and_confirm()
+        other = case.propose_publish()["operation_id"]
+        runtime2.dispatch(other, FakePublisher(str(Path(fresh.name) / "pub.sqlite")))
+        case.request_cancel()
+        receipt = case.unpublish(other)
+        self.assertEqual((receipt["decision"], receipt["code"]),
+                         ("rejected", "AUTHORITY_DENIED"))
+
+    def test_retraction_replay_and_authority(self):
+        target = self.confirmed_publish()
+        self.request_cancel()
+        decision_version = self.runtime.get_work(self.work_id)["state_version"]
+        first = self.unpublish(target, command_id="unpub-once")
+
+        def replay_command(runtime):
+            work = runtime.get_work(self.work_id)
+            return runtime.command("agent", "unpub-once", self.work_id,
+                                   "propose_action", {
+                                       "capability": "content.unpublish",
+                                       "document_digest": work["document_digest"],
+                                       "contract_revision": work["contract"]["revision"],
+                                       "plan_revision": work["plan_revision"],
+                                       "compensates": target}, decision_version)
+
+        self.assertEqual(replay_command(self.runtime), first)
+        # Grant loss: replay returns a fresh, unpersisted AUTHORITY_DENIED.
+        grants = publishing_compensation_grants()
+        grants["agent"] = grants["agent"] - {"content.unpublish"}
+        runtime = Runtime(self.path, PublishingPolicy(), grants)
+        denied = replay_command(runtime)
+        self.assertEqual((denied["decision"], denied["code"]),
+                         ("rejected", "AUTHORITY_DENIED"))
+        # Restore: the stored receipt replays verbatim again.
+        self.assertEqual(replay_command(self.runtime), first)
+
+    def test_republish_after_retraction_unreachable_governed(self):
+        # RF4 reachability evidence, both refusal legs of the governed flow.
+        target = self.confirmed_publish()
+        self.request_cancel()
+        retraction = self.unpublish(target)["operation_id"]
+        resolved = self.runtime.dispatch(retraction, FakePublisher(self.publisher_path))
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        # Same-work leg: the permanent intent refuses any forward re-publish.
+        receipt = self.propose_publish(command_id="republish-same-work")
+        self.assertEqual((receipt["decision"], receipt["code"]),
+                         ("rejected", "CANCELLATION_ACTIVE"))
+        # Cross-work leg: identical content collides on the store-global
+        # forward business key (digest embeds no work id).
+        other_work = "article-cross"
+        self.send("create_work", {"document": article()}, work_id=other_work)
+        self.send("bind_contract", {"policy_id": "content-publish",
+                                    "policy_version": "demo-1",
+                                    "goal": "content.published"}, work_id=other_work)
+        self.send("revise_plan", {"steps": ["review", "confirm", "publish"],
+                                  "open_requirements": ["C02"],
+                                  "replan_when": []}, work_id=other_work)
+        self.approve_and_confirm(work_id=other_work)
+        receipt = self.propose_publish(work_id=other_work)
+        self.assertEqual((receipt["decision"], receipt["code"]),
+                         ("rejected", "OPERATION_CONTENT_CONFLICT"))
 
 
 if __name__ == "__main__":
