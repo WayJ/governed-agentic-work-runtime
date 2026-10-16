@@ -615,6 +615,31 @@ class GovernedWithdrawalFlowTests(WithdrawalTestCase):
         self.assertTrue(any(b.get("code") == "CAPABILITY_UNSUPPORTED"
                             for b in backwards["blockers"]))
 
+    def test_card_withdrawal_never_satisfies_s02_on_a_card_work(self):
+        # The other isolation direction at the evidence level: recording a
+        # card_withdrawal on a card-shaped work verifies nothing and must
+        # not crash validation with the card-only field access.
+        second = card_with(policy_version="v2")
+        self._establish("pub-1", second)
+        envelope = sign_evidence(self.approver_key, {
+            "source": "sop-owner", "command_id": uuid.uuid4().hex,
+            "work_id": "pub-1", "event_id": uuid.uuid4().hex,
+            "kind": "card_withdrawal",
+            "data": {"digest": self.target_digest,
+                     "policy_version": "v2"},
+            "issued_at": FLOW_NOW})
+        receipt = self.gateway.record(envelope)
+        self.assertEqual(receipt["decision"], "accepted")
+        self.runtime.verify_pending("pub-1")
+        statuses = {e["kind"]: e["status"] for e in
+                    evidence_bodies(os.path.join(self.root,
+                                                 "runtime.sqlite"))}
+        self.assertEqual(statuses["card_withdrawal"], "invalid")
+        blocked = self._propose("pub-1", capability="sop.publish")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")
+        self.assertTrue(any(b["id"].startswith("S02:")
+                            for b in blocked["blockers"]))
+
     def test_wrong_adapter_holds_bounded_then_correct_redispatch_succeeds(self):
         self._establish("wd-1", self.request)
         self._approve_withdrawal("wd-1")

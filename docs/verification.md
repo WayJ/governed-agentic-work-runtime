@@ -702,3 +702,8 @@ ratified D67–D79.
   fingerprints), carries the withdrawal to `closed/succeeded`, and a
   legitimate new version's withdrawal proceeds under the rotated key. All
   secrets synthetic, ephemeral, never printed.
+- **Cross-shape evidence isolation, both directions (D70/MD-4)**: a
+  `card_withdrawal` recorded on a card-shaped work turns `invalid` at
+  verification (never a `KeyError` through the card-only field access) and
+  leaves S02 pending — mirroring the `card_approval`-never-satisfies-W02
+  pin in `GovernedWithdrawalFlowTests`.
