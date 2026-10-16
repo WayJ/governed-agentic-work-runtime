@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-15 (S12 demo wave: publication-demo harness, CLI entry point incl. the `inspect --policy sop-publish` choice, installed module+console verifier stages; S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-16 (S13 demo wave: publication-demo withdrawal chapter, installed verifier publication-stage extension; S13 core wave: published-card withdrawal surface; S12 demo wave: publication-demo harness, CLI entry point incl. the `inspect --policy sop-publish` choice, installed module+console verifier stages; S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -710,3 +710,45 @@ ratified D67–D79.
   admission (any discriminator-bearing document that is not well-formed)
   is refused with the dedicated closed-shape requirement message, while
   non-withdrawal documents fall to the card lint.
+- **Demonstration surface (S13 demo wave, D77)**
+  (`tests/test_publication_withdrawal_demo.py`,
+  `WithdrawalChapterTests`): the deterministic no-credentials
+  `publication-demo` chapter continues the standing publication story in
+  the same store — the withdrawal work blocked on W02 first (D66 order),
+  the signed `card_withdrawal` from the rotated current key, the dispatch
+  committing exactly one second hash-named artifact with the publication
+  bytes unchanged, W03 satisfied by the runtime-written `accepted` proof,
+  completion `succeeded`, the loader's distinct withdrawn error (pairwise
+  distinguishable from absent and tampered, equal to the module's
+  `WITHDRAWN_MESSAGE`), the `withdrawal_record()` audit read, the
+  re-publication of the withdrawn version refused
+  `OPERATION_CONTENT_CONFLICT` after its own approval with the census
+  unchanged, and the retired-key `card_withdrawal` refusal with six tables
+  and both artifacts untouched. Tests re-derive every count, key, digest
+  and receipt from the SQLite store and the artifact directory
+  (works/commands/evidence/operations/events pinned: 4/22/6/2/21), run
+  both printed `inspect --policy sop-publish` commands verbatim through
+  the real CLI, and pin the closed record document, the exact command-id
+  census with actors, and both persisted D66 conflict receipts. The S12
+  demo tests (`tests/test_publication_demo.py`) pin the same extended
+  store from the publication side.
+- **Installed verification (S13 demo wave, D77 — existing installer
+  evidence, no new global gate)** (`scripts/verify_install.py`
+  publication stage): the SAME module AND console `publication-demo` runs
+  are now verified deeper, never stdout-only — the withdrawn loader line
+  required and pairwise distinguishable, the store census exactly two
+  hash-named artifacts (publication + withdrawal record) with zero
+  `.stage`, the withdrawal record located by its printed path AND its
+  `sha256(withdrawal key)` name and parsed with the standard library only
+  (exact FilePublisher shape, closed four-field document binding the
+  published content digest, recomputed digests, accepted `FILE-`
+  receipt), `wd-1` closed/succeeded and `pub-3` active, the withdrawal
+  operation `confirmed_succeeded` with one attempt under the withdrawal
+  key, the verified version-bound `card_withdrawal` evidence row, the
+  second runtime-written `sop-store` accepted proof bound to the record,
+  the extended command census with both blocked codes and the
+  `cmd-propose-pub3` `OPERATION_CONTENT_CONFLICT` receipt; every printed
+  inspect command re-run verbatim (both works). Rejection tests mutate
+  the real store (deleted or tampered withdrawal record, flipped
+  `card_withdrawal` status, rewritten re-publication receipt) and require
+  the proof to fail.

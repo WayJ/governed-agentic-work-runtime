@@ -144,21 +144,32 @@ ROTATION_FINAL_DIGEST = re.compile(r"six-table digest after all steps: ([0-9a-f]
 ROTATION_TABLES = ("works", "commands", "evidence", "operations", "events", "metadata")
 ROTATION_COMMAND_IDS = ("cmd-rotation-k1", "cmd-rotation-k2", "cmd-rotation-resend")
 ROTATION_EVENT_IDS = ("evt-rotation-1", "evt-rotation-2")
-PUBLICATION_FINAL_LINE = ("1 published card version; committed artifacts: 1; "
-                          "doctored same-version conflicts: 1 (after its own "
-                          "approval); loader fail-closed refusals: 2; "
-                          "retired-key refusals: 1 (zero writes); history "
-                          "rewritten: 0")
+PUBLICATION_FINAL_LINE = ("1 published card version; withdrawal records: 1; "
+                          "committed artifacts: 2; doctored same-version "
+                          "conflicts: 1 (after its own approval); "
+                          "re-publication of the withdrawn version refused: "
+                          "1 (zero store writes); loader fail-closed "
+                          "refusals: 3; retired-key refusals: 2 (zero "
+                          "writes); history rewritten: 0")
 PUBLICATION_ABSENT_LINE = re.compile(r"^absent version: (.+)$", re.MULTILINE)
 PUBLICATION_TAMPERED_LINE = re.compile(r"^tampered file: (.+)$", re.MULTILINE)
+PUBLICATION_WITHDRAWN_LINE = re.compile(r"^withdrawn version: (.+)$",
+                                        re.MULTILINE)
+WITHDRAWAL_RECORD_LINE = re.compile(r'withdrawal record: "([^"]+)"')
 PUBLICATION_RUN_COMMANDS = (
     "cmd-create-pub", "cmd-bind-pub", "cmd-propose-blocked", "publish-once",
     "cmd-complete-pub", "cmd-create-pub2", "cmd-bind-pub2",
     "cmd-propose-conflict-blocked", "cmd-propose-conflict",
+    "cmd-create-wd1", "cmd-bind-wd1", "cmd-propose-wd1-blocked",
+    "withdraw-once", "cmd-complete-wd1", "cmd-create-pub3", "cmd-bind-pub3",
+    "cmd-propose-pub3-blocked", "cmd-propose-pub3",
 )
-PUBLICATION_GATEWAY_COMMANDS = ("cmd-approve-valid", "cmd-approve-conflict")
+PUBLICATION_GATEWAY_COMMANDS = ("cmd-approve-valid", "cmd-approve-conflict",
+                                "cmd-approve-wd1", "cmd-approve-pub3")
 PUBLICATION_BLOCKED_COMMANDS = ("cmd-propose-blocked",
-                                "cmd-propose-conflict-blocked")
+                                "cmd-propose-conflict-blocked",
+                                "cmd-propose-wd1-blocked",
+                                "cmd-propose-pub3-blocked")
 UI_WORK_IDS = {"wait-1", "uncertain-1", "transfer-1", "succeed-1", "cancel-1"}
 PINNED_PUBLISHING_DIGEST = ("56c85d32da9a9eee6330326e2d14ce0661dbc26d"
                             "782b13d0259c3f149e6be000")
@@ -956,21 +967,26 @@ def require_publication_proof(stdout, source):
     """Independent module/console publication-demo proof, never stdout-only.
 
     Requires the demo's exact final line and its printed fail-closed loader
-    lines (absent vs tampered, distinguishable), locates the runtime store
-    from the printed inspect command and the artifact from the printed
-    artifact path, then verifies both stores directly with the standard
-    library only: exactly one hash-named committed .json and zero .stage
-    leftovers; the artifact parsed (exact keys, artifact_version 1, bare-card
-    document with the packaged publishing identity, recomputed content
-    digest, accepted FILE- receipt, digest-based publication key, sha256(key)
-    file name); the runtime database read directly (pub-1 closed/succeeded
-    and pub-2 active, exactly one confirmed_succeeded operation with one
-    attempt whose business key is the artifact key, exactly three evidence
-    rows — two verified sop-owner card approvals, the conflict one bound to
-    different content than the winner, plus the runtime-written sop-store
-    accepted proof with event_id equal to the operation id — and the pinned
-    command rows with the D66 conflict code and both blocked codes).
-    Returns the runtime store path.
+    lines (absent vs tampered vs withdrawn, pairwise distinguishable),
+    locates the runtime store from the printed inspect command and both
+    artifacts from the printed artifact paths, then verifies both stores
+    directly with the standard library only: exactly two hash-named
+    committed .json (the publication and the withdrawal record) and zero
+    .stage leftovers; each artifact parsed (exact keys, artifact_version 1,
+    recomputed content digest, accepted FILE- receipt, digest-based key,
+    sha256(key) file name; the publication document is the bare packaged
+    card, the withdrawal record document is the closed four-field shape
+    binding the publication's content digest); the runtime database read
+    directly (pub-1 closed/succeeded, pub-2 active, wd-1 closed/succeeded,
+    pub-3 active, exactly two confirmed_succeeded operations with one
+    attempt each whose business keys are the publication and withdrawal
+    keys, exactly six evidence rows — three verified sop-owner card
+    approvals, the conflict one bound to different content than the winner,
+    one verified sop-owner card_withdrawal binding the published digest,
+    plus the two runtime-written sop-store accepted proofs with event_id
+    equal to the operation ids — and the pinned command rows with both D66
+    conflict codes and all four blocked codes). Returns the runtime store
+    path.
     """
     require(PUBLICATION_FINAL_LINE in stdout,
             "%s output lacks %r (history rewritten must stay 0)"
@@ -981,11 +997,21 @@ def require_publication_proof(stdout, source):
     tampered = PUBLICATION_TAMPERED_LINE.search(stdout)
     require(tampered is not None, "%s printed no tampered-file loader line"
             % source)
+    withdrawn = PUBLICATION_WITHDRAWN_LINE.search(stdout)
+    require(withdrawn is not None, "%s printed no withdrawn-version loader "
+            "line" % source)
     require("no published card" in absent.group(1)
             and "no published card" not in tampered.group(1)
-            and absent.group(1) != tampered.group(1),
+            and "no published card" not in withdrawn.group(1)
+            and len({absent.group(1), tampered.group(1),
+                     withdrawn.group(1)}) == 3,
             "%s loader failure lines are not distinguishable (absent=%r, "
-            "tampered=%r)" % (source, absent.group(1), tampered.group(1)))
+            "tampered=%r, withdrawn=%r)" % (source, absent.group(1),
+                                            tampered.group(1),
+                                            withdrawn.group(1)))
+    require("withdrawn" in withdrawn.group(1),
+            "%s withdrawn-version line does not name withdrawal (%r)"
+            % (source, withdrawn.group(1)))
     store_match = INSPECT_DB.search(stdout)
     require(store_match is not None, "%s printed no inspect --db path" % source)
     runtime_db = Path(store_match.group(1))
@@ -1002,9 +1028,10 @@ def require_publication_proof(stdout, source):
     store_dir = artifact_file.parent
     committed = sorted(path for path in store_dir.iterdir()
                        if HASH_NAMED.fullmatch(path.name))
-    require(len(committed) == 1,
+    require(len(committed) == 2,
             "%s publication store holds %d hash-named artifacts (expected "
-            "exactly 1: one publication identity per card version)"
+            "exactly 2: one publication identity per card version plus one "
+            "withdrawal record per withdrawn version)"
             % (source, len(committed)))
     require(not [path for path in store_dir.iterdir()
                  if path.suffix == ".stage"],
@@ -1044,6 +1071,58 @@ def require_publication_proof(stdout, source):
             == hashlib.sha256(key.encode("utf-8")).hexdigest() + ".json",
             "%s artifact file name is not sha256(publication key)" % source)
 
+    # The withdrawal record: located by its printed path AND by the sha256
+    # name its digest-based key must occupy, then parsed like the publication
+    # artifact — the closed four-field document binds the exact published
+    # content digest (D67-D69).
+    withdrawal_key = ("sop-withdrawn:"
+                      + local_digest(["content-publish", "demo-1"]))
+    withdrawal_name = (hashlib.sha256(
+        withdrawal_key.encode("utf-8")).hexdigest() + ".json")
+    require({path.name for path in committed} == {artifact_file.name,
+                                                  withdrawal_name},
+            "%s publication store census is not exactly the publication "
+            "artifact plus the withdrawal record" % source)
+    record_match = WITHDRAWAL_RECORD_LINE.search(stdout)
+    require(record_match is not None, "%s printed no withdrawal record path"
+            % source)
+    record_file = Path(record_match.group(1))
+    require(record_file.exists(),
+            "%s printed withdrawal record %s does not exist"
+            % (source, record_file))
+    require(record_file.name == withdrawal_name,
+            "%s withdrawal record file name is not sha256(withdrawal key)"
+            % source)
+    record_artifact = json.loads(record_file.read_text(encoding="utf-8"))
+    require(set(record_artifact) == {"artifact_version", "key",
+                                     "content_digest", "document", "receipt"},
+            "%s withdrawal record keys are %s (expected the exact "
+            "FilePublisher shape)" % (source, sorted(record_artifact)))
+    require(record_artifact["artifact_version"] == 1,
+            "%s withdrawal record artifact_version is %r (expected 1)"
+            % (source, record_artifact.get("artifact_version")))
+    record = record_artifact["document"]
+    require(record == {"discriminator": "sop.withdrawal",
+                       "policy_id": "content-publish",
+                       "policy_version": "demo-1",
+                       "published_digest": content_digest},
+            "%s withdrawal record document is not the closed four-field "
+            "shape binding the published digest" % source)
+    record_digest = local_digest(record)
+    require(record_artifact["content_digest"] == record_digest,
+            "%s withdrawal record content digest does not match its "
+            "recomputed document digest (tampered withdrawal record?)"
+            % source)
+    record_receipt = record_artifact["receipt"]
+    require(record_receipt["status"] == "accepted"
+            and record_receipt["external_id"].startswith("FILE-")
+            and record_receipt["digest"] == record_digest,
+            "%s withdrawal record receipt is not an accepted FILE- receipt "
+            "of the record digest" % source)
+    require(record_artifact["key"] == withdrawal_key,
+            "%s withdrawal record key is not the digest-based withdrawal "
+            "key" % source)
+
     completed = require_work_state(runtime_db, "pub-1", source)
     require((completed.get("status"), completed.get("outcome"))
             == ("closed", "succeeded"),
@@ -1053,12 +1132,22 @@ def require_publication_proof(stdout, source):
     require(conflicting.get("status") == "active",
             "%s work pub-2 is %s (expected active with its persisted "
             "conflict receipt)" % (source, conflicting.get("status")))
+    withdrawn_work = require_work_state(runtime_db, "wd-1", source)
+    require((withdrawn_work.get("status"), withdrawn_work.get("outcome"))
+            == ("closed", "succeeded"),
+            "%s withdrawal work wd-1 is %s/%s (expected closed/succeeded)"
+            % (source, withdrawn_work.get("status"),
+               withdrawn_work.get("outcome")))
+    republishing = require_work_state(runtime_db, "pub-3", source)
+    require(republishing.get("status") == "active",
+            "%s work pub-3 is %s (expected active with its persisted "
+            "re-publication refusal)" % (source, republishing.get("status")))
 
     operations = [json.loads(row[0]) for row in
                   db_rows(runtime_db, "SELECT body FROM operations", source=source)]
-    require(len(operations) == 1,
-            "%s store holds %d operations (expected exactly 1)"
-            % (source, len(operations)))
+    require(len(operations) == 2,
+            "%s store holds %d operations (expected exactly 2: the "
+            "publication and the withdrawal)" % (source, len(operations)))
     operation = operations[0]
     require(operation["status"] == "confirmed_succeeded"
             and len(operation["attempts"]) == 1,
@@ -1067,12 +1156,26 @@ def require_publication_proof(stdout, source):
     require(operation["business_key"] == key and operation["work_id"] == "pub-1",
             "%s operation business key/work do not match the publication"
             % source)
+    withdrawal_operation = [candidate for candidate in operations
+                            if candidate["business_key"] == withdrawal_key]
+    require(len(withdrawal_operation) == 1,
+            "%s store holds %d operations under the withdrawal key (expected "
+            "exactly 1)" % (source, len(withdrawal_operation)))
+    withdrawal_operation = withdrawal_operation[0]
+    require(withdrawal_operation["status"] == "confirmed_succeeded"
+            and len(withdrawal_operation["attempts"]) == 1,
+            "%s withdrawal operation is not confirmed_succeeded with one "
+            "attempt" % source)
+    require(withdrawal_operation["work_id"] == "wd-1",
+            "%s withdrawal operation does not belong to the withdrawal work"
+            % source)
 
     evidence = {json.loads(row[2])["event_id"]: (row[0], json.loads(row[2]))
                 for row in db_rows(runtime_db, "SELECT source, event_id, body "
                                    "FROM evidence", source=source)}
     for event_id, digest_value in (("evt-approve-valid", content_digest),
-                                   ("evt-approve-conflict", None)):
+                                   ("evt-approve-conflict", None),
+                                   ("evt-approve-pub3", content_digest)):
         require(event_id in evidence,
                 "%s evidence %s is missing" % (source, event_id))
         row_source, body = evidence[event_id]
@@ -1093,16 +1196,31 @@ def require_publication_proof(stdout, source):
                     and len(body["data"].get("digest", "")) == 64,
                     "%s conflict approval bound the winner's digest (the "
                     "doctored card differs)" % source)
+    require("evt-approve-wd1" in evidence,
+            "%s evidence evt-approve-wd1 is missing" % source)
+    row_source, withdrawal_body = evidence["evt-approve-wd1"]
+    require((row_source, withdrawal_body["kind"], withdrawal_body["status"])
+            == ("sop-owner", "card_withdrawal", "verified"),
+            "%s evidence evt-approve-wd1 is not a verified sop-owner "
+            "card_withdrawal" % source)
+    require(withdrawal_body["data"].get("policy_version") == "demo-1"
+            and withdrawal_body["data"].get("digest") == content_digest,
+            "%s card_withdrawal evt-approve-wd1 is not version-bound to the "
+            "published digest" % source)
     accepted_rows = [pair for event_id, pair in evidence.items()
                      if pair[0] == "sop-store"]
-    require(len(evidence) == 3,
-            "%s store holds %d evidence rows (expected exactly 3: two "
-            "card approvals plus the runtime-written accepted proof)"
-            % (source, len(evidence)))
-    require(len(accepted_rows) == 1,
-            "%s store holds %d sop-store rows (expected exactly the one "
-            "runtime-written accepted proof)" % (source, len(accepted_rows)))
-    accepted = accepted_rows[0][1]
+    require(len(evidence) == 6,
+            "%s store holds %d evidence rows (expected exactly 6: three "
+            "card approvals, one card_withdrawal and two runtime-written "
+            "accepted proofs)" % (source, len(evidence)))
+    require(len(accepted_rows) == 2,
+            "%s store holds %d sop-store rows (expected exactly the two "
+            "runtime-written accepted proofs)" % (source, len(accepted_rows)))
+    accepted_by_id = {pair[1]["event_id"]: pair[1] for pair in accepted_rows}
+    require(operation["id"] in accepted_by_id,
+            "%s store holds no sop-store accepted proof for the publication "
+            "operation %s" % (source, operation["id"]))
+    accepted = accepted_by_id[operation["id"]]
     require(accepted["kind"] == "accepted" and accepted["status"] == "verified",
             "%s accepted proof under sop-store is not verified (event_id must "
             "equal the operation id; no principal can sign as sop-store)"
@@ -1112,6 +1230,19 @@ def require_publication_proof(stdout, source):
     require(accepted["data"].get("digest") == content_digest
             and accepted["data"].get("external_id") == receipt["external_id"],
             "%s accepted proof is not bound to the committed artifact" % source)
+    require(withdrawal_operation["id"] in accepted_by_id,
+            "%s store holds no sop-store accepted proof for the withdrawal "
+            "operation %s" % (source, withdrawal_operation["id"]))
+    withdrawal_accepted = accepted_by_id[withdrawal_operation["id"]]
+    require(withdrawal_accepted["kind"] == "accepted"
+            and withdrawal_accepted["status"] == "verified",
+            "%s withdrawal accepted proof under sop-store is not verified"
+            % source)
+    require(withdrawal_accepted["data"].get("digest") == record_digest
+            and withdrawal_accepted["data"].get("external_id")
+            == record_receipt["external_id"],
+            "%s withdrawal accepted proof is not bound to the committed "
+            "withdrawal record" % source)
 
     commands = db_rows(runtime_db, "SELECT actor, id FROM commands", source=source)
     by_id = {}
@@ -1123,16 +1254,19 @@ def require_publication_proof(stdout, source):
                 % (source, command_id, len(by_id.get(command_id, []))))
     require(len(commands) == len(PUBLICATION_RUN_COMMANDS)
             + len(PUBLICATION_GATEWAY_COMMANDS),
-            "%s store holds %d command rows (expected exactly 11)"
+            "%s store holds %d command rows (expected exactly 22)"
             % (source, len(commands)))
-    conflict_receipt = json.loads(db_rows(
-        runtime_db, "SELECT receipt FROM commands "
-        "WHERE id='cmd-propose-conflict'", source=source)[0][0])
-    require(conflict_receipt.get("code") == "OPERATION_CONTENT_CONFLICT",
-            "%s receipt for cmd-propose-conflict lost its "
-            "OPERATION_CONTENT_CONFLICT code (the D66 order must stay "
-            "visible: the conflict surfaces only after the second work's own "
-            "approval)" % source)
+    for conflict_id, whose in (("cmd-propose-conflict", "doctored card"),
+                               ("cmd-propose-pub3",
+                                "re-publication of the withdrawn version")):
+        conflict_receipt = json.loads(db_rows(
+            runtime_db, "SELECT receipt FROM commands WHERE id=?",
+            args=(conflict_id,), source=source)[0][0])
+        require(conflict_receipt.get("code") == "OPERATION_CONTENT_CONFLICT",
+                "%s receipt for %s lost its OPERATION_CONTENT_CONFLICT code "
+                "(the D66 order must stay visible: the %s conflict surfaces "
+                "only after that work's own approval)" % (source, conflict_id,
+                                                          whose))
     for blocked_id in PUBLICATION_BLOCKED_COMMANDS:
         blocked_receipt = json.loads(db_rows(
             runtime_db, "SELECT receipt FROM commands WHERE id=?",
@@ -1141,7 +1275,7 @@ def require_publication_proof(stdout, source):
                 "%s receipt for %s lost its REQUIREMENT_UNSATISFIED code"
                 % (source, blocked_id))
     require(db_rows(runtime_db, "SELECT COUNT(*) FROM events",
-                    source=source)[0][0] == 11,
+                    source=source)[0][0] == 21,
             "%s store holds an unexpected event count" % source)
     require(db_rows(runtime_db, "SELECT * FROM metadata", source=source)
             == [("schema_version", "1")],
@@ -1151,15 +1285,18 @@ def require_publication_proof(stdout, source):
 
 def run_printed_inspect_command(stdout, venv_python, outside, source,
                                 outcome_marker='"outcome": "succeeded"'):
-    """Re-run the demo's printed inspect command verbatim (python3 swapped)."""
-    command = INSPECT_COMMAND.search(stdout)
-    require(command is not None, "%s printed no inspect command" % source)
-    words = shlex.split(command.group(1))
-    require(words[0] == "python3", "%s inspect command is not python3-based" % source)
-    words[0] = str(venv_python)
-    result = run(words, outside)
-    require(outcome_marker in result.stdout,
-            "%s installed inspect did not report %s" % (source, outcome_marker))
+    """Re-run every printed inspect command verbatim (python3 swapped)."""
+    commands = INSPECT_COMMAND.findall(stdout)
+    require(commands, "%s printed no inspect command" % source)
+    for command in commands:
+        words = shlex.split(command)
+        require(words[0] == "python3",
+                "%s inspect command is not python3-based" % source)
+        words[0] = str(venv_python)
+        result = run(words, outside)
+        require(outcome_marker in result.stdout,
+                "%s installed inspect did not report %s" % (source,
+                                                            outcome_marker))
 
 
 def http_get(url, timeout=10):
@@ -1531,12 +1668,14 @@ def main(argv=None):
                                   "module publication-demo")
         run_printed_inspect_command(module_publication.stdout, venv_python,
                                     outside, "module publication-demo")
-        print("independent check: one hash-named artifact parsed with the "
-              "standard library (bare packaged card, recomputed digest and "
-              "digest-based publication key, accepted FILE- receipt), the "
-              "runtime store re-verified (closed/succeeded work, one "
-              "confirmed operation with the runtime-written accepted proof, "
-              "D66 conflict receipt, distinguishable loader failures)")
+        print("independent check: two hash-named artifacts parsed with the "
+              "standard library (bare packaged card plus the closed "
+              "withdrawal record, recomputed digests and digest-based keys, "
+              "accepted FILE- receipts), the runtime store re-verified "
+              "(closed/succeeded publication and withdrawal works, two "
+              "confirmed operations with runtime-written accepted proofs, "
+              "both D66 conflict receipts, distinguishable loader failures "
+              "incl. the withdrawn error)")
 
         print("=== console publication-demo outside the checkout ===")
         console_publication = run([console, "publication-demo"], outside, show=True)
@@ -1568,9 +1707,11 @@ def main(argv=None):
               "verified evidence fingerprints, original cached receipt, one "
               "command row per rotation command id); module and console "
               "publication-demo stores re-verified (recomputed bare-card "
-              "artifact digest and digest-based publication key, one "
-              "confirmed operation with the runtime-written accepted proof, "
-              "D66 conflict receipt, distinguishable loader failures); "
+              "artifact digest and digest-based publication key, the closed "
+              "withdrawal record binding the published digest, two "
+              "confirmed operations with runtime-written accepted proofs, "
+              "both D66 conflict receipts, distinguishable loader failures "
+              "incl. the withdrawn error); "
               "packaged web assets "
               "shipped%s (%.1fs)"
               % ("; SKIPPED stages: " + ui_skip if ui_skip else "",
