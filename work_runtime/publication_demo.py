@@ -1,4 +1,5 @@
-"""A deterministic governed SOP publication harness: lint, approve, publish.
+"""A deterministic governed SOP publication harness: lint, approve, publish,
+withdraw (S13).
 
 Runs the frozen S12 publication core (``work_runtime/publication.py``) through
 its public API on a real Runtime, SQLite store and artifact directory: a dirty
@@ -6,15 +7,21 @@ card is refused by lint, the packaged card publishes behind a signed
 version-bound approval, the response is lost after the immutable commit and
 recovered by reconciling the original key, a doctored same-version card
 conflicts only after its own approval (D66), the loader fails closed, and an
-approver-key rotation refuses the retired key without touching history.
+approver-key rotation refuses the retired key without touching history. The
+S13 chapter then withdraws the published version through the governed flow
+(signed ``card_withdrawal``, W02/W03): the loader answers the distinct
+withdrawn error, a re-publication of the withdrawn version is refused by the
+governed proposal with zero store writes, and a retired-key withdrawal
+envelope is refused without touching history. There is no un-withdrawal:
+corrected content ships as a new version string.
 
 No credentials, no network, no model session. The approver keys are ephemeral
 in-memory random bytes for the run and are never printed, logged or persisted
 — only key ids appear in the output. Trust is trusted-local configuration
 (see docs/sop-authoring.md): the approver is a configured principal name with
 a shared-key signature, not an authentication; rotation is a configuration
-act with no persistent revocation memory; there is no withdrawal in this
-slice (D63); and published cards never execute (D62).
+act with no persistent revocation memory; and published cards never execute
+(D62).
 """
 
 import copy
@@ -33,7 +40,10 @@ from .authoring import sop_digest
 from .ingress import (CODE_KEY_RETIRED, OPTIONAL_KEY_FIELD,
                       SignedEvidenceGateway, SourceKey, sign_evidence)
 from .publication import (SopPublicationPolicy, SopPublicationStore,
-                          load_published_card, publication_key)
+                          SopWithdrawalStore, WITHDRAWAL_KEY_PREFIX,
+                          WITHDRAWN_MESSAGE, WITHDRAWAL_DISCRIMINATOR,
+                          load_published_card, publication_key,
+                          withdrawal_key, withdrawal_record)
 from .runtime import Runtime
 
 DEMO_NOW = 2000000000  # Fixed clock keeps runs deterministic.
@@ -43,18 +53,22 @@ NEW_KEY_ID = "sop-owner-2026-10"
 CARD_NAME = "publishing.json"
 WORK_ID = "pub-1"
 CONFLICT_WORK_ID = "pub-2"
+WITHDRAWAL_WORK_ID = "wd-1"
+REPUBLICATION_WORK_ID = "pub-3"
 DOCTORED_GOAL = "content.published.doctored"
-FINAL_LINE = ("1 published card version; committed artifacts: 1; doctored "
-              "same-version conflicts: 1 (after its own approval); loader "
-              "fail-closed refusals: 2; retired-key refusals: 1 (zero "
-              "writes); history rewritten: 0")
+FINAL_LINE = ("1 published card version; withdrawal records: 1; committed "
+              "artifacts: 2; doctored same-version conflicts: 1 (after its "
+              "own approval); re-publication of the withdrawn version "
+              "refused: 1 (zero store writes); loader fail-closed "
+              "refusals: 3; retired-key refusals: 2 (zero writes); history "
+              "rewritten: 0")
 TABLES = ("works", "commands", "evidence", "operations", "events", "metadata")
 _HASH_JSON = re.compile(r"[0-9a-f]{64}\.json")
 
 
 def publication_grants():
-    """Demo-local grants (design Q7), mirroring publishing_grants()."""
-    return {"agent": {"work.manage", "sop.publish"},
+    """Demo-local grants (design Q7), mirroring withdrawal_grants()."""
+    return {"agent": {"work.manage", "sop.publish", "sop.withdraw"},
             "sop-owner": {"evidence.write"}}
 
 
@@ -67,6 +81,12 @@ def _committed_artifacts(directory):
     """Sorted hash-named committed artifact files under ``directory``."""
     return sorted(path for path in Path(directory).iterdir()
                   if _HASH_JSON.fullmatch(path.name))
+
+
+def _artifact_file(directory, key):
+    """The committed path a store key occupies (sha256 hex name, as always)."""
+    return (Path(directory)
+            / (hashlib.sha256(key.encode("utf-8")).hexdigest() + ".json"))
 
 
 def _table_counts(path):
@@ -107,10 +127,10 @@ def _send(runtime, work_id, kind, payload=None, actor="agent", command_id=None):
                            payload, version)
 
 
-def _propose(runtime, work_id, command_id=None):
+def _propose(runtime, work_id, capability="sop.publish", command_id=None):
     work = runtime.get_work(work_id)
     return _send(runtime, work_id, "propose_action", {
-        "capability": "sop.publish", "document_digest": work["document_digest"],
+        "capability": capability, "document_digest": work["document_digest"],
         "contract_revision": work["contract"]["revision"],
         "plan_revision": work["plan_revision"]}, command_id=command_id)
 
@@ -167,10 +187,11 @@ def run_publication_demo(directory=None):
     print("ephemeral in-memory approver keys %s (current) and %s; secrets are "
           "never printed, only key ids" % (OLD_KEY_ID, NEW_KEY_ID), flush=True)
 
-    def message(command_id, event_id, work_id, data, key_id=OLD_KEY_ID):
+    def message(command_id, event_id, work_id, data, key_id=OLD_KEY_ID,
+                kind="card_approval"):
         return {"source": "sop-owner", "command_id": command_id,
                 "work_id": work_id, "event_id": event_id,
-                "kind": "card_approval", "data": data,
+                "kind": kind, "data": data,
                 "issued_at": clock["now"], OPTIONAL_KEY_FIELD: key_id}
 
     gateway = SignedEvidenceGateway(runtime, {"sop-owner": [old_key, new_key]},
@@ -366,12 +387,190 @@ def run_publication_demo(directory=None):
           "rotation-invariant)" % (OLD_KEY_ID, GRACE, CODE_KEY_RETIRED),
           flush=True)
 
+    # S13 withdrawal chapter (D67-D79): end the CURRENT validity of the
+    # published version through the governed flow — same family, second
+    # capability — never touching a committed byte.
+    print("Withdrawal chapter — end the current validity of the published "
+          "version through the governed flow (same family, capability "
+          "sop.withdraw, own work and second immutable record):", flush=True)
+    request = {"discriminator": WITHDRAWAL_DISCRIMINATOR,
+               "policy_id": card["policy"]["id"],
+               "policy_version": card["policy"]["version"],
+               "published_digest": clean["digest"]}
+    assert withdrawal_record(str(store_dir), card["policy"]["id"],
+                             card["policy"]["version"]) is None
+    _send(runtime, WITHDRAWAL_WORK_ID, "create_work", {"document": request},
+          command_id="cmd-create-wd1")
+    _send(runtime, WITHDRAWAL_WORK_ID, "bind_contract",
+          {"policy_id": policy.id, "policy_version": policy.version,
+           "goal": policy.goal}, command_id="cmd-bind-wd1")
+    withdrawal_blocked = _propose(runtime, WITHDRAWAL_WORK_ID,
+                                  capability="sop.withdraw",
+                                  command_id="cmd-propose-wd1-blocked")
+    assert withdrawal_blocked["decision"] == "rejected"
+    assert withdrawal_blocked["code"] == "REQUIREMENT_UNSATISFIED"
+    assert any(blocker["id"].startswith("W02:")
+               for blocker in withdrawal_blocked["blockers"])
+    print("14. Withdrawal work created (closed request document naming the "
+          "version and the published digest; withdrawal_record() reads None) "
+          "-> proposes sop.withdraw -> BLOCKED %s (W02 approval pending; D66 "
+          "order: requirement blockers before the business key)"
+          % withdrawal_blocked["code"], flush=True)
+
+    withdrawal_approval = rotated.record(sign_evidence(
+        new_key.secret, message("cmd-approve-wd1", "evt-approve-wd1",
+                                WITHDRAWAL_WORK_ID,
+                                {"digest": clean["digest"],
+                                 "policy_version": card["policy"]["version"]},
+                                key_id=NEW_KEY_ID, kind="card_withdrawal")))
+    assert withdrawal_approval["decision"] == "accepted"
+    runtime.verify_pending(WITHDRAWAL_WORK_ID)
+    withdrawal_intent = _propose(runtime, WITHDRAWAL_WORK_ID,
+                                 capability="sop.withdraw",
+                                 command_id="withdraw-once")
+    assert withdrawal_intent["decision"] == "accepted"
+    wkey = withdrawal_key(card["policy"]["id"], card["policy"]["version"])
+    assert (runtime.get_operation(withdrawal_intent["operation_id"])
+            ["business_key"] == wkey)
+    print("15. Valid signed {digest, policy_version} card_withdrawal from the "
+          "current (rotated) key verifies -> intent accepted; business key = "
+          "the withdrawal key", flush=True)
+
+    publication_file = _artifact_file(store_dir, publication_key(card))
+    withdrawal_file = _artifact_file(store_dir, wkey)
+    publication_bytes = publication_file.read_bytes()
+    resolved_withdrawal = runtime.dispatch(
+        withdrawal_intent["operation_id"], SopWithdrawalStore(str(store_dir)))
+    assert resolved_withdrawal["status"] == "confirmed_succeeded"
+    assert len(_committed_artifacts(store_dir)) == 2
+    assert not [path for path in Path(store_dir).iterdir()
+                if path.suffix == ".stage"]
+    assert publication_file.read_bytes() == publication_bytes
+    record_artifact = json.loads(withdrawal_file.read_text(encoding="utf-8"))
+    assert record_artifact["document"] == request
+    print("16. Dispatch through SopWithdrawalStore commits exactly ONE new "
+          "hash-named artifact (the withdrawal record; census 2, zero .stage); "
+          "the publication artifact bytes are unchanged", flush=True)
+    withdrawal_accepted = [event for event in _evidence_bodies(runtime_path)
+                           if event["kind"] == "accepted"
+                           and event["event_id"]
+                           == withdrawal_intent["operation_id"]][0]
+    assert withdrawal_accepted["source"] == "sop-store"
+    assert withdrawal_accepted["status"] == "verified"
+    withdrawal_completion = _send(runtime, WITHDRAWAL_WORK_ID,
+                                  "request_completion",
+                                  command_id="cmd-complete-wd1")
+    assert withdrawal_completion["decision"] == "accepted"
+    withdrawn_work = runtime.get_work(WITHDRAWAL_WORK_ID)
+    assert ((withdrawn_work["status"], withdrawn_work["outcome"])
+            == ("closed", "succeeded"))
+    print("    ... W03 satisfied by the store's own acceptance (accepted "
+          "proof runtime-written under sop-store, event_id = the withdrawal "
+          "operation id) -> completion SUCCEEDED", flush=True)
+
+    withdrawn_error = None
+    try:
+        load_published_card(str(store_dir), card["policy"]["id"],
+                            card["policy"]["version"])
+    except ValueError as error:
+        withdrawn_error = str(error)
+    assert withdrawn_error == WITHDRAWN_MESSAGE
+    assert withdrawn_error != absent_error
+    assert "no published card" not in withdrawn_error
+    print("17. Loader now fails closed on the WITHDRAWN error — a class of "
+          "its own, distinct from absent and from corrupt:", flush=True)
+    print("withdrawn version: %s" % withdrawn_error, flush=True)
+    print("    no un-withdrawal exists: while the record stands this answer "
+          "is permanent — corrected content ships as a NEW version string",
+          flush=True)
+
+    assert withdrawal_record(str(store_dir), card["policy"]["id"],
+                             card["policy"]["version"]) == request
+    print("18. withdrawal_record() audit read returns the exact closed record "
+          "(who withdrew and when live in the governed ledger, not the store)",
+          flush=True)
+
+    _send(runtime, REPUBLICATION_WORK_ID, "create_work", {"document": card},
+          command_id="cmd-create-pub3")
+    _send(runtime, REPUBLICATION_WORK_ID, "bind_contract",
+          {"policy_id": policy.id, "policy_version": policy.version,
+           "goal": policy.goal}, command_id="cmd-bind-pub3")
+    republish_blocked = _propose(runtime, REPUBLICATION_WORK_ID,
+                                 command_id="cmd-propose-pub3-blocked")
+    assert republish_blocked["code"] == "REQUIREMENT_UNSATISFIED"
+    republish_approval = rotated.record(sign_evidence(
+        new_key.secret, message("cmd-approve-pub3", "evt-approve-pub3",
+                                REPUBLICATION_WORK_ID,
+                                {"digest": clean["digest"],
+                                 "policy_version": card["policy"]["version"]},
+                                key_id=NEW_KEY_ID)))
+    assert republish_approval["decision"] == "accepted"
+    runtime.verify_pending(REPUBLICATION_WORK_ID)
+    withdrawal_bytes = withdrawal_file.read_bytes()
+    republish = _propose(runtime, REPUBLICATION_WORK_ID,
+                         command_id="cmd-propose-pub3")
+    assert republish["decision"] == "rejected"
+    assert republish["code"] == "OPERATION_CONTENT_CONFLICT"
+    assert len(_committed_artifacts(store_dir)) == 2
+    assert publication_file.read_bytes() == publication_bytes
+    assert withdrawal_file.read_bytes() == withdrawal_bytes
+    print("19. Re-publishing the withdrawn version in the same database -> "
+          "BLOCKED %s first, then persisted %s after its OWN approval — "
+          "zero store writes (census and both artifacts unchanged; no "
+          "un-withdrawal, correction means a new version string)"
+          % (republish_blocked["code"], republish["code"]), flush=True)
+
+    history_dump = _table_dump(runtime_path)
+    publication_bytes_now = publication_file.read_bytes()
+    withdrawal_bytes_now = withdrawal_file.read_bytes()
+    retired_withdrawal = rotated.record(sign_evidence(
+        old_key.secret, message("cmd-withdraw-rotated-old",
+                                "evt-withdraw-rotated-old",
+                                WITHDRAWAL_WORK_ID,
+                                {"digest": clean["digest"],
+                                 "policy_version": card["policy"]["version"]},
+                                key_id=OLD_KEY_ID, kind="card_withdrawal")))
+    assert retired_withdrawal == {"decision": "rejected",
+                                  "code": CODE_KEY_RETIRED}
+    assert _table_dump(runtime_path) == history_dump
+    assert publication_file.read_bytes() == publication_bytes_now
+    assert withdrawal_file.read_bytes() == withdrawal_bytes_now
+    print("20. A retired approver key cannot sign a withdrawal: a fresh "
+          "old-key card_withdrawal one second past grace -> rejected %s; six "
+          "tables, the publication artifact and the withdrawal record all "
+          "untouched (publication and withdrawal history are "
+          "rotation-invariant)" % CODE_KEY_RETIRED, flush=True)
+
+    # Closing census: every count re-read from the real SQLite store and the
+    # artifact directory, never from the narration above.
     counts = _table_counts(runtime_path)
-    assert (counts["works"] == 2 and counts["commands"] == 11
-            and counts["evidence"] == 3 and counts["operations"] == 1)
+    assert (counts["works"] == 4 and counts["commands"] == 22
+            and counts["evidence"] == 6 and counts["operations"] == 2)
+    db = sqlite3.connect(str(runtime_path))
+    try:
+        refusal_codes = [json.loads(row[0]).get("code") for row in
+                         db.execute("SELECT receipt FROM commands")]
+    finally:
+        db.close()
+    assert refusal_codes.count("REQUIREMENT_UNSATISFIED") == 4
+    assert refusal_codes.count("OPERATION_CONTENT_CONFLICT") == 2
+    artifacts = _committed_artifacts(store_dir)
+    parsed = [json.loads(path.read_text(encoding="utf-8"))
+              for path in artifacts]
+    assert len(artifacts) == 2
+    assert sum(1 for a in parsed
+               if a["key"].startswith("sop-pub:")) == 1
+    assert sum(1 for a in parsed
+               if a["key"].startswith(WITHDRAWAL_KEY_PREFIX)) == 1
+    assert (withdrawn_error is not None and absent_error is not None
+            and tampered_error is not None
+            and len({withdrawn_error, absent_error, tampered_error}) == 3)
     print(FINAL_LINE)
-    print("\nInspect the durable history and the real artifact:")
+    print("\nInspect the durable history and the real artifacts:")
     print('  python3 -m work_runtime inspect --db "%s" --work %s '
           '--policy sop-publish' % (runtime_path, WORK_ID))
-    print('  committed artifact: "%s"' % _committed_artifacts(store_dir)[0])
+    print('  python3 -m work_runtime inspect --db "%s" --work %s '
+          '--policy sop-publish' % (runtime_path, WITHDRAWAL_WORK_ID))
+    print('  committed artifact: "%s"' % publication_file)
+    print('  withdrawal record: "%s"' % withdrawal_file)
     return folder

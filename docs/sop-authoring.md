@@ -183,8 +183,146 @@ keyed uniqueness — exactly one artifact per publication key, same-key
 changed content refused with zero overwrite (D60). Immutability,
 hash-naming, race and corruption semantics are inherited wholesale from the
 file adapter; the trusted-local directory boundary applies unchanged.
-**There is no withdrawal in this slice** (D63): the store is append-only,
-and "rolling back" a publication means publishing a corrected new version.
+S12 deferred withdrawal (D63); S13 adds it additively in the
+[withdrawal section](#withdrawal-governed-s13) below — "rolling back" a
+publication still means publishing a corrected new version (RFC-002 §6).
+
+### Withdrawal (governed, S13)
+
+Withdrawal changes the **current validity** of one published
+`(policy_id, version)` — never history, never artifacts (D67). A
+withdrawal is **one second committed immutable record artifact in the same
+append-only store directory**, identified by:
+
+- **artifact identity** — the store key
+  `withdrawal_key(policy_id, policy_version) = "sop-withdrawn:" +
+  digest([policy_id, policy_version])` (D68), the D56 digest form on the
+  same identity basis as the publication key, so the two namespaces cannot
+  collide and the committed path stays `sha256(key)` hex.
+- **content identity** — the record document is a **closed, deterministic
+  four-field shape**: exactly `{discriminator, policy_id, policy_version,
+  published_digest}` with discriminator `"sop.withdrawal"` (D69). The
+  `published_digest` binds the withdrawal to the exact published content
+  (the target artifact's `content_digest`). Deterministic given the
+  target: the same withdrawal is byte-idempotent. Reason/free text never
+  enters the record — the audit lives in the runtime evidence store, and
+  the id-less shape makes a request effectively immutable under
+  `revise_document` (content changes enter as new works, the S12 IR-F2
+  precedent).
+- **version** — the withdrawn `(policy_id, policy_version)`; one
+  withdrawal identity per version per directory and per database.
+
+`SopWithdrawalStore(directory)` wraps the same unchanged `FilePublisher`
+(the D55 blast-radius pattern, not an extension of the shipped publication
+wrapper) and declares `actions=("sop.withdraw",)` with keyed uniqueness.
+Replay and same-key changed-content semantics are the delegate's. The
+wrapper adds one governed refusal (D74): a record whose **target
+publication artifact is absent** or whose stored `content_digest` differs
+from the record's `published_digest` resolves as a **rejected receipt**
+(`status: "rejected"` with a deterministic refusal id) — the governed work
+then resolves `confirmed_failed` and stays cancellable, and nothing is
+committed. The drafted `ValueError` refusal channel was **rejected** at
+ratification (RV-F1): it would strand the work at an outcome neither
+completion nor cancellation can resolve.
+
+### Loading after withdrawal (fail-closed, D72)
+
+The loader's validation chain gains exactly one step after full artifact
+validation and the identity check: it reads the withdrawal record for the
+requested version. The bounded, distinguishable error classes become six:
+**absent** (including a missing store directory — a read never creates
+it), **corrupt artifact**, **digest mismatch**, **identity mismatch**,
+**withdrawn** ("this published version is withdrawn; corrected content
+requires a new version"), and **invalid withdrawal record**. A standing
+record that validates and binds the exact artifact — same identity, same
+`published_digest` as the stored `content_digest` — raises the withdrawn
+error; a record that is corrupt, malformed or does not bind this artifact
+(unknown identity, mismatching digest) raises the invalid-record error, so
+a disputed version is **never silently served as valid**. Every adapter
+violation class on the record maps onto the one invalid-record error by
+explicit catch-and-re-raise — the adapter's internal vocabulary never
+leaks as extra loader classes (RV-F5).
+
+- **`pinned_card` inherits:** the load raises the withdrawn (or
+  invalid-record) error before any pin comparison, so a withdrawn version
+  fails closed regardless of pin match. `published_card_matches` stays a
+  pure structural `(id, version, goal)` check — withdrawal binds at the
+  load surface that feeds it, and a withdrawal record is never a card.
+- **Order note:** a version whose artifact is absent reads **absent** even
+  if a withdrawal record stands (the artifact read comes first); deleting
+  files is operator misuse outside the trust boundary.
+- **Audit read:** `withdrawal_record(directory, policy_id, policy_version)`
+  returns the validated record or `None`, raising the invalid-record error
+  on a corrupt record. There is deliberately **no `allow_withdrawn`
+  override** on any read function — current validity is not negotiable at
+  the loader.
+- **No Runtime wiring change (D62/D73):** the Runtime still never consults
+  the store; withdrawal fences no executing policy, no completed pin
+  check and no in-flight work.
+
+### The governed withdrawal flow (same family, second capability, D70)
+
+`SopPublicationPolicy` carries **both** governed acts in one family,
+database and ledger, discriminated by the **work document's shape** (the
+completion gate is capability-blind, so shape — not capability — picks the
+requirement set):
+
+- **Admission:** `validate_document` accepts a lint-clean card **or** a
+  well-formed closed withdrawal request; anything else is a bounded,
+  unpersisted `ValueError` — a near-miss withdrawal attempt (any document
+  carrying a `discriminator` field that is not well-formed) names the
+  closed-shape requirement, everything else falls to the card lint (D57).
+  The request shape is id-less, so it is
+  effectively immutable under `revise_document` — content changes enter as
+  new works (D69).
+- **Requirements:** **W02** — the configured authority must have signed a
+  `card_withdrawal` whose `data` is exactly
+  `{"digest": <published digest>, "policy_version": <version>}` binding
+  the request's own fields (the D58 mirror); **W03** — the store must have
+  accepted the withdrawal record, satisfied by the runtime-written
+  `accepted` proof (`event_id` = the withdrawal operation id) and excluded
+  from blockers exactly like S03. A wrong-digest approval verifies on
+  shape but leaves W02 pending; a wrong-version approval never verifies;
+  a tampered envelope is refused `EVIDENCE_AUTHENTICATION_FAILED` with
+  zero intake writes. Cross-shape isolation holds in both directions: a
+  `card_approval` never satisfies W02 and a `card_withdrawal` never
+  satisfies S02 — a mismatched pair is the bounded `CAPABILITY_UNSUPPORTED`
+  blocker, never an unpersisted error.
+- **No admin bypass (D71):** requirements are evidence-driven only; the
+  administrator's real reach is the S8 `revoke_evidence` path, which never
+  touches the store. The proposing actor needs `sop.withdraw` in grants
+  (the approver principal stays `sop-owner` with `evidence.write`; demo
+  grants extend the agent's set only).
+- **Business key and D66 order (D75):** `operation_key` returns the
+  withdrawal key for withdrawal works — one withdrawal identity per
+  version per database. Requirement blockers precede the business-key
+  branch as everywhere: a second withdrawal work is first refused
+  `REQUIREMENT_UNSATISFIED` while its own approval is missing, and only
+  after recording and verifying its **own** approval does the persisted
+  `OPERATION_CONTENT_CONFLICT` surface.
+- **Refusal channel (D74):** a dispatch whose target publication artifact
+  is absent or holds different content resolves `confirmed_failed` —
+  terminal, truthful, the work lands `needs_attention` with W03 pending,
+  and stays **cancellable** (`request_cancel` → `finalize_cancel`). The
+  drafted `ValueError` channel was rejected (RV-F1): it strands the work
+  at an unresolvable outcome.
+- **Per-capability adapter discipline (RV-F3):** `dispatch`, `reconcile`
+  and `recover` each take the adapter as an argument — a database holding
+  both publication and withdrawal operations dispatches each capability
+  with its **own** adapter. The wrong adapter's dispatch is held
+  `ADAPTER_ACTION_UNSUPPORTED` (bounded, zero attempts, re-dispatchable);
+  reconcile itself delegates lookup to the same `FilePublisher`, so it
+  resolves under either wrapper.
+- **Replay and recovery:** response loss after the record commits
+  reconciles the original withdrawal key in one attempt, never resending;
+  command dedup replays stored receipts verbatim.
+- **No write-path fencing (D73) and no un-withdrawal (D76):** a
+  re-publication of a withdrawn version in the same database is refused by
+  the governed proposal's own target checks (the D66
+  `OPERATION_CONTENT_CONFLICT`, after the new work's approval) with zero
+  store writes; a withdrawn version is never reinstated — corrected
+  content publishes as a new version (RFC-002 §6). Publication works
+  complete unchanged in the same family.
 
 ### Loading and pinning (fail-closed, D62)
 
@@ -275,14 +413,15 @@ unchanged [`SignedEvidenceGateway`](signed-evidence.md) → `verify_pending`
 ### Demonstration (`publication-demo`)
 
 `python3 -m work_runtime publication-demo [--directory DIR]` runs the whole
-ratified story (design §11) deterministically in one fresh temporary
-directory, no credentials and no network: a dirty fixture card is refused by
-lint; the packaged `publishing.json` card is lint-clean with its pinned
-digest and becomes the work document; the proposal blocks on S02; a tampered
-`card_approval` is refused `EVIDENCE_AUTHENTICATION_FAILED` with zero intake
-writes; the valid signed `{digest, policy_version}` approval verifies and
-the intent is accepted; dispatch commits exactly one hash-named artifact and
-loses the response; a restart reconciles the original key in one attempt to
+ratified story (design §11 plus the S13 §12 sketch) deterministically in one
+fresh temporary directory, no credentials and no network: a dirty fixture
+card is refused by lint; the packaged `publishing.json` card is lint-clean
+with its pinned digest and becomes the work document; the proposal blocks
+on S02; a tampered `card_approval` is refused
+`EVIDENCE_AUTHENTICATION_FAILED` with zero intake writes; the valid signed
+`{digest, policy_version}` approval verifies and the intent is accepted;
+dispatch commits exactly one hash-named artifact and loses the response; a
+restart reconciles the original key in one attempt to
 `confirmed_succeeded`; the `accepted` proof is runtime-written under
 `sop-store` with `event_id` = the operation id; completion closes the work
 `succeeded`; a doctored same-version card is first blocked
@@ -294,24 +433,43 @@ errors; and an approver-key rotation refuses the retired old-key envelope
 `EVIDENCE_KEY_RETIRED` with all six runtime tables and the artifact bytes
 untouched.
 
+The chapter then withdraws the published version through the governed flow
+(S13 demo wave, D77): the closed withdrawal request (naming the version and
+the published digest) enters as its own work and is first blocked
+`REQUIREMENT_UNSATISFIED` on W02 (the D66 order); a valid signed
+`card_withdrawal` from the current — rotated — key accepts the intent with
+the withdrawal key as its business key; dispatch through
+`SopWithdrawalStore` commits exactly one new hash-named artifact (the
+withdrawal record) with the publication bytes unchanged, and the
+runtime-written `accepted` proof satisfies W03 so completion closes the
+withdrawal work `succeeded`; the loader now refuses the version with the
+distinct **withdrawn** error; `withdrawal_record()` reads the exact record
+back; a re-publication of the withdrawn version is blocked first and
+persists `OPERATION_CONTENT_CONFLICT` only after its own approval — zero
+store writes; and a fresh old-key `card_withdrawal` one second past grace
+is refused `EVIDENCE_KEY_RETIRED` with six tables and both artifacts
+untouched.
+
 The approver keys are ephemeral in-memory random bytes for the run, never
 printed or persisted — only key ids appear in the output. Every printed
 count is asserted inside the demo against the real SQLite store and the
-artifact directory, never against the narration; `tests/test_publication_demo.py`
-and the installed verifier re-derive the counts, keys, digests and receipts
-independently (planted-marker tests prove the secrets never reach the
-output). The demo prints an `inspect --db … --work pub-1 --policy
-sop-publish` command plus the committed artifact path; the `sop-publish`
-inspect choice loads `SopPublicationPolicy` with the demo grants (added with
-master authorization after a probe showed the pre-existing choices fail
-closed on a sop-publish-family database).
+artifact directory, never against the narration; `tests/test_publication_demo.py`,
+`tests/test_publication_withdrawal_demo.py` and the installed verifier
+re-derive the counts, keys, digests and receipts independently
+(planted-marker tests prove the secrets never reach the output). The demo
+prints `inspect --db … --work pub-1 --policy sop-publish` and `--work wd-1`
+commands plus both committed artifact paths; the `sop-publish` inspect
+choice loads `SopPublicationPolicy` with the demo grants (added with master
+authorization after a probe showed the pre-existing choices fail closed on
+a sop-publish-family database).
 
 The limits are unchanged and stated plainly: approvers and publishers are
 trusted-local principals in grants configuration, not authentication;
-rotation is config-only trust (a configuration rollback revives an old key);
-there is no withdrawal in this slice (D63), no tenant authentication, TLS,
-KMS, network or distributed exactly-once claim; and published cards never
-execute (D62).
+rotation is config-only trust (a configuration rollback revives an old
+key); there is no un-withdrawal — a withdrawn version's error is permanent
+while the record stands and corrected content ships as a new version
+string; there is no tenant authentication, TLS, KMS, network or distributed
+exactly-once claim; and published cards never execute (D62).
 
 ## Examples
 

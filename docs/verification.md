@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-15 (S12 demo wave: publication-demo harness, CLI entry point incl. the `inspect --policy sop-publish` choice, installed module+console verifier stages; S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-16 (S13 demo wave: publication-demo withdrawal chapter, installed verifier publication-stage extension; S13 core wave: published-card withdrawal surface; S12 demo wave: publication-demo harness, CLI entry point incl. the `inspect --policy sop-publish` choice, installed module+console verifier stages; S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -596,3 +596,159 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 - [GUI](gui.md) — the local read-only operations viewer: commands, sample store, tile definitions and limits.
 - [Contributor guide](contributor-guide.md) — adapter and rule-card tutorials over the public interfaces.
 - [RFC-001](RFC-001-core-semantics.md) · [RFC-002](RFC-002-sop-authoring-and-binding.md) · [RFC-003](RFC-003-runtime-protocol.md) · [Reference scenarios](reference-scenarios.md) · [Roadmap](roadmap.md)
+
+## S13 coverage — publication withdrawal (core wave)
+
+The S13 core wave adds the withdrawal surface additively to
+`work_runtime/publication.py` on the unchanged Runtime, gateway and
+`FilePublisher` (`tests/test_publication_withdrawal.py`, plus the rotation
+battery in `tests/test_publication_withdrawal_rotation.py`). Semantics and
+boundaries: [SOP authoring](sop-authoring.md) withdrawal section; design
+[S13](superpowers/specs/2026-10-16-sop-publication-withdrawal-design.md)
+ratified D67–D79.
+
+- **Digest-based withdrawal key, closed record and store wrapper
+  (D67/D68/D69/D74)** (`WithdrawalKeyTests`, `WithdrawalRequestTests`,
+  `SopWithdrawalStoreTests`): the withdrawal key equals
+  `"sop-withdrawn:" + digest([policy id, version])` with the 64-hex tail;
+  delimiter-hostile identities do not collide; identity changes change the
+  key and the withdrawal key differs from the publication key for the same
+  identity; malformed identities raise bounded errors.
+  `is_withdrawal_request` admits exactly the closed four-field
+  `{discriminator, policy_id, policy_version, published_digest}` record
+  shape and refuses cards, extra/free-text fields, wrong discriminators and
+  malformed values without raising. The wrapper commits exactly one second
+  hash-named artifact (record document verbatim,
+  `content_digest == digest(request)`), replays the byte-identical receipt
+  across instances with the census unchanged, refuses an absent target or a
+  digest mismatch with a deterministic **rejected receipt** (`status:
+  "rejected"`, `digest` binding the operation, `reason` code) at zero store
+  writes, refuses a same-key changed record without overwrite (bounded
+  `ValueError` at the raw delegate), and delegates `lookup` verbatim.
+- **Fail-closed loader withdrawal check and audit read (D72/RV-F5)**
+  (`LoaderWithdrawalTests`): the round trip loads unchanged pre-withdrawal;
+  after a committed withdrawal `load_published_card` raises the exact
+  withdrawn message (distinct from absent/corrupt/digest/identity) and
+  `pinned_card` raises it before any pin judgment (correct and wrong pins
+  alike); corrupt bytes, a tampered stale-digest record, a foreign
+  identity's record and a same-identity record binding a different
+  `published_digest` each raise the one invalid-record message by explicit
+  catch-and-re-raise (the adapter's parse/shape/digest vocabulary never
+  leaks); a digest-mismatching record is refused by the governed path
+  (rejected receipt) and, if committed by raw adapter use, fails closed
+  instead of withdrawing; an absent artifact reads absent even with a
+  record standing; a missing store directory is never created by
+  `withdrawal_record` or the loader; `withdrawal_record()` returns `None`
+  pre-withdrawal and the validated record post-withdrawal; no loader
+  function accepts an override keyword (TypeError on `allow_withdrawn`);
+  `published_card_matches` stays pure and never matches a withdrawal
+  record.
+- **Governed sop.withdraw flow (D70/D71/D74/D75)** (`GovernedWithdrawalFlowTests`,
+  real Runtime + SQLite + directory, one database holding the publication
+  and the withdrawal): malformed requests are refused unpersisted at
+  admission (zero works rows) while the well-formed request carries
+  `document_digest == digest(request)` and is effectively immutable under
+  `revise_document` (id-less shape); proposals block on `W02` before any
+  approval; a valid `card_approval` never satisfies W02 (turns `invalid`);
+  tampered `card_withdrawal` is refused `EVIDENCE_AUTHENTICATION_FAILED`
+  with zero intake writes; wrong-source intake is `AUTHORITY_DENIED`;
+  wrong-digest approvals verify on shape but keep W02 pending and
+  wrong-version approvals turn `invalid`; the valid version-bound approval
+  accepts with `business_key == withdrawal_key`; capability × document-shape
+  pairing holds in both directions (`sop.publish` on a withdrawal work and
+  `sop.withdraw` on a card work each yield the bounded
+  `CAPABILITY_UNSUPPORTED` blocker); the wrong adapter holds
+  `ADAPTER_ACTION_UNSUPPORTED` with zero attempts and zero writes before a
+  correct re-dispatch confirms; the full story commits exactly one second
+  artifact with publication bytes unchanged, recovers a lost response via
+  one-attempt reconcile on a restarted Runtime, carries the runtime-written
+  `accepted` proof under `sop-store` (`event_id` = operation id, digest =
+  request digest), completes `succeeded`, and flips the loader to the
+  withdrawn error with `withdrawal_record()` returning the record; an
+  absent target and a digest-mismatch target both resolve
+  `confirmed_failed` with the work `needs_attention`, completion refused,
+  and the work closable `cancelled` via acknowledged-empty finalize
+  (cancellable — the D74 channel); a second withdrawal work hits
+  `REQUIREMENT_UNSATISFIED` first and `OPERATION_CONTENT_CONFLICT` only
+  after its own approval (D75); re-publication of a withdrawn version
+  conflicts after its own approval with the census unchanged (no
+  un-withdrawal); a publication work completes unchanged in the same
+  family/database (the F18 regression).
+- **S8 revocation composition pinned (D79)** (`RevocationCompositionTests`):
+  on the closed publication work the owner and the configured source
+  without `evidence.revoke` are refused `AUTHORITY_DENIED`; a
+  `work.intervene` administrator revokes both the `card_approval` and the
+  runtime-written `accepted` proof (`sop-store`, `event_id` = the
+  operation id) with `prior_status "verified"`; the work stays
+  `closed/succeeded` with the completion snapshot byte-identical, S02/S03
+  turn pending, exactly two `EvidenceRevoked` events land, and the
+  committed artifact is untouched; and revoking the publication proofs
+  after a standing withdrawal never touches the withdrawal record — the
+  loader keeps answering withdrawn (the two truths stay separate, D71/D79).
+- **Withdrawal approver-key rotation battery (S11 semantics)**
+  (`tests/test_publication_withdrawal_rotation.py`,
+  `WithdrawalRotationTests`): the `card_withdrawal` approver configured as
+  a `SourceKey` keyring and rotated mid-flow — an old-key envelope is
+  refused `EVIDENCE_KEY_RETIRED` (retained past its window) or
+  `EVIDENCE_AUTHENTICATION_FAILED` (dropped, both selector forms) with all
+  six runtime tables byte-identical (ordered rowid dumps); the same
+  `command_id` re-signed under the new current key replays the original
+  receipt verbatim with zero writes; a new `command_id` on the same
+  `(source, event_id)` reports the candidate's current status with exactly
+  `commands +1`; after a completed withdrawal every post-rotation refusal
+  leaves the six tables and BOTH artifact byte dumps untouched (the
+  publication and withdrawal artifacts are rotation-invariant); a
+  pre-rotation approval still verifies after rotation (key-agnostic
+  fingerprints), carries the withdrawal to `closed/succeeded`, and a
+  legitimate new version's withdrawal proceeds under the rotated key. All
+  secrets synthetic, ephemeral, never printed.
+- **Cross-shape evidence isolation, both directions (D70/MD-4)**: a
+  `card_withdrawal` recorded on a card-shaped work turns `invalid` at
+  verification (never a `KeyError` through the card-only field access) and
+  leaves S02 pending — mirroring the `card_approval`-never-satisfies-W02
+  pin in `GovernedWithdrawalFlowTests`; a near-miss withdrawal attempt at
+  admission (any discriminator-bearing document that is not well-formed)
+  is refused with the dedicated closed-shape requirement message, while
+  non-withdrawal documents fall to the card lint.
+- **Demonstration surface (S13 demo wave, D77)**
+  (`tests/test_publication_withdrawal_demo.py`,
+  `WithdrawalChapterTests`): the deterministic no-credentials
+  `publication-demo` chapter continues the standing publication story in
+  the same store — the withdrawal work blocked on W02 first (D66 order),
+  the signed `card_withdrawal` from the rotated current key, the dispatch
+  committing exactly one second hash-named artifact with the publication
+  bytes unchanged, W03 satisfied by the runtime-written `accepted` proof,
+  completion `succeeded`, the loader's distinct withdrawn error (pairwise
+  distinguishable from absent and tampered, equal to the module's
+  `WITHDRAWN_MESSAGE`), the `withdrawal_record()` audit read, the
+  re-publication of the withdrawn version refused
+  `OPERATION_CONTENT_CONFLICT` after its own approval with the census
+  unchanged, and the retired-key `card_withdrawal` refusal with six tables
+  and both artifacts untouched. Tests re-derive every count, key, digest
+  and receipt from the SQLite store and the artifact directory
+  (works/commands/evidence/operations/events pinned: 4/22/6/2/21), run
+  both printed `inspect --policy sop-publish` commands verbatim through
+  the real CLI, and pin the closed record document, the exact command-id
+  census with actors, and both persisted D66 conflict receipts. The S12
+  demo tests (`tests/test_publication_demo.py`) pin the same extended
+  store from the publication side.
+- **Installed verification (S13 demo wave, D77 — existing installer
+  evidence, no new global gate)** (`scripts/verify_install.py`
+  publication stage): the SAME module AND console `publication-demo` runs
+  are now verified deeper, never stdout-only — the withdrawn loader line
+  required and pairwise distinguishable, the store census exactly two
+  hash-named artifacts (publication + withdrawal record) with zero
+  `.stage`, the withdrawal record located by its printed path AND its
+  `sha256(withdrawal key)` name and parsed with the standard library only
+  (exact FilePublisher shape, closed four-field document binding the
+  published content digest, recomputed digests, accepted `FILE-`
+  receipt), `wd-1` closed/succeeded and `pub-3` active, the withdrawal
+  operation `confirmed_succeeded` with one attempt under the withdrawal
+  key, the verified version-bound `card_withdrawal` evidence row, the
+  second runtime-written `sop-store` accepted proof bound to the record,
+  the extended command census with both blocked codes and the
+  `cmd-propose-pub3` `OPERATION_CONTENT_CONFLICT` receipt; every printed
+  inspect command re-run verbatim (both works). Rejection tests mutate
+  the real store (deleted or tampered withdrawal record, flipped
+  `card_withdrawal` status, rewritten re-publication receipt) and require
+  the proof to fail.
