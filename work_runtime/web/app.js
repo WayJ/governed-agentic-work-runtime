@@ -12,6 +12,9 @@
 (function () {
   var I18N = {
     en: {
+      "brand.subtitle": "Operations Viewer",
+      "meta.inventory": "Durable tables",
+      "list.heading": "Works",
       "action.refresh": "Refresh", "action.pause": "Pause polling",
       "action.resume": "Resume polling", "action.retry": "Try again",
       "action.loadMore": "Load more events", "action.reload": "Reload",
@@ -35,7 +38,8 @@
       "meta.pollPaused": "polling paused",
       "banner.disconnected": "Disconnected from the local UI server. The viewer keeps retrying; check the ui process.",
       "detail.placeholder": "Select a work to inspect its durable history.",
-      "detail.placeholderHint": "Use ↑/↓ to move through the list, Enter to select.",
+      "detail.placeholderHint": "Use ↑/↓ to move through the list, Enter to select, or pick a card below.",
+      "detail.guideTitle": "Works in this store — click to inspect",
       "detail.loading": "Loading work…",
       "detail.gone": "This work is no longer present in the store.",
       "detail.error": "Could not load this work.",
@@ -43,6 +47,27 @@
       "tab.evidence": "Evidence", "tab.operations": "Operations",
       "tab.decisions": "Decisions", "tab.events": "Events",
       "tab.documents": "Documents",
+      "sec.lifecycle": "Lifecycle & ownership",
+      "sec.contract": "Contract & revisions",
+      "kpi.requirements": "{satisfied}/{total} satisfied",
+      "kpi.requirementsSub": "Current contract obligations",
+      "kpi.evidence": "{verified}/{total} verified",
+      "kpi.evidenceSub": "Recorded proof items",
+      "kpi.operations": "{total} operation(s)",
+      "kpi.operationsSub": "Latest: {latest}",
+      "kpi.decisions": "{total} receipt(s)",
+      "kpi.decisionsSub": "{accepted} accepted · {rejected} rejected",
+      "demo.label": "Demo scenario",
+      "demo.wait-1.short": "Durable wait on E05 approval · pending verification",
+      "demo.wait-1.long": "Submitted approval evidence is pending verification; the work waits durably on E05 and preserves the earlier rejected proposal decision.",
+      "demo.uncertain-1.short": "Committed external effect · lookup unavailable",
+      "demo.uncertain-1.long": "External OA committed the application before the response was lost; unavailable authority lookup escalated to needs_attention while retaining the external effect.",
+      "demo.transfer-1.short": "Ownership handover to delegate · intent readmitted",
+      "demo.transfer-1.long": "Ownership transferred from agent to delegate, invalidating the prior prepared intent; delegate readmitted the same logical operation and confirmed submission.",
+      "demo.succeed-1.short": "Verified evidence & confirmed effect · closed succeeded",
+      "demo.succeed-1.long": "All policy requirements were satisfied with verified evidence and confirmed OA acceptance, closing the work as succeeded.",
+      "demo.cancel-1.short": "Reconciled effect acknowledged · closed cancelled",
+      "demo.cancel-1.long": "Uncertain submission was reconciled to a confirmed external effect first; cancellation explicitly acknowledges the retained external effect rather than reversing it.",
       "f.status": "Status", "f.stateVersion": "State version", "f.owner": "Owner",
       "f.noOwner": "legacy work — no owner recorded", "f.outcome": "Outcome",
       "f.policy": "Contract policy", "f.policyRevision": "Contract revision",
@@ -89,6 +114,9 @@
       "footer.readonly": "Read-only local viewer over durable records. Loopback binding is convenience, not authentication."
     },
     zh: {
+      "brand.subtitle": "本地只读运维视图",
+      "meta.inventory": "持久化表记录数",
+      "list.heading": "工作列表",
       "action.refresh": "刷新", "action.pause": "暂停轮询",
       "action.resume": "恢复轮询", "action.retry": "重试",
       "action.loadMore": "加载更多事件", "action.reload": "重新加载",
@@ -112,7 +140,8 @@
       "meta.pollPaused": "轮询已暂停",
       "banner.disconnected": "与本地 UI 服务的连接已断开。页面会持续重试，请检查 ui 进程。",
       "detail.placeholder": "选择一项工作以查看其持久历史。",
-      "detail.placeholderHint": "用 ↑/↓ 在列表中移动，回车键选中。",
+      "detail.placeholderHint": "用 ↑/↓ 在列表中移动，回车键选中，或直接点击下方卡片。",
+      "detail.guideTitle": "当前存储中的工作速览 —— 点击即可查看",
       "detail.loading": "正在加载工作…",
       "detail.gone": "此工作已不在存储中。",
       "detail.error": "无法加载此工作。",
@@ -120,6 +149,27 @@
       "tab.evidence": "证据", "tab.operations": "操作",
       "tab.decisions": "决策", "tab.events": "事件",
       "tab.documents": "文档",
+      "sec.lifecycle": "生命周期与归属",
+      "sec.contract": "契约与版本绑定",
+      "kpi.requirements": "{satisfied}/{total} 已满足",
+      "kpi.requirementsSub": "当前契约义务项",
+      "kpi.evidence": "{verified}/{total} 已验证",
+      "kpi.evidenceSub": "已记录证明材料",
+      "kpi.operations": "{total} 项外部操作",
+      "kpi.operationsSub": "最新状态：{latest}",
+      "kpi.decisions": "{total} 条命令回执",
+      "kpi.decisionsSub": "{accepted} 接纳 · {rejected} 拒绝",
+      "demo.label": "演示场景说明",
+      "demo.wait-1.short": "等待 E05 特别审批 · 证据待核验",
+      "demo.wait-1.long": "财务已提交审批证据但尚未完成核验；工作在 E05 规则上保持持久等待，且保留了此前被拒绝的提议决策回执。",
+      "demo.uncertain-1.short": "外部效果已提交 · 权威查询不可用",
+      "demo.uncertain-1.long": "外部 OA 已受理但在返回响应前超时，且后续权威查询暂不可用，升级为 needs_attention（外部系统中的真实申请被完整保留）。",
+      "demo.transfer-1.short": "负责人移交 delegate · 原意图重入成功",
+      "demo.transfer-1.long": "所有权从 agent 移交至 delegate 后原准备意图失效；新负责人重新提议同一逻辑操作并完成外部确认。",
+      "demo.succeed-1.short": "证据核验齐备 · 正常验收关闭",
+      "demo.succeed-1.long": "所有策略要求均由已核验证据满足，外部 OA 受理确认完成，工作以 succeeded 结果正式关闭。",
+      "demo.cancel-1.short": "对账确认外部效果后取消 · 保留真实效果",
+      "demo.cancel-1.long": "结果未知的提交先经对账确认为已生效，随后执行取消闭环——显式确认并保留外部已生效记录，绝不伪造撤销。",
       "f.status": "状态", "f.stateVersion": "状态版本", "f.owner": "负责人",
       "f.noOwner": "历史工作 —— 未记录负责人", "f.outcome": "结果",
       "f.policy": "契约策略", "f.policyRevision": "契约版本号",
@@ -165,6 +215,14 @@
       "footer.keys": "↑/↓ 列表 · 回车选中 · ←/→ 切换页签 · / 搜索",
       "footer.readonly": "面向持久记录的只读本地查看器。环回绑定是便利性设计，不是认证。"
     }
+  };
+
+  var DEMO_SCENARIO_IDS = {
+    "wait-1": true,
+    "uncertain-1": true,
+    "transfer-1": true,
+    "succeed-1": true,
+    "cancel-1": true
   };
 
   var POLL_INTERVAL_MS = 5000;
@@ -219,6 +277,14 @@
   function chipClass(prefix, value) {
     return "chip " + prefix + String(value === undefined || value === null
       ? "" : value).replace(/[^A-Za-z0-9_-]/g, "");
+  }
+
+  function demoShort(workId) {
+    return DEMO_SCENARIO_IDS[workId] ? t("demo." + workId + ".short") : "";
+  }
+
+  function demoLong(workId) {
+    return DEMO_SCENARIO_IDS[workId] ? t("demo." + workId + ".long") : "";
   }
 
   function ApiError(code, message) {
@@ -317,7 +383,7 @@
       ? t("meta.sampledAt", { time: new Date().toLocaleTimeString() }) : "";
   }
 
-  /* ---------- work list ---------- */
+  /* ---------- work list & placeholder scenario guide ---------- */
 
   function visibleWorks() {
     var needle = state.filterText.trim().toLowerCase();
@@ -330,9 +396,39 @@
     });
   }
 
+  function renderPlaceholderGuide() {
+    var guide = document.getElementById("placeholder-guide");
+    if (!guide) { return; }
+    while (guide.firstChild) { guide.removeChild(guide.firstChild); }
+    if (!state.works.length) { return; }
+    guide.appendChild(el("p", "guide-heading", t("detail.guideTitle")));
+    var grid = el("div", "guide-grid");
+    state.works.slice(0, 6).forEach(function (work) {
+      var card = document.createElement("button");
+      card.type = "button";
+      card.className = "guide-card";
+      var head = el("div", "guide-card-head");
+      head.appendChild(el("span", "work-id", work.id));
+      head.appendChild(el("span", chipClass("chip-st-", work.status), work.status));
+      card.appendChild(head);
+      var descText = demoShort(work.id);
+      if (descText) {
+        card.appendChild(el("p", "guide-card-desc", descText));
+      }
+      var owner = work.owner === undefined || work.owner === null
+        ? t("f.noOwner") : work.owner;
+      card.appendChild(el("span", "guide-card-meta",
+        owner + (work.outcome ? " · " + work.outcome : "") + " · v" + work.state_version));
+      card.addEventListener("click", function () { selectWork(work.id); });
+      grid.appendChild(card);
+    });
+    guide.appendChild(grid);
+  }
+
   function renderList() {
     renderFilterOptions();
     renderListItems();
+    renderPlaceholderGuide();
   }
 
   function renderListItems() {
@@ -364,12 +460,16 @@
       var row = el("div", "row");
       row.appendChild(el("span", "work-id", work.id));
       row.appendChild(el("span", chipClass("chip-st-", work.status), work.status));
+      item.appendChild(row);
+      var scenario = demoShort(work.id);
+      if (scenario) {
+        item.appendChild(el("div", "work-scenario", scenario));
+      }
       var sub = el("div", "work-sub");
       var owner = work.owner === undefined || work.owner === null
         ? t("f.noOwner") : work.owner;
       sub.textContent = owner + (work.outcome ? " · " + work.outcome : "")
         + " · v" + work.state_version;
-      item.appendChild(row);
       item.appendChild(sub);
       item.addEventListener("click", function () { selectWork(work.id); });
       box.appendChild(item);
@@ -528,15 +628,87 @@
     return wrap;
   }
 
-  function renderOverview(work) {
+  function kpiButton(tabId, label, valueText, subText) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "kpi-card";
+    btn.appendChild(el("span", "kpi-label", label));
+    btn.appendChild(el("span", "kpi-val", valueText));
+    btn.appendChild(el("span", "kpi-sub", subText));
+    btn.addEventListener("click", function () { activateTab(tabId); });
+    return btn;
+  }
+
+  function renderOverviewKpis(payload) {
+    var work = payload.work;
+    var reqs = (work && work.requirements) || [];
+    var satisfied = reqs.filter(function (r) {
+      return r.fulfillment === "satisfied";
+    }).length;
+    var evd = payload.evidence || [];
+    var verified = evd.filter(function (e) {
+      return e.status === "verified";
+    }).length;
+    var ops = payload.operations || [];
+    var latestOp = ops.length ? textOrDash(ops[ops.length - 1].status) : "—";
+    var cmds = payload.commands || [];
+    var accepted = cmds.filter(function (c) {
+      return c.decision === "accepted";
+    }).length;
+    var rejected = cmds.filter(function (c) {
+      return c.decision === "rejected";
+    }).length;
+
+    var strip = el("div", "overview-kpis");
+    strip.appendChild(kpiButton(
+      "requirements",
+      t("tab.requirements"),
+      t("kpi.requirements", { satisfied: satisfied, total: reqs.length }),
+      t("kpi.requirementsSub")
+    ));
+    strip.appendChild(kpiButton(
+      "evidence",
+      t("tab.evidence"),
+      t("kpi.evidence", { verified: verified, total: evd.length }),
+      t("kpi.evidenceSub")
+    ));
+    strip.appendChild(kpiButton(
+      "operations",
+      t("tab.operations"),
+      t("kpi.operations", { total: ops.length }),
+      t("kpi.operationsSub", { latest: latestOp })
+    ));
+    strip.appendChild(kpiButton(
+      "decisions",
+      t("tab.decisions"),
+      t("kpi.decisions", { total: cmds.length }),
+      t("kpi.decisionsSub", { accepted: accepted, rejected: rejected })
+    ));
+    return strip;
+  }
+
+  function renderOverview(work, payload) {
     var panel = el("div");
+    if (payload) {
+      panel.appendChild(renderOverviewKpis(payload));
+    }
     var contract = work.contract;
-    panel.appendChild(fieldList([
+    var grid = el("div", "overview-grid");
+
+    var lifeCard = el("div", "overview-section-card");
+    lifeCard.appendChild(el("h3", "", t("sec.lifecycle")));
+    lifeCard.appendChild(fieldList([
       [t("f.status"), textOrDash(work.status)],
       [t("f.stateVersion"), textOrDash(work.state_version)],
       [t("f.owner"), work.owner === undefined || work.owner === null
         ? t("f.noOwner") : work.owner],
-      [t("f.outcome"), textOrDash(work.outcome)],
+      [t("f.outcome"), textOrDash(work.outcome)]
+    ]));
+    grid.appendChild(lifeCard);
+
+    var contractCard = el("div", "overview-section-card");
+    contractCard.appendChild(el("h3", "", t("sec.contract")));
+    contractCard.appendChild(fieldList([
       [t("f.policy"), contract
         ? contract.policy_id + " " + contract.policy_version : "—"],
       [t("f.policyRevision"), contract ? textOrDash(contract.revision) : "—"],
@@ -545,6 +717,10 @@
       [t("f.documentRevision"), textOrDash(work.document_revision)],
       [t("f.documentDigest"), textOrDash(work.document_digest), "mono"]
     ]));
+    grid.appendChild(contractCard);
+
+    panel.appendChild(grid);
+
     panel.appendChild(el("h3", "", t("f.waits")));
     if (work.waits && work.waits.length) {
       panel.appendChild(dataTable(
@@ -632,6 +808,16 @@
       actions.appendChild(button);
     });
     box.appendChild(actions);
+    return box;
+  }
+
+  function renderScenarioBanner(work) {
+    var text = demoLong(work.id);
+    if (!text) { return null; }
+    var box = el("div", "scenario-banner");
+    var label = el("strong", "", t("demo.label") + ": ");
+    box.appendChild(label);
+    box.appendChild(document.createTextNode(text));
     return box;
   }
 
@@ -861,15 +1047,17 @@
     while (body.firstChild) { body.removeChild(body.firstChild); }
 
     var head = el("div", "detail-head");
-    head.appendChild(el("h2", "detail-title", work.id));
-    head.appendChild(el("span", chipClass("chip-st-", work.status), work.status));
+    var headMain = el("div", "detail-head-main");
+    headMain.appendChild(el("h2", "detail-title", work.id));
+    headMain.appendChild(el("span", chipClass("chip-st-", work.status), work.status));
     if (work.outcome) {
-      head.appendChild(el("span", chipClass("chip-st-", work.outcome), work.outcome));
+      headMain.appendChild(el("span", chipClass("chip-st-", work.outcome), work.outcome));
     }
     var owner = work.owner === undefined || work.owner === null
       ? t("f.noOwner") : work.owner;
-    head.appendChild(el("span", "detail-sub", t("f.owner") + ": " + owner
+    headMain.appendChild(el("span", "detail-sub", t("f.owner") + ": " + owner
       + " · " + t("f.stateVersion") + ": " + textOrDash(work.state_version)));
+    head.appendChild(headMain);
     body.appendChild(head);
 
     var banner = renderCancellationBanner(work, payload.operations);
@@ -877,6 +1065,9 @@
 
     var revokedNotice = renderRevokedNotice(payload);
     if (revokedNotice) { body.appendChild(revokedNotice); }
+
+    var scenarioBanner = renderScenarioBanner(work);
+    if (scenarioBanner) { body.appendChild(scenarioBanner); }
 
     var tablist = el("div", "tabs");
     tablist.setAttribute("role", "tablist");
@@ -908,7 +1099,7 @@
 
     var panel = el("div", "tabpanel");
     panel.setAttribute("role", "tabpanel");
-    if (state.activeTab === "overview") { panel.appendChild(renderOverview(work)); }
+    if (state.activeTab === "overview") { panel.appendChild(renderOverview(work, payload)); }
     else if (state.activeTab === "requirements") { panel.appendChild(renderRequirements(work)); }
     else if (state.activeTab === "evidence") { panel.appendChild(renderEvidence(payload.evidence)); }
     else if (state.activeTab === "operations") { panel.appendChild(renderOperations(payload.operations)); }
@@ -968,6 +1159,7 @@
           state.worksJson = serialized;
           renderListItems();  /* skipped when unchanged, to keep list focus */
           renderFilterOptions();
+          renderPlaceholderGuide();
         }
         clearDisconnected();
       })

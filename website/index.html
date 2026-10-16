@@ -36,6 +36,20 @@
       <a class="btn btn-primary btn-lg" href="#start">Run the demo</a>
       <a class="btn btn-secondary btn-lg" href="https://github.com/WayJ/governed-agentic-work-runtime">View on GitHub</a>
     </div>
+    <div class="hero-highlights">
+      <div class="hero-stat">
+        <div class="hero-stat-label">01 &middot; Durable state</div>
+        <p class="hero-stat-desc">Work obligations, waits, command receipts and logical operations persist in SQLite across process restarts.</p>
+      </div>
+      <div class="hero-stat">
+        <div class="hero-stat-label">02 &middot; Policy &amp; proof split</div>
+        <p class="hero-stat-desc">Policy rules gate proposed actions before execution; verified evidence is required before recording SUCCEEDED.</p>
+      </div>
+      <div class="hero-stat">
+        <div class="hero-stat-label">03 &middot; Same-key recovery</div>
+        <p class="hero-stat-desc">Post-commit crashes recover the original external receipt by business key instead of re-executing blindly.</p>
+      </div>
+    </div>
   </section>
 
   <section id="why" class="container">
@@ -57,9 +71,9 @@
       </div>
     </div>
     <ul class="distinctions">
-      <li><strong>Work vs. plan</strong> — removing a step cannot remove the requirement for approval.</li>
-      <li><strong>Command vs. operation vs. attempt</strong> — lost responses and retries retain the original business identity.</li>
-      <li><strong>Execution vs. proof</strong> — a completed tool call cannot establish a business result without matching evidence.</li>
+      <li><strong>Work vs. plan</strong> Removing a plan step cannot remove the contract requirement for approval.</li>
+      <li><strong>Command vs. operation vs. attempt</strong> Lost responses and retries retain the original business identity.</li>
+      <li><strong>Execution vs. proof</strong> A completed tool call cannot establish a business result without matching evidence.</li>
     </ul>
   </section>
 
@@ -98,7 +112,7 @@
   <section id="demo" class="container">
     <p class="eyebrow">Demo</p>
     <h2 class="section-title">Watch it recover from a real crash</h2>
-    <p class="sample-note"><span class="badge">Sample</span> <strong>Illustrated sample</strong> — the six stages below are the recorded output of <code>python3 -m work_runtime demo</code>, not a running Python engine or a live agent.</p>
+    <p class="sample-note"><span class="badge">Sample</span> <strong>Illustrated sample</strong> — the six stages below are the recorded output of <code>python3 -m work_runtime demo</code>, not a running Python engine or a live agent. Click any stage card or use the controls to inspect the runtime state transition.</p>
     <ol id="recovery-stages" class="stages">
       <li class="stage">
         <h3>Proposal blocked</h3>
@@ -131,23 +145,60 @@
     <div class="code-block">
       <pre data-copyable data-label="GUI demo command"><code>python3 -m work_runtime ui-demo</code></pre>
     </div>
-    <p class="arch-note">Screenshots of the actual current interface, seeded by <code>ui-demo</code> with its five-work sample (waiting, needs-attention, transferred, succeeded, cancelled). This public site never connects to your local UI or database.</p>
+    <p class="arch-note"><code>ui-demo</code> seeds a five-work expense store through real runtime commands and serves the local operations viewer on loopback. Each seeded work demonstrates a distinct lifecycle guarantee:</p>
+    <div class="sample-works-grid">
+      <div class="sample-work-card">
+        <div class="sample-work-head">
+          <span class="sample-work-id">wait-1</span>
+          <span class="sample-work-chip st-warn">waiting</span>
+        </div>
+        <p class="sample-work-desc">Durable wait on E05 approval; submitted evidence is pending verification while the earlier rejected proposal remains recorded.</p>
+      </div>
+      <div class="sample-work-card">
+        <div class="sample-work-head">
+          <span class="sample-work-id">uncertain-1</span>
+          <span class="sample-work-chip st-err">needs_attention</span>
+        </div>
+        <p class="sample-work-desc">External OA committed the effect before response loss; unavailable lookup escalates without losing the external application.</p>
+      </div>
+      <div class="sample-work-card">
+        <div class="sample-work-head">
+          <span class="sample-work-id">transfer-1</span>
+          <span class="sample-work-chip st-ok">active</span>
+        </div>
+        <p class="sample-work-desc">Ownership handover to <code>delegate</code> invalidated the prior intent; the new owner readmitted the same logical operation.</p>
+      </div>
+      <div class="sample-work-card">
+        <div class="sample-work-head">
+          <span class="sample-work-id">succeed-1</span>
+          <span class="sample-work-chip st-ok">closed &middot; succeeded</span>
+        </div>
+        <p class="sample-work-desc">Confirmed external acceptance paired with verified proofs closes the work as succeeded.</p>
+      </div>
+      <div class="sample-work-card">
+        <div class="sample-work-head">
+          <span class="sample-work-id">cancel-1</span>
+          <span class="sample-work-chip st-err">closed &middot; cancelled</span>
+        </div>
+        <p class="sample-work-desc">Uncertain submission is reconciled first; cancellation explicitly acknowledges the retained external effect.</p>
+      </div>
+    </div>
     <div class="showcase-grid">
       <figure class="shot">
-        <img src="assets/gui-en-desktop.png" alt="English desktop screenshot of the Governed Work local GUI: metric tiles with definitions and the five-work sample list." width="1280" height="900" loading="lazy">
-        <figcaption>English, desktop — sample data seeded by ui-demo.</figcaption>
+        <img src="assets/gui-en-desktop.png" alt="English desktop screenshot of the Governed Work local GUI: top summary metric band, five-work navigator list, and cancel-1 detail inspector." width="1280" height="900" loading="lazy">
+        <figcaption>English, desktop (1280&times;900) — top summary band, aligned work navigator and structured detail inspector.</figcaption>
       </figure>
       <figure class="shot">
-        <img src="assets/gui-zh-desktop.png" alt="Chinese desktop screenshot of the Governed Work local GUI: metric tiles with definitions and the five-work sample list." width="1280" height="900" loading="lazy">
-        <figcaption>Chinese, desktop — the same sample store, one toggle away.</figcaption>
+        <img src="assets/gui-zh-desktop.png" alt="Chinese desktop screenshot of the Governed Work local GUI: top summary metric band, five-work navigator list, and cancel-1 detail inspector." width="1280" height="900" loading="lazy">
+        <figcaption>Chinese, desktop (1280&times;900) — the same sample store, one toggle away.</figcaption>
       </figure>
       <figure class="shot">
         <img src="assets/gui-en-390.png" alt="English narrow-screen screenshot of the Governed Work local GUI at 390 pixels wide." width="390" height="844" loading="lazy">
-        <figcaption>English, 390px — the viewer stays usable on a narrow screen.</figcaption>
+        <figcaption>English, 390px — compact two-column metrics keep filters and work list in frame.</figcaption>
       </figure>
       <figure class="shot">
         <img src="assets/gui-zh-390.png" alt="Chinese narrow-screen screenshot of the Governed Work local GUI at 390 pixels wide." width="390" height="844" loading="lazy">
-        <figcaption>Chinese, 390px — bilingual labels throughout.</figcaption>
+        <figcaption>Chinese, 390px — bilingual labels and scenario summaries throughout.</figcaption>
       </figure>
     </div>
   </section>
@@ -163,10 +214,10 @@ python3 -m work_runtime demo</code></pre>
     <p class="start-notes">Requires Python 3.9 or newer. No model API key, no credentials, no third-party runtime dependencies. Every demo run creates a new temporary directory and never overwrites previous runs.</p>
     <p class="eyebrow subsection-gap">More demos in the same checkout</p>
     <ul class="optional-demos">
-      <li><code>python3 -m work_runtime publish-demo</code> <span class="demo-desc">— signed evidence gates a publication: HMAC envelopes, tamper rejection, same-key recovery after a timeout.</span></li>
-      <li><code>python3 -m work_runtime intervention-demo</code> <span class="demo-desc">— ownership transfer, cancellation with an uncertain external effect, explicit policy migration.</span></li>
-      <li><code>python3 -m work_runtime adoption-demo</code> <span class="demo-desc">— static SOP rule-card linting plus a real file publication through the third adapter.</span></li>
-      <li><code>python3 -m work_runtime ui-demo</code> <span class="demo-desc">— seeds the five-work sample store and serves the local read-only GUI.</span></li>
+      <li><code>python3 -m work_runtime publish-demo</code> <span class="demo-desc">Signed evidence gates a publication: HMAC envelopes, tamper rejection, same-key recovery after a timeout.</span></li>
+      <li><code>python3 -m work_runtime intervention-demo</code> <span class="demo-desc">Ownership transfer, cancellation with an uncertain external effect, explicit policy migration.</span></li>
+      <li><code>python3 -m work_runtime adoption-demo</code> <span class="demo-desc">Static SOP rule-card linting plus a real file publication through the third adapter.</span></li>
+      <li><code>python3 -m work_runtime ui-demo</code> <span class="demo-desc">Seeds the five-work sample store and serves the local read-only operations GUI.</span></li>
     </ul>
     <ul class="doc-links">
       <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/README.md">README</a></li>

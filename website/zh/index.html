@@ -36,6 +36,20 @@
       <a class="btn btn-primary btn-lg" href="#start">运行演示</a>
       <a class="btn btn-secondary btn-lg" href="https://github.com/WayJ/governed-agentic-work-runtime">在 GitHub 查看</a>
     </div>
+    <div class="hero-highlights">
+      <div class="hero-stat">
+        <div class="hero-stat-label">01 &middot; 持久化状态</div>
+        <p class="hero-stat-desc">工作义务、等待、命令回执与逻辑操作全部落盘至 SQLite，跨越进程重启与会话中断。</p>
+      </div>
+      <div class="hero-stat">
+        <div class="hero-stat-label">02 &middot; 准入与证明分离</div>
+        <p class="hero-stat-desc">策略规则在外部调用前拦截不合规提议；完成闭环前必须匹配经核验的证据。</p>
+      </div>
+      <div class="hero-stat">
+        <div class="hero-stat-label">03 &middot; 同键崩溃恢复</div>
+        <p class="hero-stat-desc">外部受理后若进程崩溃，重启后按原业务键找回受理记录，绝不盲目重复提交。</p>
+      </div>
+    </div>
   </section>
 
   <section id="why" class="container">
@@ -57,9 +71,9 @@
       </div>
     </div>
     <ul class="distinctions">
-      <li><strong>工作 vs 计划</strong> —— 删掉一个计划步骤，不能免除它的审批要求。</li>
-      <li><strong>命令 vs 操作 vs 尝试</strong> —— 响应丢失与重试保留原业务身份。</li>
-      <li><strong>执行 vs 证明</strong> —— 没有匹配证据的完成调用，不能确立业务结果。</li>
+      <li><strong>工作 vs 计划</strong> 删掉一个计划步骤，不能免除它的审批要求。</li>
+      <li><strong>命令 vs 操作 vs 尝试</strong> 响应丢失与重试保留原业务身份。</li>
+      <li><strong>执行 vs 证明</strong> 没有匹配证据的完成调用，不能确立业务结果。</li>
     </ul>
   </section>
 
@@ -98,7 +112,7 @@
   <section id="demo" class="container">
     <p class="eyebrow">演示</p>
     <h2 class="section-title">看它从一次真实崩溃中恢复</h2>
-    <p class="sample-note"><span class="badge">示例</span> <strong>示例演示</strong> —— 以下六步是 <code>python3 -m work_runtime demo</code> 的真实输出记录，不是运行中的 Python 引擎，也不是在线 Agent。</p>
+    <p class="sample-note"><span class="badge">示例</span> <strong>示例演示</strong> —— 以下六步是 <code>python3 -m work_runtime demo</code> 的真实输出记录，不是运行中的 Python 引擎，也不是在线 Agent。点击任意阶段卡片或使用按钮即可查看对应的持久状态变化。</p>
     <ol id="recovery-stages" class="stages">
       <li class="stage">
         <h3>提议被阻断</h3>
@@ -131,23 +145,60 @@
     <div class="code-block">
       <pre data-copyable data-label="GUI 演示命令"><code>python3 -m work_runtime ui-demo</code></pre>
     </div>
-    <p class="arch-note">以下为当前真实界面截图，由 <code>ui-demo</code> 播种的五工作样例（等待、需关注、已转移、成功、已取消）。本公共站点不会连接你的本地界面或数据库。</p>
+    <p class="arch-note"><code>ui-demo</code> 通过真实运行时命令播种五项报销工作并启动本地只读运维查看器，每项工作对应一种典型的治理与恢复状态：</p>
+    <div class="sample-works-grid">
+      <div class="sample-work-card">
+        <div class="sample-work-head">
+          <span class="sample-work-id">wait-1</span>
+          <span class="sample-work-chip st-warn">waiting</span>
+        </div>
+        <p class="sample-work-desc">在 E05 审批规则上持久等待；已提交的审批证据待核验，早期被拒提议作为历史决策保留。</p>
+      </div>
+      <div class="sample-work-card">
+        <div class="sample-work-head">
+          <span class="sample-work-id">uncertain-1</span>
+          <span class="sample-work-chip st-err">needs_attention</span>
+        </div>
+        <p class="sample-work-desc">外部 OA 已受理但响应丢失，权威查询不可用时升级为需关注，外部真实申请完整保留。</p>
+      </div>
+      <div class="sample-work-card">
+        <div class="sample-work-head">
+          <span class="sample-work-id">transfer-1</span>
+          <span class="sample-work-chip st-ok">active</span>
+        </div>
+        <p class="sample-work-desc">负责人移交至 <code>delegate</code> 使原准备意图失效；新负责人重入同一逻辑操作并完成确认。</p>
+      </div>
+      <div class="sample-work-card">
+        <div class="sample-work-head">
+          <span class="sample-work-id">succeed-1</span>
+          <span class="sample-work-chip st-ok">closed &middot; succeeded</span>
+        </div>
+        <p class="sample-work-desc">外部确认回执与核验证据齐备，工作以 succeeded 结果完成验收关闭。</p>
+      </div>
+      <div class="sample-work-card">
+        <div class="sample-work-head">
+          <span class="sample-work-id">cancel-1</span>
+          <span class="sample-work-chip st-err">closed &middot; cancelled</span>
+        </div>
+        <p class="sample-work-desc">不确定提交先经对账确认为已生效，取消闭环显式确认并保留外部真实效果。</p>
+      </div>
+    </div>
     <div class="showcase-grid">
       <figure class="shot">
-        <img src="../assets/gui-zh-desktop.png" alt="Governed Work 本地界面的中文桌面截图：带定义的指标磁贴与五工作样例列表。" width="1280" height="900" loading="lazy">
-        <figcaption>中文，桌面 —— ui-demo 播种的样例数据。</figcaption>
+        <img src="../assets/gui-zh-desktop.png" alt="Governed Work 本地界面的中文桌面截图：顶部指标概览带、对齐的五工作列表与 cancel-1 详情面板。" width="1280" height="900" loading="lazy">
+        <figcaption>中文，桌面（1280&times;900）—— 顶部全局指标带、左侧工作导航与右侧结构化详情面板。</figcaption>
       </figure>
       <figure class="shot">
-        <img src="../assets/gui-en-desktop.png" alt="Governed Work 本地界面的英文桌面截图：带定义的指标磁贴与五工作样例列表。" width="1280" height="900" loading="lazy">
-        <figcaption>英文，桌面 —— 同一样例库，一键切换。</figcaption>
+        <img src="../assets/gui-en-desktop.png" alt="Governed Work 本地界面的英文桌面截图：顶部指标概览带、对齐的五工作列表与 cancel-1 详情面板。" width="1280" height="900" loading="lazy">
+        <figcaption>英文，桌面（1280&times;900）—— 同一样例库，一键切换语言。</figcaption>
       </figure>
       <figure class="shot">
         <img src="../assets/gui-zh-390.png" alt="Governed Work 本地界面在 390 像素窄屏下的中文截图。" width="390" height="844" loading="lazy">
-        <figcaption>中文，390px —— 窄屏下查看器保持可用。</figcaption>
+        <figcaption>中文，390px —— 紧凑双列指标卡让筛选栏与工作列表首屏直接可见。</figcaption>
       </figure>
       <figure class="shot">
         <img src="../assets/gui-en-390.png" alt="Governed Work 本地界面在 390 像素窄屏下的英文截图。" width="390" height="844" loading="lazy">
-        <figcaption>英文，390px —— 全程中英双语标签。</figcaption>
+        <figcaption>英文，390px —— 全程中英双语标签与场景说明。</figcaption>
       </figure>
     </div>
   </section>
@@ -163,10 +214,10 @@ python3 -m work_runtime demo</code></pre>
     <p class="start-notes">需要 Python 3.9 或更高版本。无需模型 API Key、无需凭据、无第三方运行依赖。每次演示运行都创建新的临时目录，绝不覆盖之前的结果。</p>
     <p class="eyebrow subsection-gap">同一检出中的更多演示</p>
     <ul class="optional-demos">
-      <li><code>python3 -m work_runtime publish-demo</code> <span class="demo-desc">—— 签名证据守住发布关口：HMAC 信封、篡改拒绝、超时后同键恢复。</span></li>
-      <li><code>python3 -m work_runtime intervention-demo</code> <span class="demo-desc">—— 所有权转移、不确定外部效果的取消、显式策略迁移。</span></li>
-      <li><code>python3 -m work_runtime adoption-demo</code> <span class="demo-desc">—— 静态 SOP 规则卡检查，加上经第三个适配器的真实文件发布。</span></li>
-      <li><code>python3 -m work_runtime ui-demo</code> <span class="demo-desc">—— 播种五工作样例库并启动本地只读界面。</span></li>
+      <li><code>python3 -m work_runtime publish-demo</code> <span class="demo-desc">签名证据守住发布关口：HMAC 信封、篡改拒绝、超时后同键恢复。</span></li>
+      <li><code>python3 -m work_runtime intervention-demo</code> <span class="demo-desc">所有权转移、不确定外部效果的取消、显式策略迁移。</span></li>
+      <li><code>python3 -m work_runtime adoption-demo</code> <span class="demo-desc">静态 SOP 规则卡检查，加上经第三个适配器的真实文件发布。</span></li>
+      <li><code>python3 -m work_runtime ui-demo</code> <span class="demo-desc">播种五工作样例库并启动本地只读运维界面。</span></li>
     </ul>
     <ul class="doc-links">
       <li><a href="https://github.com/WayJ/governed-agentic-work-runtime/blob/main/README.zh-CN.md">中文 README</a></li>
