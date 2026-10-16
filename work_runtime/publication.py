@@ -13,9 +13,11 @@ local principal names, not authenticated identities; signed ingress
 authenticates sources within a shared-key boundary only. Nothing here is a
 security, TLS, KMS or distributed exactly-once claim. Published cards never
 execute: the loader and pin are explicit operator checks with no Runtime
-wiring and no card-to-policy compilation (D62). There is no withdrawal in
-this slice (D63); approver-key rotation follows the S11 configuration
-semantics and never touches publication history.
+wiring and no card-to-policy compilation (D62). S12 deferred withdrawal
+(D63); S13 adds it additively in this module per ratified D67–D79 — a
+second immutable record artifact, never a mutation of history — and
+approver-key rotation follows the S11 configuration semantics, never
+touching publication history.
 """
 
 import os
@@ -93,10 +95,115 @@ class SopPublicationStore:
     def lookup(self, key):
         return self.publisher.lookup(key)
 
-# Fail-closed read path (D62): every failure below is a bounded ValueError
-# naming the violation class only. Absence, corruption, digest mismatch and
-# identity mismatch stay distinguishable; nothing degrades to an unpinned
-# card and no fallback or silent skip exists.
+
+# Withdrawal surface (S13, D67–D79): a withdrawal is a second immutable
+# hash-named record artifact in the same store directory under its own
+# digest-based key. The record document is the same closed four-field shape
+# the governed withdrawal work carries, so the same withdrawal is
+# byte-idempotent and no free text ever enters the store (D69).
+WITHDRAWAL_KEY_PREFIX = "sop-withdrawn:"
+WITHDRAWAL_DISCRIMINATOR = "sop.withdrawal"
+WITHDRAWAL_REQUEST_KEYS = {"discriminator", "policy_id", "policy_version",
+                           "published_digest"}
+
+WITHDRAWAL_IDENTITY_MESSAGE = ("withdrawal identity requires nonempty string "
+                               "policy id and version")
+WITHDRAWAL_REQUEST_MESSAGE = ("withdrawal request must carry exactly the "
+                              "closed discriminator, policy id, policy "
+                              "version and published digest fields with "
+                              "nonempty string values")
+WITHDRAWN_MESSAGE = ("this published version is withdrawn; corrected "
+                     "content requires a new version")
+WITHDRAWAL_RECORD_INVALID_MESSAGE = ("withdrawal record for this version is "
+                                     "invalid or does not bind it")
+
+WITHDRAWAL_TARGET_ABSENT = "TARGET_PUBLICATION_ABSENT"
+WITHDRAWAL_TARGET_DIGEST = "TARGET_DIGEST_MISMATCH"
+
+
+def is_withdrawal_request(document):
+    """True for the exact closed withdrawal record shape (D69); never raises.
+
+    The shape is id-less and carries no free text, so it is deterministic
+    given the target identity and effectively immutable: a content change
+    enters as a new withdrawal request, never as a revision.
+    """
+    if not isinstance(document, dict) or set(document) != WITHDRAWAL_REQUEST_KEYS:
+        return False
+    if document.get("discriminator") != WITHDRAWAL_DISCRIMINATOR:
+        return False
+    return all(isinstance(document.get(field), str) and document.get(field)
+               for field in ("policy_id", "policy_version", "published_digest"))
+
+
+def withdrawal_key(policy_id, policy_version):
+    """Collision-free store key for one withdrawn (policy id, version) (D68).
+
+    The D56 digest form on the same identity basis as the publication key;
+    the committed path is ``sha256(key)`` hex as always.
+    """
+    if (type(policy_id) is not str or not policy_id
+            or type(policy_version) is not str or not policy_version):
+        raise ValueError(WITHDRAWAL_IDENTITY_MESSAGE)
+    return WITHDRAWAL_KEY_PREFIX + digest([policy_id, policy_version])
+
+
+class SopWithdrawalStore:
+    """Thin withdrawal wrapper over an unchanged ``FilePublisher`` (D74).
+
+    Declares its own contract so dispatch's action check admits the
+    ``sop.withdraw`` capability without touching the shipped publication
+    wrapper. Immutability, hash-naming, race and corruption semantics are
+    inherited wholesale; the wrapper adds one governed refusal: a record
+    whose target publication artifact is absent or holds different content
+    resolves as a **rejected receipt** — the governed work then resolves
+    ``confirmed_failed`` and stays cancellable. The drafted ``ValueError``
+    refusal channel was rejected at ratification (RV-F1): it strands the
+    work at an unresolvable outcome.
+    """
+
+    # Declared assertions for trusted local configuration, not guarantees.
+    contract = AdapterContract(
+        actions=("sop.withdraw",),
+        idempotency_scope="directory:withdrawal-key",
+        retention="lifetime-of-directory",
+        lookup_consistency="authoritative-by-key",
+        uniqueness=("withdrawal.key",))
+
+    def __init__(self, directory):
+        self.publisher = FilePublisher(directory)
+
+    def _rejected_receipt(self, key, content_digest, reason):
+        # The refusal id is deterministic, so the same refusal is idempotent;
+        # the digest binds the operation so receipt validation resolves the
+        # failure truthfully instead of quarantining it.
+        return {"status": "rejected",
+                "external_id": "SOP-WITHDRAWAL-REFUSED-" + reason + "-"
+                               + digest([key, reason]),
+                "digest": content_digest,
+                "reason": reason}
+
+    def execute(self, key, document, content_digest):
+        if is_withdrawal_request(document):
+            target = self.publisher.read_validated(
+                _identity_key(document["policy_id"],
+                              document["policy_version"]))
+            if target is None:
+                return self._rejected_receipt(key, content_digest,
+                                              WITHDRAWAL_TARGET_ABSENT)
+            if target["content_digest"] != document["published_digest"]:
+                return self._rejected_receipt(key, content_digest,
+                                              WITHDRAWAL_TARGET_DIGEST)
+        return self.publisher.execute(key, document, content_digest)
+
+    def lookup(self, key):
+        return self.publisher.lookup(key)
+
+# Fail-closed read path (D62/D72): every failure below is a bounded ValueError
+# naming the violation class only. Absence, corruption, digest mismatch,
+# identity mismatch, withdrawal and an invalid withdrawal record stay
+# distinguishable; nothing degrades to an unpinned card and no fallback or
+# silent skip exists.
 ABSENT_MESSAGE = "no published card is committed for this policy version"
 DIGEST_MISMATCH_MESSAGE = "published card digest does not match the stored artifact"
 IDENTITY_MISMATCH_MESSAGE = ("published card identity does not match the "
@@ -131,7 +238,53 @@ def _read_publication_artifact(directory, policy_id, policy_version):
     policy = card["policy"]
     if policy["id"] != policy_id or policy["version"] != policy_version:
         raise ValueError(IDENTITY_MISMATCH_MESSAGE)
+    record = _read_withdrawal_record(directory, policy_id, policy_version)
+    if record is not None:
+        # A standing record that binds this exact artifact withdraws it;
+        # a record that does not bind it leaves the version under dispute
+        # and is never silently served as valid (D72, fail-closed).
+        if record["published_digest"] == artifact["content_digest"]:
+            raise ValueError(WITHDRAWN_MESSAGE)
+        raise ValueError(WITHDRAWAL_RECORD_INVALID_MESSAGE)
     return artifact
+
+
+def _read_withdrawal_record(directory, policy_id, policy_version):
+    """The validated withdrawal record for one version, or ``None``.
+
+    Missing-store reads return ``None`` without creating the directory.
+    Every adapter violation class on the record maps by explicit
+    catch-and-re-raise onto this module's one invalid-record error, so the
+    adapter's internal vocabulary never leaks as extra loader classes
+    (RV-F5). A record that does not carry this version's identity is
+    equally refused.
+    """
+    if not isinstance(directory, str) or not directory or not os.path.isdir(directory):
+        return None
+    try:
+        artifact = FilePublisher(directory).read_validated(
+            withdrawal_key(policy_id, policy_version))
+    except ValueError:
+        raise ValueError(WITHDRAWAL_RECORD_INVALID_MESSAGE) from None
+    if artifact is None:
+        return None
+    record = artifact["document"]
+    if (not is_withdrawal_request(record)
+            or record["policy_id"] != policy_id
+            or record["policy_version"] != policy_version):
+        raise ValueError(WITHDRAWAL_RECORD_INVALID_MESSAGE)
+    return record
+
+
+def withdrawal_record(directory, policy_id, policy_version):
+    """Audit read: the validated withdrawal record of record, or ``None``.
+
+    Current validity is not negotiable at the loader, so there is
+    deliberately no override parameter on the read surface — an operator
+    sees *that* a version was withdrawn (and, via the governed ledger, who
+    and when) through this dedicated function instead.
+    """
+    return _read_withdrawal_record(directory, policy_id, policy_version)
 
 
 def load_published_card(directory, policy_id, policy_version):
@@ -139,10 +292,11 @@ def load_published_card(directory, policy_id, policy_version):
 
     Raises a bounded ``ValueError`` when the version is absent (including a
     missing store directory — never created by a read), the artifact is
-    corrupt, the recomputed digest disagrees with the stored artifact, or
-    the stored card's identity does not match the request. Returns the bare
-    stored card; the approval audit lives in the runtime evidence store,
-    not here (D59).
+    corrupt, the recomputed digest disagrees with the stored artifact, the
+    stored card's identity does not match the request, the version is
+    withdrawn (D72), or the standing withdrawal record does not bind this
+    artifact. Returns the bare stored card; the approval audit lives in the
+    runtime evidence store, not here (D59).
     """
     return _read_publication_artifact(directory, policy_id,
                                       policy_version)["document"]
@@ -180,16 +334,25 @@ def published_card_matches(card, policy):
 
 
 class SopPublicationPolicy:
-    """The governed ``sop.publish`` family (D54): S02 approval, S03 acceptance.
+    """The governed publication family (D54, D70): S02/S03 for cards,
+    W02/W03 for withdrawals — discriminated by the work document's shape.
 
-    Mirrors the publishing domain on the unchanged command protocol: S02 is
+    One policy family per database carries both governed acts: the
+    completion gate is capability-blind, so the requirement sets are
+    chosen by document shape — a lint-clean card gets the publication
+    rules, a well-formed closed withdrawal request gets the withdrawal
+    rules, and each capability is admitted only for its own shape. S02 is
     C02's shape — a version-bound signed ``card_approval`` of the current
-    content digest from the configured authority source — and S03 is C04's
-    shape, excluded from blockers because the store's own acceptance (the
-    runtime-written ``accepted`` proof) satisfies it. Admission lints the
-    card (D57): a dirty card is a bounded unpersisted ``ValueError``, the
-    house convention for malformed documents; the lint workflow itself
-    stays with ``lint-sop``.
+    content digest from the configured authority source — and S03 is
+    C04's shape, excluded from blockers because the store's own
+    acceptance (the runtime-written ``accepted`` proof) satisfies it.
+    W02 mirrors D58 with a signed ``card_withdrawal`` binding the exact
+    published digest; W03 is the store's acceptance of the withdrawal
+    record, excluded from blockers like S03. Admission accepts a
+    lint-clean card or a well-formed withdrawal request; anything else is
+    a bounded unpersisted ``ValueError``, the house convention for
+    malformed documents. There is no admin bypass: requirements are
+    evidence-driven only (D71).
     """
 
     id = "sop-publish"
@@ -197,22 +360,42 @@ class SopPublicationPolicy:
     goal = "sop.published"
     evidence_sources = {
         "card_approval": "sop-owner",
+        "card_withdrawal": "sop-owner",
         "accepted": "sop-store",
     }
 
     def validate_document(self, document):
+        if is_withdrawal_request(document):
+            return
+        if isinstance(document, dict) and "discriminator" in document:
+            # A near-miss withdrawal attempt names its own bounded
+            # requirement instead of the card lint's diagnostics.
+            raise ValueError(WITHDRAWAL_REQUEST_MESSAGE)
         sop_digest(document)  # Bounded ValueError when the card is not lint-clean.
 
     def validate_evidence(self, work, candidate):
         data = candidate["data"]
         kind = candidate["kind"]
+        document = work["document"]
+        withdrawal = is_withdrawal_request(document)
         if kind == "card_approval":
+            if withdrawal:
+                # Cross-shape isolation: a card approval binds cards only.
+                return False
             # Version-bound approval (D58): the exact {digest, policy_version}
             # shape with the version bound to the CARD's own policy version.
             return (set(data) == {"digest", "policy_version"}
                     and isinstance(data["digest"], str)
                     and data["policy_version"]
-                    == work["document"]["policy"]["version"])
+                    == document["policy"]["version"])
+        if kind == "card_withdrawal":
+            if not withdrawal:
+                # A withdrawal approval never satisfies anything on a card.
+                return False
+            # D58 mirror: the version binds the REQUEST's own policy version.
+            return (set(data) == {"digest", "policy_version"}
+                    and isinstance(data["digest"], str)
+                    and data["policy_version"] == document["policy_version"])
         if kind == "accepted":
             # Reserved shape adopted from Runtime-written receipts.
             return (set(data) == {"digest", "external_id"}
@@ -225,11 +408,15 @@ class SopPublicationPolicy:
         document = work["document"]
         current = work["document_digest"]
         proofs = [e for e in evidence if e["status"] == "verified"]
+        withdrawal = is_withdrawal_request(document)
 
-        def has(kind):
+        def has(kind, digest_value, policy_version=None):
             source = self.evidence_sources[kind]
             return any(e["kind"] == kind and e["source"] == source
-                       and e["data"].get("digest") == current for e in proofs)
+                       and e["data"].get("digest") == digest_value
+                       and (policy_version is None
+                            or e["data"].get("policy_version") == policy_version)
+                       for e in proofs)
 
         result = []
 
@@ -239,16 +426,40 @@ class SopPublicationPolicy:
                            "fulfillment": "satisfied" if satisfied else "pending",
                            "explanation": explanation})
 
+        if withdrawal:
+            subject = document["policy_id"]
+            add("W02", subject, has("card_withdrawal",
+                                    document["published_digest"],
+                                    document["policy_version"]),
+                "The configured authority must approve withdrawing the exact "
+                "published content with a version-bound signed card_withdrawal")
+            add("W03", subject, has("accepted", current),
+                "The publication store must accept the withdrawal record "
+                "(runtime-written proof)")
+            return result
+
         subject = document["policy"]["id"]
-        add("S02", subject, has("card_approval"),
+        add("S02", subject, has("card_approval", current),
             "The configured authority must approve the exact current card content "
             "with a version-bound signed card_approval")
-        add("S03", subject, has("accepted"),
+        add("S03", subject, has("accepted", current),
             "The publication store must accept the current card content "
             "(runtime-written proof)")
         return result
 
     def action_blockers(self, capability, requirements):
+        # The requirement rule ids reveal the work shape: a capability is
+        # admitted only for its own document shape (D70), so a mismatched
+        # pair is a bounded blocker and never reaches operation_key.
+        withdrawal_shaped = bool(requirements) and all(
+            r["rule_id"] in ("W02", "W03") for r in requirements)
+        if withdrawal_shaped:
+            if capability != "sop.withdraw":
+                return [{"code": "CAPABILITY_UNSUPPORTED", "capability": capability}]
+            return [r for r in requirements if r["rule_id"] != "W03" and
+                    (r["applicability"] in ("unknown", "conflict")
+                     or (r["applicability"] == "applicable"
+                         and r["fulfillment"] != "satisfied"))]
         if capability != "sop.publish":
             return [{"code": "CAPABILITY_UNSUPPORTED", "capability": capability}]
         return [r for r in requirements if r["rule_id"] != "S03" and
@@ -257,6 +468,11 @@ class SopPublicationPolicy:
                      and r["fulfillment"] != "satisfied"))]
 
     def operation_key(self, capability, work):
-        # The store key IS the business key (D66): re-proposing the same card
-        # converges on one operation identity per (policy id, version).
-        return publication_key(work["document"])
+        # The store key IS the business key (D66): one publication identity
+        # per card version and one withdrawal identity per withdrawn
+        # version, per database.
+        document = work["document"]
+        if is_withdrawal_request(document):
+            return withdrawal_key(document["policy_id"],
+                                  document["policy_version"])
+        return publication_key(document)
