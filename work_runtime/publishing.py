@@ -177,12 +177,15 @@ class FakePublisher:
             # callers; not a protocol rule (legacy adapters are simply never
             # called with kwargs).
             action = "content.publish"
-        if action != "content.publish":
-            # The paired retraction action widens this guard when its execution
-            # path lands (Task 3 of the S14 plan); declaring it in the contract
-            # first would hold at the runtime preflight, never execute blind.
+        if action not in ("content.publish", "content.unpublish"):
             raise ValueError("Unknown action: " + str(action))
-        if compensates is not None:
+        link_digest = None
+        if action == "content.unpublish":
+            if not self._valid_link(compensates):
+                raise ValueError("content.unpublish requires a compensates link "
+                                 "with operation_id, external_id and capability")
+            link_digest = digest(compensates)
+        elif compensates is not None:
             raise ValueError("Forward execution must not carry a compensates link")
         db = sqlite3.connect(self.path, timeout=15)
         try:
@@ -196,9 +199,12 @@ class FakePublisher:
                 # legacy NULL link digest means no compensation link).
                 if (old[0] != content_digest
                         or (old[1] or "content.publish") != action
-                        or old[2] is not None):
+                        or old[2] != link_digest):
                     raise ValueError("Idempotency key reused with different content")
                 result = json.loads(old[3])
+            elif action == "content.unpublish":
+                result = self._execute_retraction(db, key, content_digest,
+                                                   compensates, link_digest)
             else:
                 result = self._execute_forward(db, key, content_digest, document)
             db.commit()
@@ -210,6 +216,13 @@ class FakePublisher:
         if self.timeout_after_commit:
             raise TimeoutError("Response lost after the publisher committed")
         return result
+
+    @staticmethod
+    def _valid_link(compensates) -> bool:
+        return (isinstance(compensates, dict)
+                and set(compensates) == {"operation_id", "external_id", "capability"}
+                and all(isinstance(compensates[field], str) and compensates[field]
+                        for field in compensates))
 
     def _execute_forward(self, db, key, content_digest, document):
         existing = db.execute(
@@ -230,6 +243,56 @@ class FakePublisher:
         db.execute("INSERT INTO receipts (key,digest,result) VALUES (?,?,?)",
                    (key, content_digest, canonical(result)))
         return result
+
+    def _execute_retraction(self, db, key, content_digest, compensates, link_digest):
+        """One retraction effect per original; receipts stay the call surface.
+
+        Known absence of the original is an authoritative stored business
+        rejection (ORIGINAL_ABSENT); only a genuine store failure is left
+        uncertain (the caller sees the exception, never a fabricated verdict).
+        """
+        original = compensates["external_id"]
+        row = db.execute("SELECT external_id FROM retractions WHERE original_external_id=?",
+                         (original,)).fetchone()
+        if row is not None:
+            # Effect exists (possibly created under a different key in a shared
+            # store): record a requesting-digest alias receipt reusing the RTR id.
+            result = {"status": "accepted", "external_id": row[0],
+                      "digest": content_digest, "original_external_id": original}
+        elif self._forward_receipt_exists(db, original):
+            external_id = "RTR-" + uuid.uuid4().hex[:12]
+            db.execute("INSERT INTO retractions VALUES (?,?,?,?)",
+                       (original, external_id, key, content_digest))
+            result = {"status": "accepted", "external_id": external_id,
+                      "digest": content_digest, "original_external_id": original}
+        else:
+            result = {"status": "rejected", "external_id": "RTR-" + uuid.uuid4().hex[:12],
+                      "digest": content_digest, "original_external_id": original,
+                      "reason": "ORIGINAL_ABSENT"}
+        db.execute("INSERT INTO receipts (key,digest,result,action,link_digest) "
+                   "VALUES (?,?,?,?,?)",
+                   (key, content_digest, canonical(result), "content.unpublish",
+                    link_digest))
+        return result
+
+    @staticmethod
+    def _forward_receipt_exists(db, external_id) -> bool:
+        """Original existence = an accepted FORWARD receipt, not publications-only.
+
+        The publications short-circuit covers the common case; the receipts
+        scan is authoritative and keeps deciding presence when either side
+        lost rows (store repair stays honest in both directions).
+        """
+        if db.execute("SELECT 1 FROM publications WHERE external_id=? LIMIT 1",
+                      (external_id,)).fetchone():
+            return True
+        for action, stored in db.execute("SELECT action,result FROM receipts"):
+            result = json.loads(stored)
+            if (result.get("status") == "accepted"
+                    and (action is None or action == "content.publish")
+                    and result.get("external_id") == external_id):
+                return True
+        return False
 
     def lookup(self, key: str):
         db = sqlite3.connect(self.path)
