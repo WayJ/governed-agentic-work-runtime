@@ -771,5 +771,153 @@ class GovernedWithdrawalFlowTests(WithdrawalTestCase):
                          ("closed", "succeeded"))
 
 
+class RevocationCompositionTests(WithdrawalTestCase):
+    """S8 revoke_evidence composes with the sop-publish family and the
+    withdrawal record independently — pinned, previously unpinned (D79):
+    runtime proof validity and store validity never synchronize."""
+
+    def setUp(self):
+        super().setUp()
+        self.policy = SopPublicationPolicy()
+        self.grants = {"agent": {"work.manage", "sop.publish", "sop.withdraw"},
+                       "sop-owner": {"evidence.write"},
+                       "admin": {"work.intervene"}}
+        self.runtime = Runtime(os.path.join(self.root, "runtime.sqlite"),
+                               self.policy, self.grants)
+        self.approver_key = secrets.token_bytes(32)
+        self.gateway = SignedEvidenceGateway(
+            self.runtime, {"sop-owner": self.approver_key},
+            clock=lambda: FLOW_NOW)
+        self.card = card_with()
+        self.publish(self.card)
+        self.target_digest = sop_digest(self.card)
+        self.request = withdrawal_request(published_digest=self.target_digest)
+        self.wkey = withdrawal_key("expense-submit", "demo-1")
+
+    def _send(self, actor, work_id, kind, payload, command_id=None):
+        version = None
+        if kind not in ("create_work", "record_evidence"):
+            version = self.runtime.get_work(work_id)["state_version"]
+        return self.runtime.command(actor, command_id or uuid.uuid4().hex,
+                                    work_id, kind, payload, version)
+
+    def _complete_publication(self, work_id, card):
+        self._send("agent", work_id, "create_work", {"document": card})
+        self._send("agent", work_id, "bind_contract", {
+            "policy_id": self.policy.id, "policy_version": self.policy.version,
+            "goal": self.policy.goal})
+        work = self.runtime.get_work(work_id)
+        approval = sign_evidence(self.approver_key, {
+            "source": "sop-owner", "command_id": uuid.uuid4().hex,
+            "work_id": work_id, "event_id": uuid.uuid4().hex,
+            "kind": "card_approval",
+            "data": {"digest": work["document_digest"],
+                     "policy_version": card["policy"]["version"]},
+            "issued_at": FLOW_NOW})
+        self.gateway.record(approval)
+        self.runtime.verify_pending(work_id)
+        work = self.runtime.get_work(work_id)
+        intent = self.runtime.command(
+            "agent", uuid.uuid4().hex, work_id, "propose_action", {
+                "capability": "sop.publish",
+                "document_digest": work["document_digest"],
+                "contract_revision": work["contract"]["revision"],
+                "plan_revision": work["plan_revision"]},
+            work["state_version"])
+        self.runtime.dispatch(intent["operation_id"],
+                              SopPublicationStore(self.store_dir))
+        version = self.runtime.get_work(work_id)["state_version"]
+        self.runtime.command("agent", uuid.uuid4().hex, work_id,
+                             "request_completion", {}, version)
+        return intent["operation_id"]
+
+    def _revoke(self, actor, source, event_id, work_id="pub-1"):
+        return self._send(actor, work_id, "revoke_evidence",
+                          {"source": source, "event_id": event_id,
+                           "reason": "composition pin"})
+
+    def test_admin_revokes_proofs_on_the_closed_work_with_artifacts_untouched(self):
+        operation_id = self._complete_publication("pub-1", self.card)
+        before = self.runtime.get_work("pub-1")
+        self.assertEqual((before["status"], before["outcome"]),
+                         ("closed", "succeeded"))
+        # Owner and configured source without evidence.revoke are denied.
+        owner_denied = self._revoke("agent", "sop-owner",
+                                    "not-an-event", "pub-1")
+        self.assertEqual(owner_denied["code"], "AUTHORITY_DENIED")
+        source_denied = self._revoke("sop-owner", "sop-owner",
+                                     "not-an-event", "pub-1")
+        self.assertEqual(source_denied["code"], "AUTHORITY_DENIED")
+        revoked_approval = self._revoke(
+            "admin", "sop-owner",
+            next(e["event_id"] for e in evidence_bodies(
+                os.path.join(self.root, "runtime.sqlite"))
+                if e["source"] == "sop-owner"
+                and e["kind"] == "card_approval"))
+        self.assertEqual(revoked_approval["decision"], "accepted")
+        self.assertEqual(revoked_approval["prior_status"], "verified")
+        revoked_accepted = self._revoke("admin", "sop-store", operation_id)
+        self.assertEqual(revoked_accepted["decision"], "accepted")
+        self.assertEqual(revoked_accepted["prior_status"], "verified")
+        after = self.runtime.get_work("pub-1")
+        self.assertEqual(after["status"], "closed")
+        self.assertEqual(after["outcome"], "succeeded")
+        self.assertEqual(after["completion"], before["completion"])  # byte-identical
+        statuses = {e["kind"]: e["status"] for e in evidence_bodies(
+            os.path.join(self.root, "runtime.sqlite"))
+            if e["source"] in ("sop-owner", "sop-store")}
+        self.assertEqual(statuses, {"card_approval": "revoked",
+                                    "accepted": "revoked"})
+        rules = {r["rule_id"]: r["fulfillment"]
+                 for r in after["requirements"]}
+        self.assertEqual(rules, {"S02": "pending", "S03": "pending"})
+        events = [e["type"] for e in self.runtime.events("pub-1")]
+        self.assertEqual(events.count("EvidenceRevoked"), 2)
+        raw = json_read(self.store_dir, publication_key(self.card))
+        self.assertEqual(raw["document"], self.card)  # artifact untouched
+        self.assertEqual(len(committed_names(self.store_dir)), 1)
+
+    def test_revoking_publication_proofs_never_touches_the_withdrawal(self):
+        self._complete_publication("pub-1", self.card)
+        self._send("agent", "wd-1", "create_work", {"document": self.request})
+        self._send("agent", "wd-1", "bind_contract", {
+            "policy_id": self.policy.id, "policy_version": self.policy.version,
+            "goal": self.policy.goal})
+        envelope = sign_evidence(self.approver_key, {
+            "source": "sop-owner", "command_id": uuid.uuid4().hex,
+            "work_id": "wd-1", "event_id": uuid.uuid4().hex,
+            "kind": "card_withdrawal",
+            "data": {"digest": self.request["published_digest"],
+                     "policy_version": self.request["policy_version"]},
+            "issued_at": FLOW_NOW})
+        self.gateway.record(envelope)
+        self.runtime.verify_pending("wd-1")
+        work = self.runtime.get_work("wd-1")
+        intent = self.runtime.command(
+            "agent", uuid.uuid4().hex, "wd-1", "propose_action", {
+                "capability": "sop.withdraw",
+                "document_digest": work["document_digest"],
+                "contract_revision": work["contract"]["revision"],
+                "plan_revision": work["plan_revision"]},
+            work["state_version"])
+        self.runtime.dispatch(intent["operation_id"],
+                              SopWithdrawalStore(self.store_dir))
+        self.assertEqual(self.runtime.get_operation(intent["operation_id"])
+                         ["status"], "confirmed_succeeded")
+        # The admin revokes every publication proof; the withdrawal record
+        # stands and the loader keeps answering withdrawn.
+        self._revoke("admin", "sop-owner",
+                     next(e["event_id"] for e in evidence_bodies(
+                         os.path.join(self.root, "runtime.sqlite"))
+                         if e["source"] == "sop-owner"
+                         and e["kind"] == "card_approval"))
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(self.store_dir, "expense-submit", "demo-1")
+        self.assertEqual(str(raised.exception), WITHDRAWN_MESSAGE)
+        self.assertEqual(withdrawal_record(self.store_dir, "expense-submit",
+                                           "demo-1"), self.request)
+        self.assertEqual(len(committed_names(self.store_dir)), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

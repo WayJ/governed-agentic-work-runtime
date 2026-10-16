@@ -674,3 +674,31 @@ ratified D67–D79.
   conflicts after its own approval with the census unchanged (no
   un-withdrawal); a publication work completes unchanged in the same
   family/database (the F18 regression).
+- **S8 revocation composition pinned (D79)** (`RevocationCompositionTests`):
+  on the closed publication work the owner and the configured source
+  without `evidence.revoke` are refused `AUTHORITY_DENIED`; a
+  `work.intervene` administrator revokes both the `card_approval` and the
+  runtime-written `accepted` proof (`sop-store`, `event_id` = the
+  operation id) with `prior_status "verified"`; the work stays
+  `closed/succeeded` with the completion snapshot byte-identical, S02/S03
+  turn pending, exactly two `EvidenceRevoked` events land, and the
+  committed artifact is untouched; and revoking the publication proofs
+  after a standing withdrawal never touches the withdrawal record — the
+  loader keeps answering withdrawn (the two truths stay separate, D71/D79).
+- **Withdrawal approver-key rotation battery (S11 semantics)**
+  (`tests/test_publication_withdrawal_rotation.py`,
+  `WithdrawalRotationTests`): the `card_withdrawal` approver configured as
+  a `SourceKey` keyring and rotated mid-flow — an old-key envelope is
+  refused `EVIDENCE_KEY_RETIRED` (retained past its window) or
+  `EVIDENCE_AUTHENTICATION_FAILED` (dropped, both selector forms) with all
+  six runtime tables byte-identical (ordered rowid dumps); the same
+  `command_id` re-signed under the new current key replays the original
+  receipt verbatim with zero writes; a new `command_id` on the same
+  `(source, event_id)` reports the candidate's current status with exactly
+  `commands +1`; after a completed withdrawal every post-rotation refusal
+  leaves the six tables and BOTH artifact byte dumps untouched (the
+  publication and withdrawal artifacts are rotation-invariant); a
+  pre-rotation approval still verifies after rotation (key-agnostic
+  fingerprints), carries the withdrawal to `closed/succeeded`, and a
+  legitimate new version's withdrawal proceeds under the rotated key. All
+  secrets synthetic, ephemeral, never printed.
