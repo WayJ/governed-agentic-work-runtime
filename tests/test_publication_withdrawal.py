@@ -497,10 +497,18 @@ class GovernedWithdrawalFlowTests(WithdrawalTestCase):
         extra = dict(self.request, reason="free text is refused")
         wrong_kind = dict(self.request, discriminator="sop.publish")
         non_str = dict(self.request, published_digest=7)
+        from work_runtime.publication import WITHDRAWAL_REQUEST_MESSAGE
         for bad in (extra, wrong_kind, non_str):
             with self.assertRaises(ValueError) as raised:
                 self._send("wd-x", "create_work", {"document": bad})
             self.assertIs(type(raised.exception), ValueError)
+            self.assertEqual(str(raised.exception),
+                             WITHDRAWAL_REQUEST_MESSAGE)
+        dirty_card = card_with()
+        dirty_card["rogue_field"] = 1
+        with self.assertRaises(ValueError) as raised:
+            self._send("wd-y", "create_work", {"document": dirty_card})
+        self.assertIn("lint-clean", str(raised.exception))
         self.assertEqual(table_counts(os.path.join(self.root,
                                                    "runtime.sqlite"))["works"],
                          0)

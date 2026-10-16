@@ -367,6 +367,10 @@ class SopPublicationPolicy:
     def validate_document(self, document):
         if is_withdrawal_request(document):
             return
+        if isinstance(document, dict) and "discriminator" in document:
+            # A near-miss withdrawal attempt names its own bounded
+            # requirement instead of the card lint's diagnostics.
+            raise ValueError(WITHDRAWAL_REQUEST_MESSAGE)
         sop_digest(document)  # Bounded ValueError when the card is not lint-clean.
 
     def validate_evidence(self, work, candidate):

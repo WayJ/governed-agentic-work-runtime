@@ -269,7 +269,10 @@ requirement set):
 
 - **Admission:** `validate_document` accepts a lint-clean card **or** a
   well-formed closed withdrawal request; anything else is a bounded,
-  unpersisted `ValueError`. The request shape is id-less, so it is
+  unpersisted `ValueError` — a near-miss withdrawal attempt (any document
+  carrying a `discriminator` field that is not well-formed) names the
+  closed-shape requirement, everything else falls to the card lint (D57).
+  The request shape is id-less, so it is
   effectively immutable under `revise_document` — content changes enter as
   new works (D69).
 - **Requirements:** **W02** — the configured authority must have signed a
