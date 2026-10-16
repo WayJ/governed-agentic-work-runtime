@@ -13,9 +13,11 @@ local principal names, not authenticated identities; signed ingress
 authenticates sources within a shared-key boundary only. Nothing here is a
 security, TLS, KMS or distributed exactly-once claim. Published cards never
 execute: the loader and pin are explicit operator checks with no Runtime
-wiring and no card-to-policy compilation (D62). There is no withdrawal in
-this slice (D63); approver-key rotation follows the S11 configuration
-semantics and never touches publication history.
+wiring and no card-to-policy compilation (D62). S12 deferred withdrawal
+(D63); S13 adds it additively in this module per ratified D67–D79 — a
+second immutable record artifact, never a mutation of history — and
+approver-key rotation follows the S11 configuration semantics, never
+touching publication history.
 """
 
 import os
@@ -88,6 +90,110 @@ class SopPublicationStore:
         self.publisher = FilePublisher(directory)
 
     def execute(self, key, document, content_digest):
+        return self.publisher.execute(key, document, content_digest)
+
+    def lookup(self, key):
+        return self.publisher.lookup(key)
+
+
+# Withdrawal surface (S13, D67–D79): a withdrawal is a second immutable
+# hash-named record artifact in the same store directory under its own
+# digest-based key. The record document is the same closed four-field shape
+# the governed withdrawal work carries, so the same withdrawal is
+# byte-idempotent and no free text ever enters the store (D69).
+WITHDRAWAL_KEY_PREFIX = "sop-withdrawn:"
+WITHDRAWAL_DISCRIMINATOR = "sop.withdrawal"
+WITHDRAWAL_REQUEST_KEYS = {"discriminator", "policy_id", "policy_version",
+                           "published_digest"}
+
+WITHDRAWAL_IDENTITY_MESSAGE = ("withdrawal identity requires nonempty string "
+                               "policy id and version")
+WITHDRAWAL_REQUEST_MESSAGE = ("withdrawal request must carry exactly the "
+                              "closed discriminator, policy id, policy "
+                              "version and published digest fields with "
+                              "nonempty string values")
+WITHDRAWN_MESSAGE = ("this published version is withdrawn; corrected "
+                     "content requires a new version")
+WITHDRAWAL_RECORD_INVALID_MESSAGE = ("withdrawal record for this version is "
+                                     "invalid or does not bind it")
+
+WITHDRAWAL_TARGET_ABSENT = "TARGET_PUBLICATION_ABSENT"
+WITHDRAWAL_TARGET_DIGEST = "TARGET_DIGEST_MISMATCH"
+
+
+def is_withdrawal_request(document):
+    """True for the exact closed withdrawal record shape (D69); never raises.
+
+    The shape is id-less and carries no free text, so it is deterministic
+    given the target identity and effectively immutable: a content change
+    enters as a new withdrawal request, never as a revision.
+    """
+    if not isinstance(document, dict) or set(document) != WITHDRAWAL_REQUEST_KEYS:
+        return False
+    if document.get("discriminator") != WITHDRAWAL_DISCRIMINATOR:
+        return False
+    return all(isinstance(document.get(field), str) and document.get(field)
+               for field in ("policy_id", "policy_version", "published_digest"))
+
+
+def withdrawal_key(policy_id, policy_version):
+    """Collision-free store key for one withdrawn (policy id, version) (D68).
+
+    The D56 digest form on the same identity basis as the publication key;
+    the committed path is ``sha256(key)`` hex as always.
+    """
+    if (type(policy_id) is not str or not policy_id
+            or type(policy_version) is not str or not policy_version):
+        raise ValueError(WITHDRAWAL_IDENTITY_MESSAGE)
+    return WITHDRAWAL_KEY_PREFIX + digest([policy_id, policy_version])
+
+
+class SopWithdrawalStore:
+    """Thin withdrawal wrapper over an unchanged ``FilePublisher`` (D74).
+
+    Declares its own contract so dispatch's action check admits the
+    ``sop.withdraw`` capability without touching the shipped publication
+    wrapper. Immutability, hash-naming, race and corruption semantics are
+    inherited wholesale; the wrapper adds one governed refusal: a record
+    whose target publication artifact is absent or holds different content
+    resolves as a **rejected receipt** — the governed work then resolves
+    ``confirmed_failed`` and stays cancellable. The drafted ``ValueError``
+    refusal channel was rejected at ratification (RV-F1): it strands the
+    work at an unresolvable outcome.
+    """
+
+    # Declared assertions for trusted local configuration, not guarantees.
+    contract = AdapterContract(
+        actions=("sop.withdraw",),
+        idempotency_scope="directory:withdrawal-key",
+        retention="lifetime-of-directory",
+        lookup_consistency="authoritative-by-key",
+        uniqueness=("withdrawal.key",))
+
+    def __init__(self, directory):
+        self.publisher = FilePublisher(directory)
+
+    def _rejected_receipt(self, key, content_digest, reason):
+        # The refusal id is deterministic, so the same refusal is idempotent;
+        # the digest binds the operation so receipt validation resolves the
+        # failure truthfully instead of quarantining it.
+        return {"status": "rejected",
+                "external_id": "SOP-WITHDRAWAL-REFUSED-" + reason + "-"
+                               + digest([key, reason]),
+                "digest": content_digest,
+                "reason": reason}
+
+    def execute(self, key, document, content_digest):
+        if is_withdrawal_request(document):
+            target = self.publisher.read_validated(
+                _identity_key(document["policy_id"],
+                              document["policy_version"]))
+            if target is None:
+                return self._rejected_receipt(key, content_digest,
+                                              WITHDRAWAL_TARGET_ABSENT)
+            if target["content_digest"] != document["published_digest"]:
+                return self._rejected_receipt(key, content_digest,
+                                              WITHDRAWAL_TARGET_DIGEST)
         return self.publisher.execute(key, document, content_digest)
 
     def lookup(self, key):

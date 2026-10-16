@@ -596,3 +596,32 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 - [GUI](gui.md) — the local read-only operations viewer: commands, sample store, tile definitions and limits.
 - [Contributor guide](contributor-guide.md) — adapter and rule-card tutorials over the public interfaces.
 - [RFC-001](RFC-001-core-semantics.md) · [RFC-002](RFC-002-sop-authoring-and-binding.md) · [RFC-003](RFC-003-runtime-protocol.md) · [Reference scenarios](reference-scenarios.md) · [Roadmap](roadmap.md)
+
+## S13 coverage — publication withdrawal (core wave)
+
+The S13 core wave adds the withdrawal surface additively to
+`work_runtime/publication.py` on the unchanged Runtime, gateway and
+`FilePublisher` (`tests/test_publication_withdrawal.py`, plus the rotation
+battery in `tests/test_publication_withdrawal_rotation.py`). Semantics and
+boundaries: [SOP authoring](sop-authoring.md) withdrawal section; design
+[S13](superpowers/specs/2026-10-16-sop-publication-withdrawal-design.md)
+ratified D67–D79.
+
+- **Digest-based withdrawal key, closed record and store wrapper
+  (D67/D68/D69/D74)** (`WithdrawalKeyTests`, `WithdrawalRequestTests`,
+  `SopWithdrawalStoreTests`): the withdrawal key equals
+  `"sop-withdrawn:" + digest([policy id, version])` with the 64-hex tail;
+  delimiter-hostile identities do not collide; identity changes change the
+  key and the withdrawal key differs from the publication key for the same
+  identity; malformed identities raise bounded errors.
+  `is_withdrawal_request` admits exactly the closed four-field
+  `{discriminator, policy_id, policy_version, published_digest}` record
+  shape and refuses cards, extra/free-text fields, wrong discriminators and
+  malformed values without raising. The wrapper commits exactly one second
+  hash-named artifact (record document verbatim,
+  `content_digest == digest(request)`), replays the byte-identical receipt
+  across instances with the census unchanged, refuses an absent target or a
+  digest mismatch with a deterministic **rejected receipt** (`status:
+  "rejected"`, `digest` binding the operation, `reason` code) at zero store
+  writes, refuses a same-key changed record without overwrite (bounded
+  `ValueError` at the raw delegate), and delegates `lookup` verbatim.

@@ -183,8 +183,47 @@ keyed uniqueness — exactly one artifact per publication key, same-key
 changed content refused with zero overwrite (D60). Immutability,
 hash-naming, race and corruption semantics are inherited wholesale from the
 file adapter; the trusted-local directory boundary applies unchanged.
-**There is no withdrawal in this slice** (D63): the store is append-only,
-and "rolling back" a publication means publishing a corrected new version.
+S12 deferred withdrawal (D63); S13 adds it additively in the
+[withdrawal section](#withdrawal-governed-s13) below — "rolling back" a
+publication still means publishing a corrected new version (RFC-002 §6).
+
+### Withdrawal (governed, S13)
+
+Withdrawal changes the **current validity** of one published
+`(policy_id, version)` — never history, never artifacts (D67). A
+withdrawal is **one second committed immutable record artifact in the same
+append-only store directory**, identified by:
+
+- **artifact identity** — the store key
+  `withdrawal_key(policy_id, policy_version) = "sop-withdrawn:" +
+  digest([policy_id, policy_version])` (D68), the D56 digest form on the
+  same identity basis as the publication key, so the two namespaces cannot
+  collide and the committed path stays `sha256(key)` hex.
+- **content identity** — the record document is a **closed, deterministic
+  four-field shape**: exactly `{discriminator, policy_id, policy_version,
+  published_digest}` with discriminator `"sop.withdrawal"` (D69). The
+  `published_digest` binds the withdrawal to the exact published content
+  (the target artifact's `content_digest`). Deterministic given the
+  target: the same withdrawal is byte-idempotent. Reason/free text never
+  enters the record — the audit lives in the runtime evidence store, and
+  the id-less shape makes a request effectively immutable under
+  `revise_document` (content changes enter as new works, the S12 IR-F2
+  precedent).
+- **version** — the withdrawn `(policy_id, policy_version)`; one
+  withdrawal identity per version per directory and per database.
+
+`SopWithdrawalStore(directory)` wraps the same unchanged `FilePublisher`
+(the D55 blast-radius pattern, not an extension of the shipped publication
+wrapper) and declares `actions=("sop.withdraw",)` with keyed uniqueness.
+Replay and same-key changed-content semantics are the delegate's. The
+wrapper adds one governed refusal (D74): a record whose **target
+publication artifact is absent** or whose stored `content_digest` differs
+from the record's `published_digest` resolves as a **rejected receipt**
+(`status: "rejected"` with a deterministic refusal id) — the governed work
+then resolves `confirmed_failed` and stays cancellable, and nothing is
+committed. The drafted `ValueError` refusal channel was **rejected** at
+ratification (RV-F1): it would strand the work at an outcome neither
+completion nor cancellation can resolve.
 
 ### Loading and pinning (fail-closed, D62)
 
@@ -309,9 +348,10 @@ closed on a sop-publish-family database).
 The limits are unchanged and stated plainly: approvers and publishers are
 trusted-local principals in grants configuration, not authentication;
 rotation is config-only trust (a configuration rollback revives an old key);
-there is no withdrawal in this slice (D63), no tenant authentication, TLS,
-KMS, network or distributed exactly-once claim; and published cards never
-execute (D62).
+this S12 demo story has no withdrawal chapter (the S13 module surface exists
+above; its demo chapter arrives with the S13 demo wave), there is no tenant
+authentication, TLS, KMS, network or distributed exactly-once claim; and
+published cards never execute (D62).
 
 ## Examples
 
