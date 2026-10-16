@@ -58,11 +58,20 @@ class PolicyPairingTests(unittest.TestCase):
                 self.assertEqual(blocker["capability"], "content.publish")
         from work_runtime.publishing import FakePublisher, PublishingPolicy
         from work_runtime.file_adapter import FilePublisher
-        for owner in (PublishingPolicy, FakePublisher, FilePublisher):
+        # S14 supersession (master option A, 2026-10-16): the S10 pin asserted
+        # the publishing family was unpaired; ratified D81/D89 pair it. The
+        # expense pins above are unchanged.
+        self.assertEqual(PublishingPolicy.compensation_capabilities,
+                         {"content.unpublish": "content.publish"})
+        for owner in (FakePublisher, FilePublisher):
             with self.subTest(owner=owner.__name__):
                 self.assertFalse(getattr(owner, "compensation_capabilities", None))
         self.assertIs(FilePublisher.contract.supports_action_context, False)
-        self.assertIs(FakePublisher.contract.supports_action_context, False)
+        # S14 D86+MD-2: FakePublisher declares the paired action with the
+        # forward action FIRST and opts into action/link context.
+        self.assertEqual(FakePublisher.contract.actions,
+                         ("content.publish", "content.unpublish"))
+        self.assertIs(FakePublisher.contract.supports_action_context, True)
 
 
 
@@ -1517,11 +1526,20 @@ class PreservationPins(CompensationCase):
     def test_publishing_family_and_assets_unchanged(self):
         from work_runtime.publishing import FakePublisher, PublishingPolicy
         from work_runtime.file_adapter import FilePublisher
-        for owner in (PublishingPolicy, FakePublisher, FilePublisher):
+        # S14 supersession (master option A, 2026-10-16): this S10 pin asserted
+        # the publishing family was unpaired; ratified D81/D89 pair it. The
+        # expense pins below are unchanged.
+        self.assertEqual(PublishingPolicy.compensation_capabilities,
+                         {"content.unpublish": "content.publish"})
+        for owner in (FakePublisher, FilePublisher):
             with self.subTest(owner=owner.__name__):
                 self.assertFalse(getattr(owner, "compensation_capabilities", None))
         self.assertIs(FilePublisher.contract.supports_action_context, False)
-        self.assertIs(FakePublisher.contract.supports_action_context, False)
+        # S14 D86+MD-2: FakePublisher declares the paired action with the
+        # forward action FIRST and opts into action/link context.
+        self.assertEqual(FakePublisher.contract.actions,
+                         ("content.publish", "content.unpublish"))
+        self.assertIs(FakePublisher.contract.supports_action_context, True)
         self.assertEqual(PublishingPolicy().action_blockers("content.publish", []),
                          [])
         self.assertNotEqual(PublishingPolicy().action_blockers("content.withdraw", []),

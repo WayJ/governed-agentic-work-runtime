@@ -70,9 +70,9 @@ reconciliation continue. An attempt already durable when cancellation
 arrives remains uncertain until queried through the original operation
 key — cancellation is an internal stop, not an external fence.
 
-**Compensation exception (S10).** The linked `propose_action` compensation
-variant (`compensates` = the confirmed original operation id; expense
-family, `expense.withdraw`) is the one proposal form admitted while the
+**Compensation exception (S10/S14).** The linked `propose_action` compensation
+variant (`compensates` = the confirmed original operation id; expense family
+`expense.withdraw`, publishing family `content.unpublish` since S14) is the one proposal form admitted while the
 intent is active — for **fresh proposals and re-admission alike** — because
 RFC-001 §7 places the necessary withdrawal inside this window. The variant
 requires the intent: without one it is rejected
@@ -85,7 +85,12 @@ window, and it blocks `finalize_cancel` until resolved (below). The
 no-credentials `compensation-demo` command walks this end to end: a real
 grants-carrying worker crash after the withdrawal effect, one-attempt
 recovery, the retained original history, the exact two-id ack, and a
-separate authoritative `ORIGINAL_ABSENT` refusal scenario.
+separate authoritative `ORIGINAL_ABSENT` refusal scenario. Since S14 the
+`publish-demo` retraction chapter walks the publishing family's
+`content.unpublish` the same way on its own stores: a second published work,
+an owner-requested cancellation inside the window, the linked retraction
+across a real worker crash, and the exact two-id closure with closing counts
+`published == 2, retracted == 1` asserted against both stores.
 
 `finalize_cancel` is the only way to close a cancelled Work, and there is
 no automatic close. It refuses while any operation is unresolved
@@ -111,16 +116,18 @@ recorded in the dispositions.
 
 **Acknowledgement is not compensation by itself.** Closing as cancelled
 admits the listed external effects exist; since S10 a **bounded
-compensation slice** exists for the expense family inside the active
-cancellation window: the owner holding `expense.withdraw` may propose a
+compensation slice** exists inside the active
+cancellation window for the expense family, and since S14 for the
+publishing family: the current owner holding the paired capability
+(`expense.withdraw` / `content.unpublish`) may propose a
 linked withdrawal of a confirmed effect (see the compensation exception
 above and [runtime-boundaries.md](runtime-boundaries.md)). A succeeded
 withdrawal appends a distinct external effect and a `withdrawn` proof — it
-never erases the original, whose receipt, proof, invoices and disposition
+never erases the original, whose receipt, proof, external effects and disposition
 are retained. A refused or unresolved withdrawal is explicit truth, not a
 guaranteed reversal: refusal is recorded in the disposition with its
-reason, and unresolved compensations block closure. Publishing-family
-compensation, post-closure compensation, chains and a public abandon
+reason, and unresolved compensations block closure. Post-closure
+compensation, chains and a public abandon
 command remain deferred scope. Evidence revocation — durably withdrawing
 a proof's current validity without touching the closure snapshot or the
 retained effects — is supported since S8 and documented in

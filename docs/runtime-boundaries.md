@@ -42,16 +42,21 @@ stored receipt is returned for a closed work while authority holds.
 | operation | business key derived by the policy (expense demo: policy id + capability + document id + document revision) | a new command proposing the same logical effect re-associates the existing operation instead of creating a second one; same key with different content is rejected `OPERATION_CONTENT_CONFLICT` |
 | external effect | idempotency key = the operation's business key, enforced by the adapter | the external system deduplicates repeated calls with the same key and content |
 
-## Compensation boundary (S10 — expense family, active-cancellation window)
+## Compensation boundary (S10/S14 — expense and publishing families, active-cancellation window)
 
 `propose_action` gains one **linked compensation variant** (D43): a payload
 carrying `compensates` (the original operation id, a nonempty string) plus
 exactly `capability`, `contract_revision`, `plan_revision` and
 `document_digest` — anything else is an unpersisted `CommandError`. Ordinary
 payloads (no `compensates` key) keep the pre-S10 lenient handling unchanged.
-The variant exists only for the expense family (`expense.withdraw`, paired by
-`ExpensePolicy.compensation_capabilities`) and only while a cancellation
-intent is active.
+The variant exists for the expense family (`expense.withdraw`, paired by
+`ExpensePolicy.compensation_capabilities`) and, since S14, the publishing
+family (`content.unpublish`, paired by
+`PublishingPolicy.compensation_capabilities`) — always and only while a
+cancellation intent is active. Executing a linked compensation additionally
+requires an adapter that declares the action and opts into action/link
+context (see [adapter-contract.md](adapter-contract.md)); `FilePublisher`
+stays forward-only and holds at the actions preflight.
 
 Admission precedence (each step a persisted business rejection unless marked
 misuse):
@@ -86,8 +91,9 @@ exact payload shape (CommandError, nothing persisted)
   orthogonal: a revoked accepted proof does not undo the effect and does not
   block compensation. The pairing arm applies only when the capability is in
   the policy's pairing map; an unpaired capability degrades to the ordinary
-  `CAPABILITY_UNSUPPORTED` blocker (how publishing stays out of scope without
-  a runtime flag).
+  `CAPABILITY_UNSUPPORTED` blocker (how a family without a declared pairing
+  stays out of scope without a runtime flag — publishing before S14, SOP
+  authoring today).
 - **Business key** (runtime-owned, D6): `digest([policy.id, capability,
   target_operation_id])` — stable across same-family policy versions,
   structurally distinct from every forward key (the store-global
@@ -242,11 +248,12 @@ idempotent on repeat), never a confirmation against the wrong original. A
 valid compensation result additionally stores the full validated receipt
 additively as `op["adapter_result"]` (refusal reasons included); ordinary
 operations never carry the field. An accepted withdrawal resolves
-`confirmed_succeeded` with `external_id` = the `WD-…` id and inserts the
+`confirmed_succeeded` with `external_id` = the compensation's own external id
+(`WD-…` in the expense demo) and inserts the
 runtime-owned proof with **kind `"withdrawn"`** (data
 `{digest, external_id, original_external_id}`) at the same accepted-source
 identity — never a forward `accepted` proof, so it can never satisfy an
-`accepted`-kind rule such as E08 at any digest. A rejected withdrawal
+`accepted`-kind rule such as E08 or C04 at any digest. A rejected withdrawal
 resolves `confirmed_failed` with the work `needs_attention`. The S9
 collision path covers withdrawal resolutions verbatim: an occupied
 `(accepted source, operation id)` identity records the actual withdrawal
@@ -259,12 +266,15 @@ ingress is denied at `record_evidence`, imports are impossible, and
 revocation of a withdrawn proof is administrator-only. Runtime-observed
 withdrawal effects are not source-claimable.
 
-**External stand-in store compatibility (S10).** `FakeOA`'s own SQLite store
+**External stand-in store compatibility (S10/S14).** `FakeOA`'s own SQLite store
 migrated additively: opening any store — including pre-S10 ones — runs one
 `BEGIN IMMEDIATE` transaction that adds the nullable `receipts.action` /
 `receipts.link_digest` identity columns and the per-original `withdrawals`
 effect table exactly once (schema, migration, withdrawal execution and
-counter semantics: [adapter-contract.md](adapter-contract.md)). The runtime
+counter semantics: [adapter-contract.md](adapter-contract.md)). `FakePublisher`
+adopts the identical pattern since S14 (additive `receipts` identity columns
+plus a `retractions` effect table; forward rows keep `NULL`
+action/link_digest under the disclosed column-named INSERT). The runtime
 store schema stays `1`; forward adapter behavior (duplicate-invoice
 rejection, key replay, counters) is preserved, with the forward INSERT on
 named columns.

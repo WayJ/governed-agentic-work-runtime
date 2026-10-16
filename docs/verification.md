@@ -56,9 +56,9 @@ The S2 wave added three foundations with their own gate-visible evidence:
 
 - **Signed evidence ingress** (`tests/test_ingress.py`, real Runtime behind the gateway): strict envelope schema and JSON-native strictness; HMAC-SHA256 known-answer vector; every signed field's tampering, cross-source impersonation and unknown sources rejected with zero intake writes; freshness boundaries incl. boolean timestamps; exact replay, timestamp refresh under a new command id, and cross-work `SOURCE_EVENT_CONFLICT`; reserved `accepted` kind refused after authentication; signed success stays `pending_verification` until `verify_pending`. Boundary and key-handling guidance: [signed-evidence.md](signed-evidence.md).
 - **Adapter contracts and policy-owned receipts** (`tests/test_adapter_contract.py`, `tests/adapter_conformance.py`): receipt validation matrix; frozen declared contracts; reusable conformance mixin adopted over disposable fixtures (same-key replay → one effect; same key/different content → `ValueError` without a new effect; lookup authoritative by key); declared-capability preflight holds unsupported operations with zero attempts/calls; malformed or present-`None` descriptors fail closed before external calls; missing accepted-source configuration fails closed in dispatch/reconcile/resolve. See [adapter-contract.md](adapter-contract.md).
-- **Content publication domain** (`tests/test_publishing.py`, 42 tests): document strictness (`requires_review` bool or None); per-kind evidence shapes incl. `accepted` = `{digest, external_id}`; C02 applicability true/false/unknown with unknown blocking (`APPLICABILITY_UNRESOLVED`); digest-bound approval/confirmation and publisher-source-only accepted proofs; plan revision cannot remove review; content revision invalidates prior approval/confirmation and cancels stale intents; conformance mixin adopted for `FakePublisher` with `(document id, digest)` artifact uniqueness (duplicate identical content under another key reuses the external id; changed content adds a version); malformed adapter results quarantined per isolated fixture with the real `execute` asserted; timeout-after-commit recovered by lookup without resend; deterministic demo (`publish-demo`) asserted end-to-end incl. an independent `SELECT COUNT(*) FROM publications` = 1 and the printed `inspect --policy content-publish` command.
+- **Content publication domain** (`tests/test_publishing.py`, 43 tests): document strictness (`requires_review` bool or None); per-kind evidence shapes incl. `accepted` = `{digest, external_id}`; C02 applicability true/false/unknown with unknown blocking (`APPLICABILITY_UNRESOLVED`); digest-bound approval/confirmation and publisher-source-only accepted proofs; plan revision cannot remove review; content revision invalidates prior approval/confirmation and cancels stale intents; conformance mixin adopted for `FakePublisher` with `(document id, digest)` artifact uniqueness (duplicate identical content under another key reuses the external id; changed content adds a version); malformed adapter results quarantined per isolated fixture with the real `execute` asserted; timeout-after-commit recovered by lookup without resend; deterministic demo (`publish-demo`) asserted end-to-end incl. independent `SELECT COUNT(*) FROM publications` = 2 and `FROM retractions` = 1 (the S14 retraction chapter, `tests/test_publishing_compensation_demo.py`) and both printed `inspect --policy content-publish` commands re-run verbatim.
 
-The publication harness integrates the common command protocol without credentials; it is not a claim of integration with any model framework or server. The installed verifier additionally runs `publish-demo` outside the checkout and counts the publications table independently.
+The publication harness integrates the common command protocol without credentials; it is not a claim of integration with any model framework or server. The installed verifier additionally runs `publish-demo` outside the checkout through both the module and (new coverage since S14) the console entry point, and re-verifies both stores independently: two publications across both works, exactly one retraction effect bound to the original, the recomputed forward and compensation keys, the withdrawn-kind proof and the exact two-id closure.
 
 ## S3 coverage — interventions, ownership and pinned policy versions
 
@@ -235,6 +235,45 @@ proof recomputes business keys and fingerprints with the standard library
 only and rejects deleted withdrawal rows, wrong linked targets, swapped
 link digests, forged receipts, flipped proof kinds and refusal-store
 effects, each exercised by a named negative test.
+
+## S14 coverage — publishing-family linked retraction (W1 core)
+
+The S14 core wave adds the publishing family's in-window linked
+retraction on the unchanged S10 machinery: the `PublishingPolicy` pairing
+attribute, the `FakePublisher` paired action with its additive store
+migration, and the governed flow end to end
+(`tests/test_publishing_compensation.py`), with
+`work_runtime/runtime.py` and `work_runtime/adapters.py` byte-unchanged
+(D82, hash-pinned in `BoundaryPins` together with the untouched
+`file_adapter.py`/`policy.py`), runtime schema 1 and zero dependencies.
+Semantics and boundaries:
+[runtime boundaries](runtime-boundaries.md),
+[adapter contract](adapter-contract.md), [interventions](interventions.md).
+
+| guarantee | test (all in `tests/test_publishing_compensation.py`) |
+|---|---|
+| pairing attribute, empty paired blockers, off-family degrade, unchanged version, FilePublisher forward-only | `PolicyPairingTests` |
+| additive serialized migration, no legacy row rewritten, idempotent reopen, concurrent first-open, fresh schema | `FakePublisherMigrationTests` |
+| forward identity: NULL-tagged rows, positional/kwargs replay, same-content dedup, contract order (`content.publish` first) and opt-in | `ForwardIdentityTests` |
+| retraction execution: one effect, RTR- prefix, input guards before any write, alias receipts, link-fingerprint conflict, cross-action replay, ORIGINAL_ABSENT, scan + short-circuit existence | `RetractionExecutionTests` |
+| append-only retraction, truthful counts, re-publish-after-retraction artifact-id reuse (adapter-model limit, RF4) | `RetractionAppendOnlyTests` |
+| window/windowless admission, forward CANCELLATION_ACTIVE, exact payload, target matrix incl. chain, stable D6 key, immutable snapshot | `PublishingCompensationAdmissionTests` |
+| owner+grant authority, transfer re-admission, replay after grant loss, both RF4 reachability legs (CANCELLATION_ACTIVE / cross-work OPERATION_CONTENT_CONFLICT) | `PublishingCompensationAuthorityTests` |
+| FilePublisher hold at the actions preflight, context hold, kwargs call shape, dispatch grant loss, link revalidation holds | `PublishingDispatchTests` |
+| withdrawn proof at `publisher`, C04 inertness, import denial, admin-only revoke, adapter_result legs, binding mismatch quarantine | `PublishingResolutionTests` |
+| exact two-id ack, compensation dispositions, refused-not-reversed closure, unresolved blockers | `PublishingClosureTests` |
+| response-loss reconcile, real child crash (exit 73) recovered once, one publication + one retraction effect | `PublishingRecoveryTests` |
+| D82/D88 byte pins at the sprint baseline | `BoundaryPins` |
+
+The S14 demo wave (W2) delivers the publish-demo retraction chapter
+(`tests/test_publishing_compensation_demo.py`, 18 tests): work one's
+succeeded-completion story verbatim, the appended cancellation + linked
+retraction across a real grants-carrying worker crash, recovery in one
+attempt and the exact two-id closure with closing counts 2/1 asserted from
+both SQLite stores, the widened demo grants, the installer's updated module
+stage plus the NEW console publish-demo stage (disclosed as new coverage)
+and the bilingual README entries; the five AGENTS gates and their command
+list are unchanged.
 
 ## S9 coverage — accepted-evidence collision prevention and recovery
 
@@ -570,11 +609,13 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 - Remote or multi-tenant authentication and authorization (local principal names only). Owner, delegate and `work.intervene` administrator grants are trusted-local configuration, not authenticated identities; replay protection rechecks this local authority, it is not a distributed security boundary.
 - Author review workflow, external author feedback, and policy migration beyond the explicit same-family command above. SOP publication withdrawal/tombstones (D63: the store is append-only; a corrected card ships as a new version) and multi-approver quorum are separately designed future work. Cross-domain policy registries are rejected; there is no implicit upgrade on restart or recovery. Static SOP lint is structural review only: no textual-predicate execution, no provenance verification, and no link from a linted card to an executing Python policy — authority approval exists only in the governed publication flow (S12), as trusted-local signed evidence rather than authentication, and published cards never execute.
 - Compensation (effect reversal) is bounded: since S10 the expense family
-  supports linked withdrawal proposals **only inside the active
-  cancellation window**, executing a distinct appended external effect
-  under the current owner's `expense.withdraw` grant. It is not a general
+  (`expense.withdraw`) and since S14 the publishing family
+  (`content.unpublish`) support linked withdrawal proposals **only inside
+  the active cancellation window**, executing a distinct appended external
+  effect under the current owner's paired-capability grant. It is not a
+  general
   reversal: `finalize_cancel` never claims to undo an effect (a refused
-  withdrawal is recorded, effects stand), publishing-family and
+  withdrawal is recorded, effects stand),
   post-closure compensation, chains and a public abandon command are
   unimplemented, and evidence revocation (S8) remains withdrawal of a
   proof's current validity only — not compensation, no fencing of
