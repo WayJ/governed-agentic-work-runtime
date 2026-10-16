@@ -85,7 +85,12 @@ window, and it blocks `finalize_cancel` until resolved (below). The
 no-credentials `compensation-demo` command walks this end to end: a real
 grants-carrying worker crash after the withdrawal effect, one-attempt
 recovery, the retained original history, the exact two-id ack, and a
-separate authoritative `ORIGINAL_ABSENT` refusal scenario.
+separate authoritative `ORIGINAL_ABSENT` refusal scenario. Since S14 the
+`publish-demo` retraction chapter walks the publishing family's
+`content.unpublish` the same way on its own stores: a second published work,
+an owner-requested cancellation inside the window, the linked retraction
+across a real worker crash, and the exact two-id closure with closing counts
+`published == 2, retracted == 1` asserted against both stores.
 
 `finalize_cancel` is the only way to close a cancelled Work, and there is
 no automatic close. It refuses while any operation is unresolved

@@ -260,7 +260,8 @@ class PublishingDemoTests(unittest.TestCase):
         folder, output = self.run_capture()
         for expected in ("1.", "2.", "3.", "4.", "5.", "6.", "BLOCKED",
                          "EVIDENCE_AUTHENTICATION_FAILED", "published artifacts: 1",
-                         "--policy content-publish"):
+                         "published artifacts: 2", "retraction effects: 1",
+                         "exit code 73", "--policy content-publish"):
             self.assertIn(expected, output)
         runtime_path = Path(folder) / "runtime.sqlite"
         publisher_path = Path(folder) / "publisher.sqlite"
@@ -268,7 +269,9 @@ class PublishingDemoTests(unittest.TestCase):
         self.assertTrue(publisher_path.exists())
         with sqlite3.connect(str(publisher_path)) as db:
             self.assertEqual(
-                db.execute("SELECT COUNT(*) FROM publications").fetchone()[0], 1)
+                db.execute("SELECT COUNT(*) FROM publications").fetchone()[0], 2)
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM retractions").fetchone()[0], 1)
         self.assertNotRegex(output, "[0-9a-f]{64}")
 
     def test_demo_runs_repeatably_in_fresh_directories(self):
@@ -280,7 +283,9 @@ class PublishingDemoTests(unittest.TestCase):
         for folder in (first, second):
             with sqlite3.connect(str(Path(folder) / "publisher.sqlite")) as db:
                 self.assertEqual(
-                    db.execute("SELECT COUNT(*) FROM publications").fetchone()[0], 1)
+                    db.execute("SELECT COUNT(*) FROM publications").fetchone()[0], 2)
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM retractions").fetchone()[0], 1)
 
 
 class CountingPublisher:
