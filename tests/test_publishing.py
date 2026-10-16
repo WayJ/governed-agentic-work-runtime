@@ -293,9 +293,9 @@ class CountingPublisher:
         self.executed = 0
         self.looked_up = 0
 
-    def execute(self, *args):
+    def execute(self, *args, **kwargs):
         self.executed += 1
-        return self.inner.execute(*args)
+        return self.inner.execute(*args, **kwargs)
 
     def lookup(self, *args):
         self.looked_up += 1
@@ -519,9 +519,9 @@ class MalformedResultTests(unittest.TestCase):
                 self.executed = 0
                 self.inner = FakePublisher(base + "-publisher.sqlite")
 
-            def execute(self, *args):
+            def execute(self, *args, **kwargs):
                 self.executed += 1
-                return mutate(self.inner.execute(*args))
+                return mutate(self.inner.execute(*args, **kwargs))
 
             def lookup(self, *args):
                 return self.inner.lookup(*args)

@@ -260,6 +260,124 @@ resolved = runtime.dispatch(proposal["operation_id"], FakeOA(oa_path))
 # action="expense.withdraw", compensates=<immutable link snapshot>).
 ```
 
+## FakePublisher's paired contract and store (S14)
+
+`FakePublisher` adopts the same D46 pattern for the publishing family's
+linked retraction (`content.unpublish`), keeping the forward action FIRST
+(the conformance mixin derives forward context from `actions[0]`):
+
+```python
+AdapterContract(actions=("content.publish", "content.unpublish"),
+                idempotency_scope="adapter-store:key",
+                retention="lifetime-of-store",
+                lookup_consistency="authoritative-by-key",
+                uniqueness=("document.id+content_digest",
+                            "retraction.original_external_id"),
+                supports_action_context=True)
+```
+
+| value | assertion |
+|---|---|
+| `actions=("content.publish", "content.unpublish")` | executes the publish capability and its paired retraction, forward action first |
+| `uniqueness=("document.id+content_digest", "retraction.original_external_id")` | one artifact per document content and one retraction effect per original across all keys |
+| `supports_action_context=True` | opts into explicit action/link execution context |
+
+### Store schema, migration and counters
+
+`receipts` is the per-key call/lookup surface for both actions;
+`publications` keeps immutable `(document_id, digest)` artifacts; `retractions`
+is the per-original effect surface. Opening a store — including any pre-S14
+one — runs one `BEGIN IMMEDIATE` transaction that creates any missing table,
+probes `PRAGMA table_info(receipts)` **inside the transaction**, adds the two
+nullable identity columns when absent and creates `retractions`, so
+concurrent first-open and re-open are race-free and pre-S14 stores open
+unchanged (no row rewritten or deleted):
+
+```sql
+-- legacy columns, unchanged shape for old rows
+CREATE TABLE IF NOT EXISTS receipts (
+    key TEXT PRIMARY KEY, digest TEXT NOT NULL, result TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS publications (
+    document_id TEXT, digest TEXT, external_id TEXT NOT NULL,
+    document TEXT NOT NULL, PRIMARY KEY(document_id, digest));
+-- additive identity columns (NULL = legacy/forward row, no link)
+ALTER TABLE receipts ADD COLUMN action TEXT;
+ALTER TABLE receipts ADD COLUMN link_digest TEXT;
+CREATE TABLE IF NOT EXISTS retractions (
+    original_external_id TEXT PRIMARY KEY, external_id TEXT NOT NULL,
+    key TEXT NOT NULL, digest TEXT NOT NULL);
+```
+
+Forward rows keep `NULL` `action`/`link_digest`: the forward INSERT is the
+single mechanical column-naming edit disclosed in the S14 ratification (D87
+as amended) — identical inputs produce identical receipt rows and store
+state before and after the migration, and same-content dedup still reuses
+the publication id. Replay of an existing row validates the digest, the
+normalized action (legacy `NULL` reads as `content.publish`) and the link
+fingerprint; any mismatch raises `ValueError("Idempotency key reused with
+different content")` with zero new effects, so a key can never be replayed
+across actions or links.
+
+**Counters (both derived from the SQLite store, never stdout):**
+`published_count()` is unchanged — the `publications` row count; a
+retraction never counts an effect away. `retracted_count()` is the
+`retractions` row count — exactly one retraction effect per retracted
+original.
+
+### Retraction execution (per-key receipts + per-original effects)
+
+An opted-in retraction call carries the runtime-validated immutable link
+(`compensates` = `{operation_id, external_id, capability}`); nothing in the
+document can select or influence the action. Input guards run before any
+write (`ValueError`): unknown action; a retraction without a well-formed
+three-field link; a forward call carrying a link. Then, inside one
+`BEGIN IMMEDIATE` transaction:
+
+1. **Existing receipts row under the key** → replay only when the digest,
+   the normalized action and the link fingerprint (`digest(compensates)`)
+   all match; any mismatch is the established
+   `ValueError("Idempotency key reused with different content")` with zero
+   new effects — a key can never be replayed across actions or links, in
+   either direction.
+2. **No row, effect already exists** for the original (possibly created
+   under a different key in a shared store) → insert an **alias** receipts
+   row under the requesting key carrying the requesting digest and link
+   fingerprint and the **same** `RTR-…` effect id: the returned receipt is
+   digest-valid for the requesting call and `lookup(requesting key)` stays
+   authoritative. No second `retractions` row can exist.
+3. **No row, no effect** → original existence is decided by an accepted
+   **forward receipt** (`action` NULL/`"content.publish"`) for that
+   `external_id` — a receipts scan with the publications table as a
+   short-circuit, so presence survives either side losing rows. Present →
+   create the one effect (new `RTR-…` id, `retractions` row plus the
+   receipts row) and return the accepted receipt. Absent → store a
+   **queryable business rejection** receipt (`status:"rejected"`,
+   `reason:"ORIGINAL_ABSENT"`) with no effect row: known absence is
+   authoritative. A genuine store failure raises and the whole transaction
+   rolls back — unavailability is never reported as absence.
+4. The forward path never consults `retractions`, and no store state can
+   turn a forward call into a retraction.
+
+`timeout_after_commit` applies to the retraction path too, so a lost
+response after a committed retraction recovers through `lookup` with the
+digest-valid receipt. Retraction receipts carry `original_external_id`
+(and, on refusal, a `reason` such as `ORIGINAL_ABSENT`);
+`receipt_is_valid` accepts the extra fields unchanged. The runtime-side
+binding check, the stored `adapter_result` and the `withdrawn` proof kind
+are specified in [runtime-boundaries.md](runtime-boundaries.md).
+
+**Adapter-model limit — re-publish after retraction (RF4 note).** A direct
+adapter-level re-publish of the identical `(document id, digest)` after a
+retraction reuses the retracted artifact's `PUB-…` id, and the retraction
+row remains the truthful historical record (`published_count()` and
+`retracted_count()` both stay truthful). Through the **governed flow** this
+interplay is unreachable: a same-work forward proposal under the permanent
+cancellation intent is refused `CANCELLATION_ACTIVE`, and a cross-work
+publish of identical content collides on the store-global forward business
+key (`digest([policy.id, capability, document.id, document_digest])`
+embeds no work id) with `OPERATION_CONTENT_CONFLICT`. The limit binds this
+adapter model, not the governed flow.
+
 ## Reusable conformance tests
 
 `tests/adapter_conformance.py` provides `AdapterConformanceMixin`, a plain
@@ -285,7 +403,8 @@ when the opt-in is absent (no hardcoded domain capability in generic
 conformance code).
 
 Domain-specific uniqueness (FakeOA's invoice-id uniqueness, a publisher's
-`(document.id, digest)` uniqueness, and FakeOA's per-original withdrawal
+`(document.id, digest)` and per-original retraction uniqueness, and FakeOA's
+per-original withdrawal
 uniqueness) is deliberately **not** in the mixin — each
 domain tests its own external constraints separately.
 
