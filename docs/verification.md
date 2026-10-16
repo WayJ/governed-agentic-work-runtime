@@ -265,8 +265,15 @@ Semantics and boundaries:
 | response-loss reconcile, real child crash (exit 73) recovered once, one publication + one retraction effect | `PublishingRecoveryTests` |
 | D82/D88 byte pins at the sprint baseline | `BoundaryPins` |
 
-The S14 demo wave (W2) appends the publish-demo retraction chapter,
-installer stages and README entries; the five AGENTS gates are unchanged.
+The S14 demo wave (W2) delivers the publish-demo retraction chapter
+(`tests/test_publishing_compensation_demo.py`, 18 tests): work one's
+succeeded-completion story verbatim, the appended cancellation + linked
+retraction across a real grants-carrying worker crash, recovery in one
+attempt and the exact two-id closure with closing counts 2/1 asserted from
+both SQLite stores, the widened demo grants, the installer's updated module
+stage plus the NEW console publish-demo stage (disclosed as new coverage)
+and the bilingual README entries; the five AGENTS gates and their command
+list are unchanged.
 
 ## S9 coverage — accepted-evidence collision prevention and recovery
 
