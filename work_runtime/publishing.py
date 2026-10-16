@@ -34,6 +34,11 @@ class PublishingPolicy:
         "confirmation": "author",
         "accepted": "publisher",
     }
+    # Compensation pairing (S14 D81/D89): the compensating capability maps
+    # to the forward capability whose accepted effect it retracts. A policy
+    # without this attribute keeps CAPABILITY_UNSUPPORTED for every
+    # non-forward capability — graceful degradation for custom/old policies.
+    compensation_capabilities = {"content.unpublish": "content.publish"}
 
     def validate_document(self, document: dict) -> None:
         if set(document) != {"id", "title", "body", "requires_review"}:
@@ -93,6 +98,10 @@ class PublishingPolicy:
 
     def action_blockers(self, capability: str, requirements: List[dict]) -> List[dict]:
         if capability != "content.publish":
+            # A paired compensating capability is admitted through its link
+            # check (runtime), not requirements: its blockers are empty.
+            if self.compensation_capabilities.get(capability) == "content.publish":
+                return []
             return [{"code": "CAPABILITY_UNSUPPORTED", "capability": capability}]
         return [r for r in requirements if r["rule_id"] != "C04" and
                 (r["applicability"] in ("unknown", "conflict")

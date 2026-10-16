@@ -570,11 +570,13 @@ The demonstration policy turns most of rules E01–E08 from [RFC-002 §4](RFC-00
 - Remote or multi-tenant authentication and authorization (local principal names only). Owner, delegate and `work.intervene` administrator grants are trusted-local configuration, not authenticated identities; replay protection rechecks this local authority, it is not a distributed security boundary.
 - Author review workflow, external author feedback, and policy migration beyond the explicit same-family command above. SOP publication withdrawal/tombstones (D63: the store is append-only; a corrected card ships as a new version) and multi-approver quorum are separately designed future work. Cross-domain policy registries are rejected; there is no implicit upgrade on restart or recovery. Static SOP lint is structural review only: no textual-predicate execution, no provenance verification, and no link from a linted card to an executing Python policy — authority approval exists only in the governed publication flow (S12), as trusted-local signed evidence rather than authentication, and published cards never execute.
 - Compensation (effect reversal) is bounded: since S10 the expense family
-  supports linked withdrawal proposals **only inside the active
-  cancellation window**, executing a distinct appended external effect
-  under the current owner's `expense.withdraw` grant. It is not a general
+  (`expense.withdraw`) and since S14 the publishing family
+  (`content.unpublish`) support linked withdrawal proposals **only inside
+  the active cancellation window**, executing a distinct appended external
+  effect under the current owner's paired-capability grant. It is not a
+  general
   reversal: `finalize_cancel` never claims to undo an effect (a refused
-  withdrawal is recorded, effects stand), publishing-family and
+  withdrawal is recorded, effects stand),
   post-closure compensation, chains and a public abandon command are
   unimplemented, and evidence revocation (S8) remains withdrawal of a
   proof's current validity only — not compensation, no fencing of
