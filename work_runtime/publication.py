@@ -334,16 +334,25 @@ def published_card_matches(card, policy):
 
 
 class SopPublicationPolicy:
-    """The governed ``sop.publish`` family (D54): S02 approval, S03 acceptance.
+    """The governed publication family (D54, D70): S02/S03 for cards,
+    W02/W03 for withdrawals — discriminated by the work document's shape.
 
-    Mirrors the publishing domain on the unchanged command protocol: S02 is
+    One policy family per database carries both governed acts: the
+    completion gate is capability-blind, so the requirement sets are
+    chosen by document shape — a lint-clean card gets the publication
+    rules, a well-formed closed withdrawal request gets the withdrawal
+    rules, and each capability is admitted only for its own shape. S02 is
     C02's shape — a version-bound signed ``card_approval`` of the current
-    content digest from the configured authority source — and S03 is C04's
-    shape, excluded from blockers because the store's own acceptance (the
-    runtime-written ``accepted`` proof) satisfies it. Admission lints the
-    card (D57): a dirty card is a bounded unpersisted ``ValueError``, the
-    house convention for malformed documents; the lint workflow itself
-    stays with ``lint-sop``.
+    content digest from the configured authority source — and S03 is
+    C04's shape, excluded from blockers because the store's own
+    acceptance (the runtime-written ``accepted`` proof) satisfies it.
+    W02 mirrors D58 with a signed ``card_withdrawal`` binding the exact
+    published digest; W03 is the store's acceptance of the withdrawal
+    record, excluded from blockers like S03. Admission accepts a
+    lint-clean card or a well-formed withdrawal request; anything else is
+    a bounded unpersisted ``ValueError``, the house convention for
+    malformed documents. There is no admin bypass: requirements are
+    evidence-driven only (D71).
     """
 
     id = "sop-publish"
@@ -351,22 +360,38 @@ class SopPublicationPolicy:
     goal = "sop.published"
     evidence_sources = {
         "card_approval": "sop-owner",
+        "card_withdrawal": "sop-owner",
         "accepted": "sop-store",
     }
 
     def validate_document(self, document):
+        if is_withdrawal_request(document):
+            return
         sop_digest(document)  # Bounded ValueError when the card is not lint-clean.
 
     def validate_evidence(self, work, candidate):
         data = candidate["data"]
         kind = candidate["kind"]
+        document = work["document"]
+        withdrawal = is_withdrawal_request(document)
         if kind == "card_approval":
+            if withdrawal:
+                # Cross-shape isolation: a card approval binds cards only.
+                return False
             # Version-bound approval (D58): the exact {digest, policy_version}
             # shape with the version bound to the CARD's own policy version.
             return (set(data) == {"digest", "policy_version"}
                     and isinstance(data["digest"], str)
                     and data["policy_version"]
-                    == work["document"]["policy"]["version"])
+                    == document["policy"]["version"])
+        if kind == "card_withdrawal":
+            if not withdrawal:
+                # A withdrawal approval never satisfies anything on a card.
+                return False
+            # D58 mirror: the version binds the REQUEST's own policy version.
+            return (set(data) == {"digest", "policy_version"}
+                    and isinstance(data["digest"], str)
+                    and data["policy_version"] == document["policy_version"])
         if kind == "accepted":
             # Reserved shape adopted from Runtime-written receipts.
             return (set(data) == {"digest", "external_id"}
@@ -379,11 +404,15 @@ class SopPublicationPolicy:
         document = work["document"]
         current = work["document_digest"]
         proofs = [e for e in evidence if e["status"] == "verified"]
+        withdrawal = is_withdrawal_request(document)
 
-        def has(kind):
+        def has(kind, digest_value, policy_version=None):
             source = self.evidence_sources[kind]
             return any(e["kind"] == kind and e["source"] == source
-                       and e["data"].get("digest") == current for e in proofs)
+                       and e["data"].get("digest") == digest_value
+                       and (policy_version is None
+                            or e["data"].get("policy_version") == policy_version)
+                       for e in proofs)
 
         result = []
 
@@ -393,16 +422,40 @@ class SopPublicationPolicy:
                            "fulfillment": "satisfied" if satisfied else "pending",
                            "explanation": explanation})
 
+        if withdrawal:
+            subject = document["policy_id"]
+            add("W02", subject, has("card_withdrawal",
+                                    document["published_digest"],
+                                    document["policy_version"]),
+                "The configured authority must approve withdrawing the exact "
+                "published content with a version-bound signed card_withdrawal")
+            add("W03", subject, has("accepted", current),
+                "The publication store must accept the withdrawal record "
+                "(runtime-written proof)")
+            return result
+
         subject = document["policy"]["id"]
-        add("S02", subject, has("card_approval"),
+        add("S02", subject, has("card_approval", current),
             "The configured authority must approve the exact current card content "
             "with a version-bound signed card_approval")
-        add("S03", subject, has("accepted"),
+        add("S03", subject, has("accepted", current),
             "The publication store must accept the current card content "
             "(runtime-written proof)")
         return result
 
     def action_blockers(self, capability, requirements):
+        # The requirement rule ids reveal the work shape: a capability is
+        # admitted only for its own document shape (D70), so a mismatched
+        # pair is a bounded blocker and never reaches operation_key.
+        withdrawal_shaped = bool(requirements) and all(
+            r["rule_id"] in ("W02", "W03") for r in requirements)
+        if withdrawal_shaped:
+            if capability != "sop.withdraw":
+                return [{"code": "CAPABILITY_UNSUPPORTED", "capability": capability}]
+            return [r for r in requirements if r["rule_id"] != "W03" and
+                    (r["applicability"] in ("unknown", "conflict")
+                     or (r["applicability"] == "applicable"
+                         and r["fulfillment"] != "satisfied"))]
         if capability != "sop.publish":
             return [{"code": "CAPABILITY_UNSUPPORTED", "capability": capability}]
         return [r for r in requirements if r["rule_id"] != "S03" and
@@ -411,6 +464,11 @@ class SopPublicationPolicy:
                      and r["fulfillment"] != "satisfied"))]
 
     def operation_key(self, capability, work):
-        # The store key IS the business key (D66): re-proposing the same card
-        # converges on one operation identity per (policy id, version).
-        return publication_key(work["document"])
+        # The store key IS the business key (D66): one publication identity
+        # per card version and one withdrawal identity per withdrawn
+        # version, per database.
+        document = work["document"]
+        if is_withdrawal_request(document):
+            return withdrawal_key(document["policy_id"],
+                                  document["policy_version"])
+        return publication_key(document)

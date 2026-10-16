@@ -643,3 +643,34 @@ ratified D67–D79.
   function accepts an override keyword (TypeError on `allow_withdrawn`);
   `published_card_matches` stays pure and never matches a withdrawal
   record.
+- **Governed sop.withdraw flow (D70/D71/D74/D75)** (`GovernedWithdrawalFlowTests`,
+  real Runtime + SQLite + directory, one database holding the publication
+  and the withdrawal): malformed requests are refused unpersisted at
+  admission (zero works rows) while the well-formed request carries
+  `document_digest == digest(request)` and is effectively immutable under
+  `revise_document` (id-less shape); proposals block on `W02` before any
+  approval; a valid `card_approval` never satisfies W02 (turns `invalid`);
+  tampered `card_withdrawal` is refused `EVIDENCE_AUTHENTICATION_FAILED`
+  with zero intake writes; wrong-source intake is `AUTHORITY_DENIED`;
+  wrong-digest approvals verify on shape but keep W02 pending and
+  wrong-version approvals turn `invalid`; the valid version-bound approval
+  accepts with `business_key == withdrawal_key`; capability × document-shape
+  pairing holds in both directions (`sop.publish` on a withdrawal work and
+  `sop.withdraw` on a card work each yield the bounded
+  `CAPABILITY_UNSUPPORTED` blocker); the wrong adapter holds
+  `ADAPTER_ACTION_UNSUPPORTED` with zero attempts and zero writes before a
+  correct re-dispatch confirms; the full story commits exactly one second
+  artifact with publication bytes unchanged, recovers a lost response via
+  one-attempt reconcile on a restarted Runtime, carries the runtime-written
+  `accepted` proof under `sop-store` (`event_id` = operation id, digest =
+  request digest), completes `succeeded`, and flips the loader to the
+  withdrawn error with `withdrawal_record()` returning the record; an
+  absent target and a digest-mismatch target both resolve
+  `confirmed_failed` with the work `needs_attention`, completion refused,
+  and the work closable `cancelled` via acknowledged-empty finalize
+  (cancellable — the D74 channel); a second withdrawal work hits
+  `REQUIREMENT_UNSATISFIED` first and `OPERATION_CONTENT_CONFLICT` only
+  after its own approval (D75); re-publication of a withdrawn version
+  conflicts after its own approval with the census unchanged (no
+  un-withdrawal); a publication work completes unchanged in the same
+  family/database (the F18 regression).

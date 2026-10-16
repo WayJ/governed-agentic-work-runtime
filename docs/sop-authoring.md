@@ -260,6 +260,67 @@ leaks as extra loader classes (RV-F5).
   the store; withdrawal fences no executing policy, no completed pin
   check and no in-flight work.
 
+### The governed withdrawal flow (same family, second capability, D70)
+
+`SopPublicationPolicy` carries **both** governed acts in one family,
+database and ledger, discriminated by the **work document's shape** (the
+completion gate is capability-blind, so shape — not capability — picks the
+requirement set):
+
+- **Admission:** `validate_document` accepts a lint-clean card **or** a
+  well-formed closed withdrawal request; anything else is a bounded,
+  unpersisted `ValueError`. The request shape is id-less, so it is
+  effectively immutable under `revise_document` — content changes enter as
+  new works (D69).
+- **Requirements:** **W02** — the configured authority must have signed a
+  `card_withdrawal` whose `data` is exactly
+  `{"digest": <published digest>, "policy_version": <version>}` binding
+  the request's own fields (the D58 mirror); **W03** — the store must have
+  accepted the withdrawal record, satisfied by the runtime-written
+  `accepted` proof (`event_id` = the withdrawal operation id) and excluded
+  from blockers exactly like S03. A wrong-digest approval verifies on
+  shape but leaves W02 pending; a wrong-version approval never verifies;
+  a tampered envelope is refused `EVIDENCE_AUTHENTICATION_FAILED` with
+  zero intake writes. Cross-shape isolation holds in both directions: a
+  `card_approval` never satisfies W02 and a `card_withdrawal` never
+  satisfies S02 — a mismatched pair is the bounded `CAPABILITY_UNSUPPORTED`
+  blocker, never an unpersisted error.
+- **No admin bypass (D71):** requirements are evidence-driven only; the
+  administrator's real reach is the S8 `revoke_evidence` path, which never
+  touches the store. The proposing actor needs `sop.withdraw` in grants
+  (the approver principal stays `sop-owner` with `evidence.write`; demo
+  grants extend the agent's set only).
+- **Business key and D66 order (D75):** `operation_key` returns the
+  withdrawal key for withdrawal works — one withdrawal identity per
+  version per database. Requirement blockers precede the business-key
+  branch as everywhere: a second withdrawal work is first refused
+  `REQUIREMENT_UNSATISFIED` while its own approval is missing, and only
+  after recording and verifying its **own** approval does the persisted
+  `OPERATION_CONTENT_CONFLICT` surface.
+- **Refusal channel (D74):** a dispatch whose target publication artifact
+  is absent or holds different content resolves `confirmed_failed` —
+  terminal, truthful, the work lands `needs_attention` with W03 pending,
+  and stays **cancellable** (`request_cancel` → `finalize_cancel`). The
+  drafted `ValueError` channel was rejected (RV-F1): it strands the work
+  at an unresolvable outcome.
+- **Per-capability adapter discipline (RV-F3):** `dispatch`, `reconcile`
+  and `recover` each take the adapter as an argument — a database holding
+  both publication and withdrawal operations dispatches each capability
+  with its **own** adapter. The wrong adapter's dispatch is held
+  `ADAPTER_ACTION_UNSUPPORTED` (bounded, zero attempts, re-dispatchable);
+  reconcile itself delegates lookup to the same `FilePublisher`, so it
+  resolves under either wrapper.
+- **Replay and recovery:** response loss after the record commits
+  reconciles the original withdrawal key in one attempt, never resending;
+  command dedup replays stored receipts verbatim.
+- **No write-path fencing (D73) and no un-withdrawal (D76):** a
+  re-publication of a withdrawn version in the same database is refused by
+  the governed proposal's own target checks (the D66
+  `OPERATION_CONTENT_CONFLICT`, after the new work's approval) with zero
+  store writes; a withdrawn version is never reinstated — corrected
+  content publishes as a new version (RFC-002 §6). Publication works
+  complete unchanged in the same family.
+
 ### Loading and pinning (fail-closed, D62)
 
 Reading a publication back is a set of functions with **no Runtime wiring**

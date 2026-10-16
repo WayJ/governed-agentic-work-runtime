@@ -8,10 +8,14 @@ and the S13 design spec for the ratified boundaries.
 
 import json
 import os
+import secrets
 import unittest
+import uuid
 
+from work_runtime import Runtime
 from work_runtime.authoring import sop_digest
 from work_runtime.file_adapter import FilePublisher
+from work_runtime.ingress import SignedEvidenceGateway, sign_evidence
 from work_runtime.policy import digest
 from work_runtime.publication import (
     WITHDRAWAL_DISCRIMINATOR,
@@ -21,6 +25,7 @@ from work_runtime.publication import (
     WITHDRAWAL_TARGET_ABSENT,
     WITHDRAWAL_TARGET_DIGEST,
     WITHDRAWN_MESSAGE,
+    SopPublicationPolicy,
     SopPublicationStore,
     SopWithdrawalStore,
     is_withdrawal_request,
@@ -35,9 +40,13 @@ from tests.test_publication import (
     artifact_name,
     card_with,
     committed_names,
+    evidence_bodies,
     json_read,
     stage_names,
+    table_counts,
 )
+
+FLOW_NOW = 2000000000  # Fixed clock keeps gateway freshness deterministic.
 
 
 def withdrawal_request(policy_id="expense-submit", policy_version="demo-1",
@@ -378,6 +387,388 @@ class LoaderWithdrawalTests(WithdrawalTestCase):
                                                })()))
         with self.assertRaises(ValueError):
             load_published_card(self.store_dir, "expense-submit", "demo-1")
+
+
+class ResponseLossWithdrawalStore:
+    """The real withdrawal store commits, then the response is lost."""
+
+    def __init__(self, store):
+        self._store = store
+        self.contract = store.contract  # surfaced, never bypassed
+
+    def execute(self, key, document, content_digest):
+        self._store.execute(key, document, content_digest)
+        raise TimeoutError("response lost after the withdrawal commit")
+
+    def lookup(self, key):
+        return self._store.lookup(key)
+
+
+class GovernedWithdrawalFlowTests(WithdrawalTestCase):
+    """The governed sop.withdraw story on a real Runtime, SQLite and
+    directory, in the same family/database as a standing publication
+    (D70): W02/W03 shape discrimination, D66 order, the D74 refusal
+    channel and the F18 completion-gate regression."""
+
+    def setUp(self):
+        super().setUp()
+        self.policy = SopPublicationPolicy()
+        self.grants = withdrawal_grants()
+        self.runtime = Runtime(os.path.join(self.root, "runtime.sqlite"),
+                               self.policy, self.grants)
+        self.approver_key = secrets.token_bytes(32)  # never printed
+        self.gateway = SignedEvidenceGateway(
+            self.runtime, {"sop-owner": self.approver_key},
+            clock=lambda: FLOW_NOW)
+        self.card = card_with()
+        self.publish(self.card)
+        self.target_digest = sop_digest(self.card)
+        self.request = withdrawal_request(published_digest=self.target_digest)
+        self.wkey = withdrawal_key("expense-submit", "demo-1")
+
+    def _send(self, work_id, kind, payload=None, actor="agent",
+              command_id=None, version=None):
+        if version is None and kind not in ("create_work", "record_evidence"):
+            version = self.runtime.get_work(work_id)["state_version"]
+        return self.runtime.command(actor, command_id or uuid.uuid4().hex,
+                                    work_id, kind, payload, version)
+
+    def _propose(self, work_id, capability="sop.withdraw", command_id=None,
+                 version=None):
+        work = self.runtime.get_work(work_id)
+        if version is None:
+            version = work["state_version"]
+        return self._send(work_id, "propose_action", {
+            "capability": capability,
+            "document_digest": work["document_digest"],
+            "contract_revision": work["contract"]["revision"],
+            "plan_revision": work["plan_revision"]}, command_id=command_id,
+            version=version)
+
+    def _signed_withdrawal(self, work_id, digest_value=None,
+                           policy_version=None, source="sop-owner",
+                           command_id=None, event_id=None):
+        request = self.runtime.get_work(work_id)["document"]
+        return sign_evidence(self.approver_key, {
+            "source": source, "command_id": command_id or uuid.uuid4().hex,
+            "work_id": work_id, "event_id": event_id or uuid.uuid4().hex,
+            "kind": "card_withdrawal",
+            "data": {"digest": digest_value or request["published_digest"],
+                     "policy_version": policy_version
+                     or request["policy_version"]},
+            "issued_at": FLOW_NOW})
+
+    def _signed_card_approval(self, work_id, digest_value=None,
+                              policy_version=None, command_id=None,
+                              event_id=None):
+        card = self.runtime.get_work(work_id)["document"]
+        return sign_evidence(self.approver_key, {
+            "source": "sop-owner", "command_id": command_id or uuid.uuid4().hex,
+            "work_id": work_id, "event_id": event_id or uuid.uuid4().hex,
+            "kind": "card_approval",
+            "data": {"digest": digest_value
+                     or self.runtime.get_work(work_id)["document_digest"],
+                     "policy_version": policy_version
+                     or card["policy"]["version"]},
+            "issued_at": FLOW_NOW})
+
+    def _establish(self, work_id, document):
+        self._send(work_id, "create_work", {"document": document})
+        self._send(work_id, "bind_contract", {
+            "policy_id": self.policy.id, "policy_version": self.policy.version,
+            "goal": self.policy.goal})
+
+    def _approve_withdrawal(self, work_id, **overrides):
+        receipt = self.gateway.record(
+            self._signed_withdrawal(work_id, **overrides))
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        self.runtime.verify_pending(work_id)
+
+    def _approve_card(self, work_id, **overrides):
+        receipt = self.gateway.record(
+            self._signed_card_approval(work_id, **overrides))
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        self.runtime.verify_pending(work_id)
+
+    def _w02_blocker(self, receipt):
+        return any(b["id"].startswith("W02:") for b in receipt["blockers"])
+
+    def test_malformed_request_is_refused_unpersisted_at_admission(self):
+        extra = dict(self.request, reason="free text is refused")
+        wrong_kind = dict(self.request, discriminator="sop.publish")
+        non_str = dict(self.request, published_digest=7)
+        for bad in (extra, wrong_kind, non_str):
+            with self.assertRaises(ValueError) as raised:
+                self._send("wd-x", "create_work", {"document": bad})
+            self.assertIs(type(raised.exception), ValueError)
+        self.assertEqual(table_counts(os.path.join(self.root,
+                                                   "runtime.sqlite"))["works"],
+                         0)
+
+    def test_request_document_digest_is_its_canonical_digest(self):
+        self._establish("wd-1", self.request)
+        work = self.runtime.get_work("wd-1")
+        self.assertEqual(work["document_digest"], digest(self.request))
+        self.assertEqual(work["document"], self.request)
+
+    def test_revise_document_refuses_the_id_less_request(self):
+        self._establish("wd-1", self.request)
+        with self.assertRaises(KeyError):
+            self._send("wd-1", "revise_document",
+                       {"document": dict(self.request,
+                                         published_digest="0" * 64)})
+
+    def test_proposal_before_withdrawal_approval_is_blocked_pending_w02(self):
+        self._establish("wd-1", self.request)
+        blocked = self._propose("wd-1")
+        self.assertEqual(blocked["decision"], "rejected")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")
+        self.assertTrue(self._w02_blocker(blocked))
+        self.assertEqual(committed_names(self.store_dir),
+                         [artifact_name(publication_key(self.card))])
+
+    def test_card_approval_never_satisfies_w02(self):
+        self._establish("wd-1", self.request)
+        receipt = self.gateway.record(self._signed_card_approval(
+            "wd-1", digest_value=self.target_digest, policy_version="demo-1"))
+        self.assertEqual(receipt["decision"], "accepted")
+        self.runtime.verify_pending("wd-1")
+        statuses = {e["kind"]: e["status"] for e in
+                    evidence_bodies(os.path.join(self.root,
+                                                 "runtime.sqlite"))}
+        self.assertEqual(statuses["card_approval"], "invalid")
+        blocked = self._propose("wd-1")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")
+        self.assertTrue(self._w02_blocker(blocked))
+
+    def test_tampered_withdrawal_approval_is_refused_with_zero_intake_writes(self):
+        self._establish("wd-1", self.request)
+        tampered = self._signed_withdrawal("wd-1")
+        tampered["data"]["digest"] = "0" * 64  # forged after signing
+        before = table_counts(os.path.join(self.root, "runtime.sqlite"))
+        rejection = self.gateway.record(tampered)
+        self.assertEqual(rejection,
+                         {"decision": "rejected",
+                          "code": "EVIDENCE_AUTHENTICATION_FAILED"})
+        self.assertEqual(table_counts(os.path.join(self.root,
+                                                   "runtime.sqlite")), before)
+
+    def test_wrong_source_withdrawal_intake_is_authority_denied(self):
+        self._establish("wd-1", self.request)
+        other_key = secrets.token_bytes(32)
+        gateway = SignedEvidenceGateway(
+            self.runtime, {"sop-owner": self.approver_key, "other": other_key},
+            clock=lambda: FLOW_NOW)
+        envelope = sign_evidence(other_key, {
+            "source": "other", "command_id": uuid.uuid4().hex,
+            "work_id": "wd-1", "event_id": uuid.uuid4().hex,
+            "kind": "card_withdrawal",
+            "data": {"digest": self.request["published_digest"],
+                     "policy_version": self.request["policy_version"]},
+            "issued_at": FLOW_NOW})
+        receipt = gateway.record(envelope)
+        self.assertEqual(receipt["decision"], "rejected")
+        self.assertEqual(receipt["code"], "AUTHORITY_DENIED")
+        self.assertEqual(table_counts(os.path.join(self.root,
+                                                   "runtime.sqlite"))["evidence"],
+                         0)
+
+    def test_wrong_digest_withdrawal_verifies_but_keeps_w02_pending(self):
+        self._establish("wd-1", self.request)
+        self._approve_withdrawal("wd-1", digest_value="e" * 64)
+        statuses = {e["kind"]: e["status"] for e in
+                    evidence_bodies(os.path.join(self.root,
+                                                 "runtime.sqlite"))}
+        self.assertEqual(statuses["card_withdrawal"], "verified")
+        blocked = self._propose("wd-1")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")
+        self.assertTrue(self._w02_blocker(blocked))
+
+    def test_wrong_version_withdrawal_turns_invalid_at_verification(self):
+        self._establish("wd-1", self.request)
+        self._approve_withdrawal("wd-1", policy_version="v9")
+        statuses = {e["kind"]: e["status"] for e in
+                    evidence_bodies(os.path.join(self.root,
+                                                 "runtime.sqlite"))}
+        self.assertEqual(statuses["card_withdrawal"], "invalid")
+        blocked = self._propose("wd-1")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")
+
+    def test_valid_withdrawal_verifies_and_business_key_is_the_withdrawal_key(self):
+        self._establish("wd-1", self.request)
+        self._approve_withdrawal("wd-1")
+        intent = self._propose("wd-1", command_id="withdraw-once")
+        self.assertEqual(intent["decision"], "accepted")
+        operation = self.runtime.get_operation(intent["operation_id"])
+        self.assertEqual(operation["business_key"], self.wkey)
+
+    def test_capability_and_document_shape_pair_in_both_directions(self):
+        self._establish("wd-1", self.request)
+        mismatched = self._propose("wd-1", capability="sop.publish")
+        self.assertEqual(mismatched["decision"], "rejected")
+        self.assertTrue(any(b.get("code") == "CAPABILITY_UNSUPPORTED"
+                            for b in mismatched["blockers"]))
+        second_card = card_with(policy_version="v2")
+        self._establish("pub-1", second_card)
+        backwards = self._propose("pub-1", capability="sop.withdraw")
+        self.assertEqual(backwards["decision"], "rejected")
+        self.assertTrue(any(b.get("code") == "CAPABILITY_UNSUPPORTED"
+                            for b in backwards["blockers"]))
+
+    def test_wrong_adapter_holds_bounded_then_correct_redispatch_succeeds(self):
+        self._establish("wd-1", self.request)
+        self._approve_withdrawal("wd-1")
+        intent = self._propose("wd-1")
+        held = self.runtime.dispatch(intent["operation_id"],
+                                     SopPublicationStore(self.store_dir))
+        self.assertEqual(held["dispatch_state"], "held")
+        self.assertEqual(held["reason"], "ADAPTER_ACTION_UNSUPPORTED")
+        operation = self.runtime.get_operation(intent["operation_id"])
+        self.assertEqual(operation["attempts"], [])
+        self.assertEqual(committed_names(self.store_dir),
+                         [artifact_name(publication_key(self.card))])
+        resolved = self.runtime.dispatch(intent["operation_id"],
+                                         SopWithdrawalStore(self.store_dir))
+        self.assertEqual(resolved["status"], "confirmed_succeeded")
+        self.assertEqual(len(committed_names(self.store_dir)), 2)
+
+    def test_full_story_with_response_loss_and_one_attempt_reconcile(self):
+        self._establish("wd-1", self.request)
+        self._approve_withdrawal("wd-1")
+        intent = self._propose("wd-1")
+        unknown = self.runtime.dispatch(
+            intent["operation_id"],
+            ResponseLossWithdrawalStore(SopWithdrawalStore(self.store_dir)))
+        self.assertEqual(unknown["status"], "outcome_unknown")
+        self.assertEqual(len(committed_names(self.store_dir)), 2)
+        self.assertEqual(stage_names(self.store_dir), [])
+        raw = json_read(self.store_dir, self.wkey)
+        self.assertEqual(raw["document"], self.request)
+        restarted = Runtime(os.path.join(self.root, "runtime.sqlite"),
+                            self.policy, self.grants)
+        recovered = restarted.reconcile(
+            intent["operation_id"], SopWithdrawalStore(self.store_dir))
+        self.assertEqual(recovered["status"], "confirmed_succeeded")
+        self.assertEqual(len(restarted.get_operation(intent["operation_id"])
+                            ["attempts"]), 1)
+        proofs = [e for e in evidence_bodies(os.path.join(
+            self.root, "runtime.sqlite")) if e["kind"] == "accepted"]
+        self.assertEqual(len(proofs), 1)
+        proof = proofs[0]
+        self.assertNotIn("sop-store", self.grants)  # no principal can sign it
+        self.assertEqual(proof["source"], "sop-store")
+        self.assertEqual(proof["event_id"], intent["operation_id"])
+        self.assertEqual(proof["status"], "verified")
+        self.assertEqual(proof["data"]["digest"], digest(self.request))
+        completion = self._send("wd-1", "request_completion",
+                                command_id="complete")
+        self.assertEqual(completion["decision"], "accepted")
+        work = self.runtime.get_work("wd-1")
+        self.assertEqual((work["status"], work["outcome"]),
+                         ("closed", "succeeded"))
+        publication_bytes = json_read(self.store_dir,
+                                      publication_key(self.card))
+        self.assertEqual(publication_bytes["document"], self.card)
+        with self.assertRaises(ValueError) as raised:
+            load_published_card(self.store_dir, "expense-submit", "demo-1")
+        self.assertEqual(str(raised.exception), WITHDRAWN_MESSAGE)
+        self.assertEqual(withdrawal_record(self.store_dir, "expense-submit",
+                                           "demo-1"), self.request)
+
+    def _ghost_request(self):
+        return withdrawal_request(policy_id="never-published",
+                                  policy_version="v1",
+                                  published_digest="a" * 64)
+
+    def test_absent_target_confirms_failed_and_the_work_stays_cancellable(self):
+        ghost = self._ghost_request()
+        self._establish("wd-1", ghost)
+        self._approve_withdrawal("wd-1")
+        intent = self._propose("wd-1")
+        self.assertEqual(intent["decision"], "accepted")  # W02 is the only gate
+        resolved = self.runtime.dispatch(intent["operation_id"],
+                                         SopWithdrawalStore(self.store_dir))
+        self.assertEqual(resolved["status"], "confirmed_failed")
+        self.assertTrue(resolved["external_id"].startswith(
+            "SOP-WITHDRAWAL-REFUSED-"))
+        self.assertEqual(self.runtime.get_work("wd-1")["status"],
+                         "needs_attention")
+        completion = self._send("wd-1", "request_completion")
+        self.assertEqual(completion["decision"], "rejected")
+        self.assertEqual(completion["code"], "REQUIREMENT_UNSATISFIED")
+        self._send("wd-1", "request_cancel", {"reason": "target missing"})
+        cancelled = self._send("wd-1", "finalize_cancel",
+                               {"acknowledged_operations": []})
+        self.assertEqual(cancelled["decision"], "accepted")
+        work = self.runtime.get_work("wd-1")
+        self.assertEqual((work["status"], work["outcome"]),
+                         ("closed", "cancelled"))
+        self.assertEqual(len(committed_names(self.store_dir)), 1)
+
+    def test_digest_mismatch_target_also_confirms_failed(self):
+        wrong = withdrawal_request(published_digest="f" * 64)
+        self._establish("wd-1", wrong)
+        self._approve_withdrawal("wd-1")
+        intent = self._propose("wd-1")
+        resolved = self.runtime.dispatch(intent["operation_id"],
+                                         SopWithdrawalStore(self.store_dir))
+        self.assertEqual(resolved["status"], "confirmed_failed")
+        self.assertEqual(len(committed_names(self.store_dir)), 1)
+        raw = json_read(self.store_dir, publication_key(self.card))
+        self.assertEqual(raw["document"], self.card)  # publication untouched
+
+    def test_second_withdrawal_conflicts_only_after_its_own_approval(self):
+        self.test_full_story_with_response_loss_and_one_attempt_reconcile()
+        self._establish("wd-2", self.request)
+        blocked = self._propose("wd-2")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")  # D75
+        self._approve_withdrawal("wd-2")
+        conflict = self._propose("wd-2")
+        self.assertEqual(conflict["decision"], "rejected")
+        self.assertEqual(conflict["code"], "OPERATION_CONTENT_CONFLICT")
+        self.assertEqual(len(committed_names(self.store_dir)), 2)
+
+    def test_republication_of_a_withdrawn_version_conflicts_census_unchanged(self):
+        # The version is first published through the governed flow in THIS
+        # database (the store replays the standing artifact, zero writes),
+        # then withdrawn; re-publication is refused by the proposal's own
+        # target checks — the D66 conflict — with the census unchanged.
+        self._establish("pub-0", self.card)
+        self._approve_card("pub-0")
+        published = self._propose("pub-0", capability="sop.publish")
+        self.runtime.dispatch(published["operation_id"],
+                              SopPublicationStore(self.store_dir))
+        self.assertEqual(len(committed_names(self.store_dir)), 1)
+        self._establish("wd-1", self.request)
+        self._approve_withdrawal("wd-1")
+        intent = self._propose("wd-1")
+        self.runtime.dispatch(intent["operation_id"],
+                              SopWithdrawalStore(self.store_dir))
+        self.assertEqual(len(committed_names(self.store_dir)), 2)
+        self._establish("pub-9", self.card)
+        blocked = self._propose("pub-9", capability="sop.publish")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")
+        self._approve_card("pub-9")
+        conflict = self._propose("pub-9", capability="sop.publish")
+        self.assertEqual(conflict["decision"], "rejected")
+        self.assertEqual(conflict["code"], "OPERATION_CONTENT_CONFLICT")
+        self.assertEqual(len(committed_names(self.store_dir)), 2)  # no un-withdrawal
+
+    def test_publication_work_completes_unchanged_in_the_same_family(self):
+        second = card_with(policy_version="v2")
+        self._establish("pub-1", second)
+        self._approve_card("pub-1")
+        intent = self._propose("pub-1", capability="sop.publish")
+        self.assertEqual(intent["decision"], "accepted")
+        operation = self.runtime.get_operation(intent["operation_id"])
+        self.assertEqual(operation["business_key"], publication_key(second))
+        self.runtime.dispatch(intent["operation_id"],
+                              SopPublicationStore(self.store_dir))
+        completion = self._send("pub-1", "request_completion")
+        self.assertEqual(completion["decision"], "accepted")
+        work = self.runtime.get_work("pub-1")
+        self.assertEqual((work["status"], work["outcome"]),
+                         ("closed", "succeeded"))
 
 
 if __name__ == "__main__":
