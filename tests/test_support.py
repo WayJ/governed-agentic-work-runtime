@@ -6,7 +6,9 @@ business key, and a GitHub-issue-shaped fake tracker adapter.
 """
 
 import unittest
+import uuid
 
+from work_runtime.policy import digest
 from work_runtime.support import SupportPolicy
 
 
@@ -53,6 +55,20 @@ if __name__ == "__main__":
     unittest.main()
 
 
+def proof(kind, source, data, status="verified"):
+    return {"id": uuid.uuid4().hex, "source": source, "event_id": uuid.uuid4().hex,
+            "kind": kind, "data": data, "status": status}
+
+
+def work_state(document=None):
+    doc = ticket() if document is None else document
+    return {"id": "w1", "document": doc, "document_digest": digest(doc)}
+
+
+def requirement(rules, rule_id):
+    return next(r for r in rules if r["rule_id"] == rule_id)
+
+
 class SupportEvidenceShapeTests(unittest.TestCase):
     def setUp(self):
         self.policy = SupportPolicy()
@@ -89,3 +105,90 @@ class SupportEvidenceShapeTests(unittest.TestCase):
         for kind in ("approval", "triage", "TicketAccepted"):
             self.assertFalse(self.policy.validate_evidence(
                 self.work, self.candidate(kind, {"digest": "d" * 64})), kind)
+
+
+class SupportEvaluateTests(unittest.TestCase):
+    def setUp(self):
+        self.policy = SupportPolicy()
+        self.work = work_state()
+        self.current = self.work["document_digest"]
+
+    def rules(self, document=None, proofs=()):
+        work = work_state(document)
+        return self.policy.evaluate(work, list(proofs))
+
+    def test_unresolved_severity_and_category_block_with_unknown_applicability(self):
+        rules = self.rules(ticket(severity=None, category=None))
+        for rule_id in ("T01", "T02", "T03"):
+            self.assertEqual(requirement(rules, rule_id)["applicability"],
+                             "unknown", rule_id)
+            self.assertEqual(requirement(rules, rule_id)["fulfillment"],
+                             "pending", rule_id)
+
+    def test_resolved_severity_and_category_admit_their_rules(self):
+        rules = self.rules(ticket())
+        for rule_id in ("T01", "T02"):
+            rule = requirement(rules, rule_id)
+            self.assertEqual((rule["applicability"], rule["fulfillment"]),
+                             ("applicable", "satisfied"), rule_id)
+        partial = self.rules(ticket(category=None))
+        self.assertEqual(requirement(partial, "T01")["fulfillment"], "satisfied")
+        self.assertEqual(requirement(partial, "T02")["applicability"], "unknown")
+
+    def test_urgent_sla_applicability_follows_severity(self):
+        for severity, expected in (("critical", "applicable"), ("high", "applicable"),
+                                   ("normal", "not_applicable"), (None, "unknown")):
+            with self.subTest(severity=severity):
+                rules = self.rules(ticket(severity=severity))
+                self.assertEqual(requirement(rules, "T03")["applicability"], expected)
+
+    def test_urgent_sla_satisfied_only_within_the_severity_budget(self):
+        for severity, minutes, satisfied in (("critical", 60, True),
+                                             ("critical", 61, False),
+                                             ("high", 240, True),
+                                             ("high", 241, False)):
+            with self.subTest(severity=severity, minutes=minutes):
+                document = ticket(severity=severity)
+                rules = self.rules(document, proofs=[
+                    proof("sla", "support-desk",
+                          {"digest": digest(document),
+                           "response_target_minutes": minutes})])
+                self.assertEqual(requirement(rules, "T03")["fulfillment"],
+                                 "satisfied" if satisfied else "pending")
+
+    def test_wrong_source_stale_digest_or_unverified_does_not_satisfy_sla(self):
+        document = ticket(severity="critical")
+        current = digest(document)
+        stale = digest(ticket(summary="A different report"))
+        cases = (
+            [proof("sla", "tracker",
+                   {"digest": current, "response_target_minutes": 30})],
+            [proof("sla", "support-desk",
+                   {"digest": stale, "response_target_minutes": 30})],
+            [proof("sla", "support-desk",
+                   {"digest": current, "response_target_minutes": 30},
+                   status="pending_verification")],
+        )
+        for proofs in cases:
+            rules = self.rules(document, proofs=proofs)
+            self.assertEqual(requirement(rules, "T03")["fulfillment"], "pending")
+
+    def test_accepted_rule_tracks_tracker_receipt_at_current_digest(self):
+        rules = self.rules(proofs=[proof("accepted", "tracker",
+                                         {"digest": self.current, "external_id": "#1"})])
+        rule = requirement(rules, "T04")
+        self.assertEqual((rule["applicability"], rule["fulfillment"]),
+                         ("applicable", "satisfied"))
+        stale = self.rules(proofs=[proof("accepted", "tracker",
+                                         {"digest": digest(ticket(summary="Other")),
+                                          "external_id": "#1"})])
+        self.assertEqual(requirement(stale, "T04")["fulfillment"], "pending")
+        wrong_source = self.rules(proofs=[proof("accepted", "support-desk",
+                                                {"digest": self.current,
+                                                 "external_id": "#1"})])
+        self.assertEqual(requirement(wrong_source, "T04")["fulfillment"], "pending")
+
+    def test_requirements_carry_the_ticket_reference_subject(self):
+        rules = self.rules(ticket(ticket_reference="TCK-77"))
+        self.assertIn("T01:TCK-77", [r["id"] for r in rules])
+        self.assertEqual({r["rule_id"] for r in rules}, {"T01", "T02", "T03", "T04"})
