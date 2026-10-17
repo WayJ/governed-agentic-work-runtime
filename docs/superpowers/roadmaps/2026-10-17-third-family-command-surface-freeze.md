@@ -26,7 +26,7 @@ date: 2026-10-17
 
 | sprint | state | note |
 |---|---|---|
-| S15 | planned | 2026-10-17 owner direction (D92): adopt the 2026-10-17 advice order — (1) freeze the command surface via a third family with zero lifecycle edits, (2) a credential-holding adapter host behind one real external write path, (3) one rule-card binding experiment ([advice](../../../上一次建议.md), [S14 close](../../../.agents/notes/2026-10-16-S14-close.md)). First slice: third-family command-surface freeze acceptance. Awaiting master go and design recon. |
+| S15 | ready | 2026-10-17 owner decision: proceed per the adopted order ("其他的按照你推荐来进行。直接开始吧"). Strategic go verified against the DoD: design recon resolved Q1 (support-ticket family) and Q2 (forward + crash-recovery chapters) with byte pins and scope guard — [recon](../../../.agents/notes/2026-10-17-s15-design-recon.md). First slice: third-family command-surface freeze acceptance. Materialization follows per supervibe:start. |
 
 ## Decisions (ADR)
 
@@ -35,6 +35,7 @@ date: 2026-10-17
 | D92 | Adopt the 2026-10-17 owner-endorsed order: freeze the command surface first (third family, zero lifecycle edits), then a credential-holding adapter host with one real external write path, then one rule-card binding experiment | The S14 close-out recorded the next direction as an owner-level decision; the owner selected the advice order on 2026-10-17 | 2026-10-17 | [Advice](../../../上一次建议.md) |
 | D93 | E15 scope is the third-family freeze acceptance only; entry-point consolidation, the adapter host and the binding experiment are separately scheduled follow-ups (Q3/Q4) | Smallest coherent slice (D80 precedent); keeps the acceptance unambiguous | 2026-10-17 | [S14 close](../../../.agents/notes/2026-10-16-S14-close.md) |
 | D94 | Post-closure compensation and compensation chains stay unimplemented; the active-window compensation boundary is endorsed as-is | The advice explicitly endorses stopping at the current window semantics; this boundary is worth more than "completing" revocation | 2026-10-17 | [Advice](../../../上一次建议.md) |
+| D95 | Runtime ledger stays SQLite; storage re-selection stays gated on the 0.4 concurrency measurement; PostgreSQL is recorded as a runner-up EXTERNAL system ([E16/D96](2026-10-17-adapter-host-real-external-write-path.md)), not a ledger migration | Zero-dependency clean-clone promise; single-process single-writer means SQLite already pins the transaction boundary; PG's value (multi-writer coordination) is exactly the deferred domain | 2026-10-17 | [Roadmap §0.4](../../roadmap.md) |
 
 ## Asset Disposition
 
@@ -49,10 +50,10 @@ date: 2026-10-17
 
 | id | question | status | resolution |
 |---|---|---|---|
-| Q1 | Which third business domain (candidate: vendor payment) best stresses the untested parts of the admission ladder? | open | S15 design recon; selection criteria: unknown-applicability blocking exercised, a distinct business-key shape, plausible zero lifecycle edits |
-| Q2 | Does the freeze claim need a crash-recovery chapter in the family demo, or is forward-path coverage sufficient? | open | S15 design recon |
+| Q1 | Which third business domain (candidate: vendor payment) best stresses the untested parts of the admission ladder? | resolved | 2026-10-17 design recon: **support ticket family (客户工单)** — severity/category/SLA admission with unknown-blocking, ticket-reference business key, GitHub-issue-shaped fake-adapter receipts preparing E16 reuse; vendor payment rejected (amount-shaped like expense, payment-system counterpart mismatches D96) — [recon](../../../.agents/notes/2026-10-17-s15-design-recon.md) |
+| Q2 | Does the freeze claim need a crash-recovery chapter in the family demo, or is forward-path coverage sufficient? | resolved | 2026-10-17 design recon: crash-recovery chapter included — the freeze must cover the result-unknown dispatch machinery, not only admission; the local fake adapter suffices (external realness is E16's job) — [recon](../../../.agents/notes/2026-10-17-s15-design-recon.md) |
 | Q3 | When does entry-point consolidation ship (single product entry plus a proof-catalog index of demos)? | open | Follow-up scheduling decision after E15 |
-| Q4 | Which external system becomes the first real write path behind the credential-holding adapter host (advice step 2)? | open | Owner decision; blocks the follow-up epic, not E15 |
+| Q4 | Which external system becomes the first real write path behind the credential-holding adapter host (advice step 2)? | resolved | 2026-10-17 owner decision, recorded as [E16/D96](2026-10-17-adapter-host-real-external-write-path.md): GitHub REST API; runner-ups self-hosted PostgreSQL (best inspectability, needs an optional client dependency) and Stripe test mode (payout narrative, account + network dependency) documented there |
 
 ## Cross-cutting
 
@@ -60,4 +61,4 @@ date: 2026-10-17
 |---|---|---|
 | Business compensation | E10/E14 | The third family adds no compensation; active-window semantics unchanged (D94). |
 | Rule-card two-track (governed cards vs Python policies) | E12/E13 + follow-up | Closed only by the advice step-3 binding experiment or its recorded failure; no new card publication states before it. |
-| Adapter host / real external write path | follow-up epic (unscheduled) | Advice step 2; gated on the Q4 owner decision. |
+| Adapter host / real external write path | E16 | Advice step 2; Q4 resolved 2026-10-17 → GitHub REST API ([E16/D96](2026-10-17-adapter-host-real-external-write-path.md)). |
