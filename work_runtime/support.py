@@ -11,6 +11,8 @@ docs/adapter-contract.md and docs/runtime-boundaries.md.
 
 from typing import List
 
+from .policy import digest
+
 SEVERITIES = ("critical", "high", "normal")
 CATEGORIES = ("billing", "technical", "account")
 
@@ -118,3 +120,30 @@ class SupportPolicy:
         add("T04", "applicable", accepted,
             "The tracker must have accepted the current ticket content")
         return result
+
+    def action_blockers(self, capability: str, requirements: List[dict]) -> List[dict]:
+        if capability != "ticket.dispatch":
+            return [{"code": "CAPABILITY_UNSUPPORTED", "capability": capability}]
+        return [r for r in requirements if r["rule_id"] != "T04" and
+                (r["applicability"] in ("unknown", "conflict")
+                 or (r["applicability"] == "applicable"
+                     and r["fulfillment"] != "satisfied"))]
+
+    def operation_key(self, capability: str, work: dict) -> str:
+        # The ticket-reference business key: no document digest, no policy
+        # version — the key is the external reference and stays stable across
+        # policy versions of this family (distinct from the digest-bound
+        # expense/publishing shapes). Changed content under a used reference
+        # is a conflict for the runtime to surface, never a second operation.
+        return digest([self.id, capability, work["document"]["ticket_reference"]])
+
+
+class SupportPolicyV2(SupportPolicy):
+    """Same family, tighter urgent-SLA budget for critical tickets (demo-2).
+
+    The migration target proves the business key survives policy versions:
+    ``operation_key`` is inherited untouched.
+    """
+
+    version = "demo-2"
+    urgent_sla_budget_minutes = {"critical": 30, "high": 240}

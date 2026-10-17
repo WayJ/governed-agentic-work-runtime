@@ -9,7 +9,7 @@ import unittest
 import uuid
 
 from work_runtime.policy import digest
-from work_runtime.support import SupportPolicy
+from work_runtime.support import SupportPolicy, SupportPolicyV2
 
 
 def ticket(ticket_reference="TCK-1001", summary="Payment failed after the update",
@@ -192,3 +192,67 @@ class SupportEvaluateTests(unittest.TestCase):
         rules = self.rules(ticket(ticket_reference="TCK-77"))
         self.assertIn("T01:TCK-77", [r["id"] for r in rules])
         self.assertEqual({r["rule_id"] for r in rules}, {"T01", "T02", "T03", "T04"})
+
+
+class SupportAdmissionTests(unittest.TestCase):
+    """Dispatch blockers, the ticket-reference business key, policy V2."""
+
+    def setUp(self):
+        self.policy = SupportPolicy()
+
+    def rules_with_sla(self, severity, minutes=30, policy=None):
+        document = ticket(severity=severity)
+        return (policy or self.policy).evaluate(work_state(document), [
+            proof("sla", "support-desk", {"digest": digest(document),
+                                          "response_target_minutes": minutes})])
+
+    def test_action_blockers_exclude_the_accepted_rule_and_track_applicability(self):
+        rules = self.policy.evaluate(work_state(ticket(severity=None)), [])
+        blockers = self.policy.action_blockers("ticket.dispatch", rules)
+        self.assertEqual({b["rule_id"] for b in blockers}, {"T01", "T03"})
+        self.assertEqual(blockers[0]["applicability"], "unknown")
+        self.assertNotIn("T04", [b["rule_id"] for b in blockers])
+
+    def test_satisfied_requirements_admit_the_dispatch_capability(self):
+        self.assertEqual(self.policy.action_blockers(
+            "ticket.dispatch", self.rules_with_sla("critical")), [])
+
+    def test_missing_sla_blocks_a_resolved_urgent_ticket(self):
+        rules = self.policy.evaluate(work_state(ticket(severity="critical")), [])
+        self.assertEqual([b["rule_id"] for b in
+                          self.policy.action_blockers("ticket.dispatch", rules)],
+                         ["T03"])
+
+    def test_normal_severity_needs_no_sla(self):
+        rules = self.policy.evaluate(work_state(ticket(severity="normal")), [])
+        self.assertEqual(self.policy.action_blockers("ticket.dispatch", rules), [])
+
+    def test_unsupported_capability_is_always_blocked(self):
+        blockers = self.policy.action_blockers("expense.submit", [])
+        self.assertEqual(blockers, [{"code": "CAPABILITY_UNSUPPORTED",
+                                     "capability": "expense.submit"}])
+
+    def test_operation_key_is_ticket_reference_bound(self):
+        work = work_state()
+        key = self.policy.operation_key("ticket.dispatch", work)
+        self.assertEqual(key, digest(["support-ticket", "ticket.dispatch",
+                                      work["document"]["ticket_reference"]]))
+        revised = work_state(ticket(summary="Updated summary after triage"))
+        self.assertEqual(key,
+                         self.policy.operation_key("ticket.dispatch", revised))
+        other = work_state(ticket(ticket_reference="TCK-1002"))
+        self.assertNotEqual(key,
+                            self.policy.operation_key("ticket.dispatch", other))
+        self.assertEqual(SupportPolicyV2().operation_key("ticket.dispatch", work),
+                         key)
+
+    def test_policy_v2_tightens_the_critical_sla_budget(self):
+        v2 = SupportPolicyV2()
+        self.assertEqual(v2.version, "demo-2")
+        for minutes, fulfillment in ((30, "satisfied"), (31, "pending"),
+                                     (45, "pending")):
+            rules = self.rules_with_sla("critical", minutes, policy=v2)
+            self.assertEqual(requirement(rules, "T03")["fulfillment"], fulfillment,
+                             minutes)
+        high = self.rules_with_sla("high", 240, policy=v2)
+        self.assertEqual(requirement(high, "T03")["fulfillment"], "satisfied")
