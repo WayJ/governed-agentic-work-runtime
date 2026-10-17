@@ -44,7 +44,7 @@ class SupportDocumentTests(unittest.TestCase):
 
     def test_identity_strings_must_be_nonempty(self):
         policy = SupportPolicy()
-        for field in ("ticket_reference", "summary"):
+        for field in ("id", "summary"):
             with self.assertRaises(ValueError):
                 policy.validate_document({**ticket(), field: ""})
             with self.assertRaises(ValueError):

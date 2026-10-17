@@ -39,7 +39,7 @@ receipt carrying the currently observed state version — the stored
 receipt is never modified, and a later replay under restored authority
 returns it again. Closed-work actionability follows replay as before: a
 stored receipt is returned for a closed work while authority holds.
-| operation | business key derived by the policy (expense demo: policy id + capability + document id + document digest; support-ticket family: policy id + capability + the ticket reference alone) | a new command proposing the same logical effect re-associates the existing operation instead of creating a second one; same key with different content is rejected `OPERATION_CONTENT_CONFLICT` |
+| operation | business key derived by the policy (expense demo: policy id + capability + document id + document revision; publishing family: policy id + capability + document id + document digest; support-ticket family: policy id + capability + the ticket reference alone) | a new command proposing the same logical effect re-associates the existing operation instead of creating a second one; same key with different content is rejected `OPERATION_CONTENT_CONFLICT` |
 | external effect | idempotency key = the operation's business key, enforced by the adapter | the external system deduplicates repeated calls with the same key and content |
 
 ## Third-family command-surface freeze (S15)
