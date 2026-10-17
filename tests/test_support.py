@@ -480,14 +480,12 @@ class SupportFlowTests(SupportFlowHarness, unittest.TestCase):
     def test_cross_work_same_ticket_reference_conflicts(self):
         self.initialize(ticket())
         self.admit()
-        original = "ticket-1"
         self.work_id = "ticket-2"
         self.initialize(ticket())
         self.admit()
         conflict = self.propose(command_id="dispatch-second")
         self.assertEqual(conflict["decision"], "rejected")
         self.assertEqual(conflict["code"], "OPERATION_CONTENT_CONFLICT")
-        self.assertEqual(original, "ticket-1")
 
     def test_same_work_content_revision_after_proposal_conflicts(self):
         self.initialize(ticket())
