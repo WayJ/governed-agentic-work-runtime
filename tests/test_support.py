@@ -5,6 +5,7 @@ and category admission with an unknown-blocking rule, a ticket-reference
 business key, and a GitHub-issue-shaped fake tracker adapter.
 """
 
+import sqlite3
 import tempfile
 import unittest
 import uuid
@@ -366,7 +367,7 @@ class FakeIssueTrackerDomainTests(unittest.TestCase):
         self.assertEqual(tracker.issue_count(), 0)
 
 
-class SupportFlowTests(unittest.TestCase):
+class SupportFlowHarness:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -417,6 +418,8 @@ class SupportFlowTests(unittest.TestCase):
         self.runtime.verify_pending(self.work_id)
         return self.propose(command_id="dispatch-once")
 
+
+class SupportFlowTests(SupportFlowHarness, unittest.TestCase):
     def test_unresolved_severity_blocks_acceptance(self):
         self.initialize(ticket(severity=None))
         rejection = self.propose()
@@ -496,3 +499,95 @@ class SupportFlowTests(unittest.TestCase):
         conflict = self.propose()
         self.assertEqual(conflict["decision"], "rejected")
         self.assertEqual(conflict["code"], "OPERATION_CONTENT_CONFLICT")
+
+
+class SupportRecoveryTests(SupportFlowHarness, unittest.TestCase):
+    """Result-unknown dispatches reconcile by ticket reference, never resend."""
+
+    def test_timeout_after_commit_recovers_by_lookup_without_resend(self):
+        self.initialize(ticket())
+        proposal = self.admit()
+        unknown = self.runtime.dispatch(
+            proposal["operation_id"],
+            FakeIssueTracker(self.tracker_path, timeout_after_commit=True))
+        self.assertEqual(unknown["status"], "outcome_unknown")
+        tracker = FakeIssueTracker(self.tracker_path)
+        self.assertEqual(tracker.issue_count(), 1)
+        self.assertEqual(
+            tracker.lookup(self.runtime.get_operation(
+                proposal["operation_id"])["business_key"])["status"], "accepted")
+
+        restarted = self.fresh_runtime()
+        recovered = restarted.reconcile(proposal["operation_id"],
+                                        FakeIssueTracker(self.tracker_path))
+        self.assertEqual(recovered["status"], "confirmed_succeeded")
+        self.assertEqual(recovered["external_id"], "#1")
+        operation = restarted.get_operation(proposal["operation_id"])
+        self.assertEqual(len(operation["attempts"]), 1)
+        self.assertEqual(FakeIssueTracker(self.tracker_path).issue_count(), 1)
+        db = sqlite3.connect(self.tracker_path)
+        try:
+            receipts = db.execute("SELECT COUNT(*) FROM receipts").fetchone()[0]
+        finally:
+            db.close()
+        self.assertEqual(receipts, 1)
+        completion = restarted.command(
+            "agent", "complete-1", self.work_id, "request_completion", None,
+            restarted.get_work(self.work_id)["state_version"])
+        self.assertEqual(completion["decision"], "accepted")
+
+    def test_business_key_is_the_ticket_reference_digest(self):
+        self.initialize(ticket())
+        proposal = self.admit()
+        operation = self.runtime.get_operation(proposal["operation_id"])
+        self.assertEqual(operation["business_key"],
+                         digest(["support-ticket", "ticket.dispatch", "TCK-1001"]))
+
+
+class SupportMigrationTests(SupportFlowHarness, unittest.TestCase):
+    """Policy migration re-gates the work; the business key never moves."""
+
+    def fresh_runtime(self, policy=None):
+        v1, v2 = SupportPolicy(), SupportPolicyV2()
+        return Runtime(self.path, policy or v1, support_grants(),
+                       policies={"demo-1": v1, "demo-2": v2})
+
+    def migrate(self):
+        return self.send("migrate_policy",
+                         {"policy_id": "support-ticket", "policy_version": "demo-2",
+                          "reason": "tighter critical SLA budget"}, actor="lead")
+
+    def test_migration_readmits_the_same_operation_on_the_stable_key(self):
+        self.initialize(ticket())
+        proposal = self.admit()
+        original = self.runtime.get_operation(proposal["operation_id"])
+        self.assertEqual(self.migrate()["decision"], "accepted")
+        invalidated = self.runtime.get_operation(proposal["operation_id"])
+        self.assertEqual(invalidated["dispatch_state"], "cancelled")
+        self.assertEqual(invalidated["business_key"], original["business_key"])
+        # The V1-budget SLA (45 min) no longer satisfies the V2 critical budget
+        rules = self.runtime.get_work(self.work_id)["requirements"]
+        self.assertEqual(requirement(rules, "T03")["fulfillment"], "pending")
+        blocked = self.propose(command_id="dispatch-v2-early")
+        self.assertEqual(blocked["code"], "REQUIREMENT_UNSATISFIED")
+        # A V2-compliant SLA reopens admission on the SAME operation id
+        self.record_sla(minutes=30)
+        self.runtime.verify_pending(self.work_id)
+        again = self.propose(command_id="dispatch-v2")
+        self.assertEqual(again["decision"], "accepted")
+        self.assertEqual(again["operation_id"], proposal["operation_id"])
+        confirmed = self.runtime.dispatch(again["operation_id"],
+                                          FakeIssueTracker(self.tracker_path))
+        self.assertEqual(confirmed["status"], "confirmed_succeeded")
+        self.assertEqual(FakeIssueTracker(self.tracker_path).issue_count(), 1)
+
+    def test_migration_refuses_uncertain_outcomes(self):
+        self.initialize(ticket())
+        proposal = self.admit()
+        unknown = self.runtime.dispatch(
+            proposal["operation_id"],
+            FakeIssueTracker(self.tracker_path, timeout_after_commit=True))
+        self.assertEqual(unknown["status"], "outcome_unknown")
+        rejection = self.migrate()
+        self.assertEqual(rejection["decision"], "rejected")
+        self.assertEqual(rejection["code"], "OUTCOME_UNRESOLVED")
