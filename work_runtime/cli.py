@@ -10,6 +10,8 @@ from .publication import SopPublicationPolicy
 from .publication_demo import publication_grants, run_publication_demo
 from .publishing import PublishingPolicy
 from .publishing_demo import publishing_grants, run_demo as run_publish_demo
+from .support import SupportPolicy, support_grants
+from .support_demo import run_demo as run_support_demo
 from .revocation_demo import run_revocation_demo
 from .rotation_demo import run_rotation_demo
 from .runtime import Runtime
@@ -73,6 +75,13 @@ def main(argv=None):
         help="Run the signing-key rotation demonstration (dual-key window, "
              "retirement, verbatim cached receipts, preserved history)")
     rotation.add_argument("--directory", help="Parent directory for a fresh demo folder")
+    support = sub.add_parser(
+        "support-demo",
+        help="Run the support-ticket admission and crash-recovery demonstration "
+             "(unknown blocks, ticket-reference business key, real crash "
+             "recovery)")
+    support.add_argument("--directory",
+                         help="Parent directory for a fresh demo folder")
     publication = sub.add_parser(
         "publication-demo",
         help="Run the governed SOP rule-card publication demonstration "
@@ -91,7 +100,7 @@ def main(argv=None):
     inspect.add_argument("--work", default="demo")
     inspect.add_argument("--policy",
                          choices=["expense-submit", "content-publish",
-                                  "sop-publish"],
+                                  "sop-publish", "support-ticket"],
                          default="expense-submit",
                          help="Policy that owns this database (default: expense-submit)")
     inspect.add_argument("--policy-versions", dest="policy_versions", default=None,
@@ -130,6 +139,8 @@ def main(argv=None):
         run_rotation_demo(args.directory)
     elif args.command == "publication-demo":
         run_publication_demo(args.directory)
+    elif args.command == "support-demo":
+        run_support_demo(args.directory)
     elif args.command == "lint-sop":
         raise SystemExit(run_lint_sop(args.path, args.as_json))
     elif args.command == "inspect":
@@ -144,6 +155,11 @@ def main(argv=None):
                 parser.error("--policy-versions loads expense-family versions only; "
                              "it cannot be combined with --policy content-publish")
             runtime = Runtime(args.db, PublishingPolicy(), publishing_grants())
+        elif args.policy == "support-ticket":
+            if args.policy_versions is not None:
+                parser.error("--policy-versions loads expense-family versions only; "
+                             "it cannot be combined with --policy support-ticket")
+            runtime = Runtime(args.db, SupportPolicy(), support_grants())
         elif args.policy_versions is not None:
             try:
                 default, registry = _expense_registry(args.policy_versions)

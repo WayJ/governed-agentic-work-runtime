@@ -147,6 +147,14 @@ python3 -m work_runtime publication-demo
 
 每个计数都对着演示自己的 SQLite 存储与产物目录断言——键、摘要、状态与回执由测试和已安装校验器本地重算，绝不解析旁白文本；植入标记测试证明密钥永不出现在输出中。边界即设计的边界：批准者与发布者是权限配置中的受信任本地主体，不是身份认证；信任纯来自配置（配置回滚会复活退役密钥）；没有"取消撤回"——撤回记录存续期间该版本的错误答案永久有效，修正的卡以新版本字符串发布；已发布的卡片绝不执行（加载器与固定摘要是显式运维检查，无 Runtime 接线）；这一切都不是租户认证、TLS、外部 KMS、网络访问或分布式恰好一次声明。详见[SOP 编写文档](docs/sop-authoring.md)。
 
+## 提交一张客户工单：未知阻断准入，崩溃后按引用恢复
+
+```bash
+python3 -m work_runtime support-demo
+```
+
+第九个演示在冻结的命令面上运行第三个业务家族——客户工单：家族交付期间 `work_runtime/runtime.py` 与 `work_runtime/adapters.py` 保持字节不变（S15 冻结结论，SHA-256 基准记录在冲刺证据中）。第一章在分诊前提交一张账务工单：严重级别与类别未决时提案被 `APPLICABILITY_UNRESOLVED` 阻断——未知绝不等同于符合政策，未决的严重级别同时使 SLA 规则的适用性保持未知。分诊修订单据（severity=critical、category=billing）后，服务台在 critical 预算内承诺 45 分钟 SLA，准入以工单引用本身作为业务键通过——键中不含内容摘要。派发在 GitHub 工单形状的本地模拟追踪器中立出 issue `#1`；追踪器来源的受理证据满足目标，工作以 succeeded 关闭。第二章由携带授权的子进程派发第二张工单，并在追踪器受理写入后真实崩溃（退出码 73）；重启后的 Runtime 按工单引用业务键 `recover()`——找回原始回执、恰好一次尝试、零重发——第二件工作随之关闭。追踪器对每个工单引用只保留一个 issue：相同内容换键复用同一编号，已用引用下的变更内容是可查询的业务拒绝 `TICKET_REFERENCE_CONTENT_CONFLICT`，在受治理流程中则于提案时呈现为 `OPERATION_CONTENT_CONFLICT`——一个引用，一次受治理派发。每个打印计数都直接对 SQLite 存储断言；无需凭据、服务或密钥。见[适配器契约](docs/adapter-contract.md)与[运行时边界](docs/runtime-boundaries.md)。
+
 ## 浏览持久历史：本地只读 GUI
 
 ```bash

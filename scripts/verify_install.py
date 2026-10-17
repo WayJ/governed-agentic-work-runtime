@@ -116,6 +116,21 @@ Standard library only, Python >= 3.9. Stages, all of which must pass:
     printed `inspect --policy sop-publish` command verbatim.
 23. Run the `work-runtime publication-demo` console entry point outside the
     checkout and apply the same independent store proof.
+24. Run `python -m work_runtime support-demo` outside the checkout and
+    verify it INDEPENDENTLY of the printed text: read both stores directly —
+    both works closed/succeeded with T04 satisfied, exactly two confirmed
+    operations with locally recomputed ticket-reference business keys
+    (digest([family, capability, reference])) and exactly one attempt each,
+    runtime-written tracker-source accepted proofs whose event ids are the
+    operation ids, and the tracker holding exactly one issue per ticket
+    reference (numbers 1 and 2) with two accepted receipts (the
+    crash-recovered receipt included, nothing re-sent) — and re-run both
+    printed inspect commands verbatim.
+25. Run the `work-runtime support-demo` console entry point outside the
+    checkout and apply the same independent store proof. NEW coverage since
+    S15: the support-ticket family ships with BOTH the module and the
+    console stage from the start, disclosed here (D90 pattern), rather than
+    silently matching the publish-demo module-first precedent.
 
 Usage: python3 scripts/verify_install.py [--python INTERP] [--repo PATH] [--keep]
 """
@@ -159,6 +174,9 @@ ROTATION_FINAL_DIGEST = re.compile(r"six-table digest after all steps: ([0-9a-f]
 ROTATION_TABLES = ("works", "commands", "evidence", "operations", "events", "metadata")
 ROTATION_COMMAND_IDS = ("cmd-rotation-k1", "cmd-rotation-k2", "cmd-rotation-resend")
 ROTATION_EVENT_IDS = ("evt-rotation-1", "evt-rotation-2")
+SUPPORT_FINAL_LINE = ("2 works; issues filed: 2; crash-recovered receipts: 1; "
+                      "effects re-sent: 0")
+SUPPORT_REFERENCES = ("TCK-1001", "TCK-1002")
 PUBLICATION_FINAL_LINE = ("1 published card version; withdrawal records: 1; "
                           "committed artifacts: 2; doctored same-version "
                           "conflicts: 1 (after its own approval); "
@@ -1483,6 +1501,97 @@ def require_publishing_proof(stdout, source):
     return str(runtime_db)
 
 
+def require_support_proof(stdout, source):
+    """Independent store proof for the S15 support-demo (stages 24 and 25).
+
+    Reads the demo's stores directly, never the printed text for state: both
+    works closed/succeeded with the T04 acceptance requirement satisfied,
+    exactly two confirmed operations carrying locally recomputed
+    ticket-reference business keys (digest([family, capability, reference]))
+    and exactly one attempt each, runtime-written tracker-source accepted
+    proofs whose event ids are the operation ids, and the tracker holding
+    exactly one issue per ticket reference (numbers 1 and 2) with two
+    accepted receipts — the crash-recovered chapter's receipt included,
+    nothing re-sent.
+    """
+    require(SUPPORT_FINAL_LINE in stdout,
+            "%s output lacks %r" % (source, SUPPORT_FINAL_LINE))
+    match = INSPECT_DB.search(stdout)
+    require(match is not None,
+            "%s printed no inspect --db path to locate its databases" % source)
+    runtime_db = Path(match.group(1))
+    tracker_db = runtime_db.parent / "tracker.sqlite"
+    require(tracker_db.is_file(), "no tracker database beside %s" % runtime_db)
+    for work_id in ("ticket-1", "ticket-2"):
+        state = require_work_state(runtime_db, work_id, source)
+        require((state["status"], state["outcome"]) == ("closed", "succeeded")
+                and isinstance(state.get("completion"), dict),
+                "%s work %s is %s/%s (expected closed/succeeded with a completion)"
+                % (source, work_id, state.get("status"), state.get("outcome")))
+        rules = {rule["rule_id"]: rule for rule in state["requirements"]}
+        require(rules["T04"]["fulfillment"] == "satisfied",
+                "%s work %s T04 fulfillment is %r (expected satisfied)"
+                % (source, work_id, rules["T04"]["fulfillment"]))
+    rows = db_rows(runtime_db, "SELECT body FROM operations", source=source)
+    require(len(rows) == 2,
+            "%s store %s holds %d operations (expected exactly 2)"
+            % (source, runtime_db, len(rows)))
+    seen = set()
+    for row in rows:
+        operation = json.loads(row[0])
+        reference = operation["document"]["id"]
+        require(reference in SUPPORT_REFERENCES,
+                "%s operation carries unknown ticket reference %r"
+                % (source, reference))
+        require(reference not in seen,
+                "%s store holds two operations for ticket reference %r"
+                % (source, reference))
+        seen.add(reference)
+        require(operation["business_key"] == local_digest(
+            ["support-ticket", "ticket.dispatch", reference]),
+            "%s operation for %s has business key %r (expected the recomputed "
+            "ticket-reference key)" % (source, reference, operation["business_key"]))
+        require(operation["status"] == "confirmed_succeeded"
+                and operation["dispatch_state"] == "finished"
+                and len(operation.get("attempts", [])) == 1,
+                "%s operation for %s is %s/%s with %d attempts (expected "
+                "confirmed_succeeded/finished with exactly one)"
+                % (source, reference, operation.get("status"),
+                   operation.get("dispatch_state"),
+                   len(operation.get("attempts", []))))
+        require(operation["external_id"] == "#%d"
+                % (SUPPORT_REFERENCES.index(reference) + 1),
+                "%s operation for %s holds external id %r (expected the "
+                "sequential issue number)" % (source, reference,
+                                              operation.get("external_id")))
+        proof_rows = db_rows(runtime_db,
+                             "SELECT body FROM evidence WHERE source='tracker' "
+                             "AND event_id=?", (operation["id"],), source)
+        require(len(proof_rows) == 1,
+                "%s store holds %d tracker acceptance rows for operation %s "
+                "(expected exactly 1)" % (source, len(proof_rows), operation["id"]))
+        proof = json.loads(proof_rows[0][0])
+        require(proof["kind"] == "accepted" and proof["status"] == "verified",
+                "%s tracker proof for %s is %s/%s (expected accepted/verified)"
+                % (source, reference, proof.get("kind"), proof.get("status")))
+        require(proof["data"]["external_id"] == operation["external_id"]
+                and proof["data"]["digest"] == operation["document_digest"],
+                "%s tracker proof for %s does not bind the receipt to the "
+                "operation's content" % (source, reference))
+    issues = db_rows(tracker_db, "SELECT ticket_reference,issue_number FROM "
+                                 "issues ORDER BY issue_number", source=source)
+    require([(row[0], row[1]) for row in issues]
+            == [(reference, index + 1) for index, reference in
+                enumerate(SUPPORT_REFERENCES)],
+            "%s tracker %s holds issues %r (expected one per reference, "
+            "sequentially numbered)" % (source, tracker_db, issues))
+    receipts = db_rows(tracker_db, "SELECT result FROM receipts", source=source)
+    require(len(receipts) == 2
+            and all(json.loads(row[0])["status"] == "accepted" for row in receipts),
+            "%s tracker %s holds %d receipt rows (expected exactly 2, both "
+            "accepted — nothing re-sent)" % (source, tracker_db, len(receipts)))
+
+
 def run_printed_publish_inspects(stdout, venv_python, outside, source):
     """Re-run the demo's two printed inspect commands verbatim (python3
     swapped), each checked against its own work's outcome marker."""
@@ -1905,6 +2014,22 @@ def main(argv=None):
         require_publication_proof(console_publication.stdout,
                                   "console publication-demo")
 
+        print("=== module support-demo outside the checkout ===")
+        module_support = run([venv_python, "-m", "work_runtime",
+                              "support-demo"], outside, show=True)
+        require_support_proof(module_support.stdout, "module support-demo")
+        run_printed_inspect_command(module_support.stdout, venv_python, outside,
+                                    "module support-demo")
+        print("independent check: both works closed/succeeded with T04 "
+              "satisfied, two confirmed operations on recomputed "
+              "ticket-reference business keys with exactly one attempt each, "
+              "runtime-written tracker accepted proofs, one issue per "
+              "reference and two accepted receipts — nothing re-sent")
+
+        print("=== console support-demo outside the checkout ===")
+        console_support = run([console, "support-demo"], outside, show=True)
+        require_support_proof(console_support.stdout, "console support-demo")
+
         print("=== packaged web assets ship with the install ===")
         for name in ("index.html", "app.js", "app.css"):
             require((package_dir / "web" / name).is_file(),
@@ -1941,7 +2066,12 @@ def main(argv=None):
               "withdrawal record binding the published digest, two "
               "confirmed operations with runtime-written accepted proofs, "
               "both D66 conflict receipts, distinguishable loader failures "
-              "incl. the withdrawn error); "
+              "incl. the withdrawn error); module and console support-demo "
+              "stores re-verified (recomputed ticket-reference business keys, "
+              "one attempt per operation, tracker accepted proofs, one issue "
+              "per reference, two accepted receipts with nothing re-sent; "
+              "BOTH stages are NEW coverage since S15, shipped with the "
+              "family); "
               "packaged web assets "
               "shipped%s (%.1fs)"
               % ("; SKIPPED stages: " + ui_skip if ui_skip else "",

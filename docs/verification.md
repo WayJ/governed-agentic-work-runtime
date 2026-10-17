@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-16 (S13 demo wave: publication-demo withdrawal chapter, installed verifier publication-stage extension; S13 core wave: published-card withdrawal surface; S12 demo wave: publication-demo harness, CLI entry point incl. the `inspect --policy sop-publish` choice, installed module+console verifier stages; S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-17 (S15 waves: support-ticket family, support-demo with forward + crash-recovery chapters, installed module+console verifier stages, third-family freeze verdict; S13 demo wave: publication-demo withdrawal chapter, installed verifier publication-stage extension; S13 core wave: published-card withdrawal surface; S12 demo wave: publication-demo harness, CLI entry point incl. the `inspect --policy sop-publish` choice, installed module+console verifier stages; S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -793,3 +793,58 @@ ratified D67–D79.
   the real store (deleted or tampered withdrawal record, flipped
   `card_withdrawal` status, rewritten re-publication receipt) and require
   the proof to fail.
+
+## S15 coverage — support-ticket family (third-family command-surface freeze)
+
+The S15 waves added the third business family as new code only — policy,
+GitHub-issue-shaped tracker, demo and installer stages — while
+`work_runtime/runtime.py` and `work_runtime/adapters.py` stayed byte-identical
+(SHA-256 `80bf721b…` / `ce132f24…`, asserted at both wave boundaries). The
+freeze verdict and the two disclosed family constraints (document identity
+keyed on the ticket reference; one reference = one governed dispatch, changed
+content dead-ends `OPERATION_CONTENT_CONFLICT`) are recorded in
+[runtime-boundaries.md](runtime-boundaries.md); the family contract and store
+in [adapter-contract.md](adapter-contract.md).
+
+- **Family core** (`tests/test_support.py`, 46 tests): document admission
+  (exact fields; severity/category vocabularies with `None` = unresolved
+  triage, out-of-vocabulary strings rejected at validation); evidence shapes
+  (`sla` = `{digest, response_target_minutes}` with a positive integer;
+  `accepted` reserved shape); rules T01/T02 (unresolved ⇒ unknown, blocks),
+  T03 urgent SLA (critical ≤ 60 / high ≤ 240 minutes, V2 tightens critical
+  to ≤ 30; an unresolved severity keeps SLA applicability unknown — the
+  unknown-blocking rule propagates to dependent rules), T04 tracker
+  acceptance; blockers exclude T04; the ticket-reference business key
+  (content-independent, version-stable, V1→V2 migration readmits the SAME
+  operation on the stable key); `FakeIssueTracker` passes the reusable
+  conformance mixin (six cases including the opt-in action-context replay)
+  plus domain tests (one issue per reference across keys with alias reuse,
+  content-conflict business rejection, digest mismatch, timeout-after-commit,
+  link refusal); the governed flow through the real Runtime (unknown blocks
+  `APPLICABILITY_UNRESOLVED`; missing or wrong-budget SLA blocks
+  `REQUIREMENT_UNSATISFIED`; business-key dedupe/replay returns the same
+  operation; late proposals on a closed work refused `WORK_NOT_ACTIONABLE`;
+  cross-work and same-work reference conflicts `OPERATION_CONTENT_CONFLICT`);
+  timeout reconciliation recovered by lookup without a resend; and a real
+  grants-carrying subprocess dying (exit 73) after tracker acceptance,
+  recovered by `recover()` with exactly one attempt, one issue and one
+  receipt — nothing re-sent.
+- **Demo + installer** (`tests/test_support_demo.py`, 9 tests): the
+  deterministic no-credentials `support-demo` (forward chapter: unknown
+  blocks, triage revision, in-budget SLA, issue `#1`, closure; crash
+  chapter: real subprocess death after acceptance, restart recovery by
+  ticket reference, closure) asserted against the stores directly
+  (issue/receipt counts, recomputed business keys, tracker-source accepted
+  proofs binding `event_id` = operation id, both works closed/succeeded),
+  repeatably, with parent-directory contents surviving and no 64-hex digests
+  in the output; the CLI subcommand plus `inspect --policy support-ticket`;
+  and the installed verifier's `require_support_proof` pinned in-repo — real
+  demo output passes it, doctored counts and a missing final line fail it.
+  The installed verifier runs module AND console `support-demo` outside the
+  checkout (stages 24/25, both disclosed as NEW coverage since S15, D90
+  pattern) with the same independent store proof and verbatim re-runs of the
+  printed inspect commands.
+
+No protocol matrix row is added: the family reuses the already-covered
+command, dispatch, reconciliation and migration machinery — that reuse under
+byte-pinned lifecycle files is the freeze result itself.
