@@ -5,11 +5,14 @@ and category admission with an unknown-blocking rule, a ticket-reference
 business key, and a GitHub-issue-shaped fake tracker adapter.
 """
 
+import tempfile
 import unittest
 import uuid
+from pathlib import Path
 
 from work_runtime.policy import digest
-from work_runtime.support import SupportPolicy, SupportPolicyV2
+from work_runtime.support import (FakeIssueTracker, SupportPolicy,
+                                   SupportPolicyV2)
 
 
 def ticket(ticket_reference="TCK-1001", summary="Payment failed after the update",
@@ -53,6 +56,12 @@ class SupportDocumentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+try:
+    from adapter_conformance import AdapterConformanceMixin
+except ImportError:
+    from tests.adapter_conformance import AdapterConformanceMixin
 
 
 def proof(kind, source, data, status="verified"):
@@ -256,3 +265,100 @@ class SupportAdmissionTests(unittest.TestCase):
                              minutes)
         high = self.rules_with_sla("high", 240, policy=v2)
         self.assertEqual(requirement(high, "T03")["fulfillment"], "satisfied")
+
+
+class FakeIssueTrackerConformanceTests(AdapterConformanceMixin, unittest.TestCase):
+    def make_adapter(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        return FakeIssueTracker(str(Path(folder.name) / "tracker.sqlite"))
+
+    def sample_document(self):
+        return ticket()
+
+    def changed_document(self):
+        return ticket(summary="A different problem report")
+
+    def effect_count(self, adapter):
+        return adapter.issue_count()
+
+
+class FakeIssueTrackerDomainTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "tracker.sqlite")
+
+    def test_receipt_is_github_issue_shaped(self):
+        tracker = FakeIssueTracker(self.path)
+        document = ticket()
+        receipt = tracker.execute("key-1", document, digest(document))
+        self.assertEqual(receipt["status"], "accepted")
+        self.assertEqual(receipt["external_id"], "#1")
+        self.assertEqual(receipt["issue_number"], 1)
+        self.assertEqual(receipt["issue_state"], "open")
+        self.assertEqual(receipt["ticket_reference"], document["ticket_reference"])
+        self.assertEqual(receipt["digest"], digest(document))
+        second = tracker.execute("key-2", ticket(ticket_reference="TCK-1002"), 
+                                 digest(ticket(ticket_reference="TCK-1002")))
+        self.assertEqual((second["issue_number"], second["external_id"]), (2, "#2"))
+
+    def test_digest_mismatch_is_rejected_without_writes(self):
+        tracker = FakeIssueTracker(self.path)
+        document = ticket()
+        with self.assertRaises(ValueError):
+            tracker.execute("key-1", document, digest(ticket(summary="Other")))
+        self.assertEqual(tracker.issue_count(), 0)
+        self.assertIsNone(tracker.lookup("key-1"))
+
+    def test_one_issue_per_ticket_reference_across_keys(self):
+        tracker = FakeIssueTracker(self.path)
+        document = ticket()
+        first = tracker.execute("key-1", document, digest(document))
+        alias = tracker.execute("key-2", document, digest(document))
+        self.assertEqual(alias["external_id"], first["external_id"])
+        self.assertEqual(alias["issue_number"], first["issue_number"])
+        self.assertEqual(tracker.issue_count(), 1)
+
+    def test_same_reference_different_content_is_a_queryable_business_rejection(self):
+        tracker = FakeIssueTracker(self.path)
+        document = ticket()
+        tracker.execute("key-1", document, digest(document))
+        changed = ticket(summary="Changed the report entirely")
+        rejected = tracker.execute("key-3", changed, digest(changed))
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(rejected["reason"], "TICKET_REFERENCE_CONTENT_CONFLICT")
+        self.assertEqual(rejected["external_id"], "#1")
+        self.assertEqual(tracker.issue_count(), 1)
+        self.assertEqual(tracker.lookup("key-3"), rejected)
+
+    def test_timeout_after_commit_raises_with_issue_committed(self):
+        tracker = FakeIssueTracker(self.path, timeout_after_commit=True)
+        document = ticket()
+        with self.assertRaises(TimeoutError):
+            tracker.execute("key-1", document, digest(document))
+        self.assertEqual(tracker.issue_count(), 1)
+        recovered = FakeIssueTracker(self.path).lookup("key-1")
+        self.assertEqual(recovered["status"], "accepted")
+        self.assertEqual(recovered["external_id"], "#1")
+
+    def test_issue_for_reference_returns_the_written_issue(self):
+        tracker = FakeIssueTracker(self.path)
+        self.assertIsNone(tracker.issue_for_reference("TCK-1001"))
+        document = ticket()
+        tracker.execute("key-1", document, digest(document))
+        issue = tracker.issue_for_reference("TCK-1001")
+        self.assertEqual(issue["issue_number"], 1)
+        self.assertEqual(issue["digest"], digest(document))
+        self.assertEqual(issue["document"], document)
+
+    def test_link_carrying_calls_and_unknown_actions_raise(self):
+        tracker = FakeIssueTracker(self.path)
+        document = ticket()
+        link = {"operation_id": "op", "external_id": "#9", "capability": "ticket.dispatch"}
+        with self.assertRaises(ValueError):
+            tracker.execute("key-1", document, digest(document),
+                            action="ticket.dispatch", compensates=link)
+        with self.assertRaises(ValueError):
+            tracker.execute("key-2", document, digest(document), action="ticket.close")
+        self.assertEqual(tracker.issue_count(), 0)

@@ -9,9 +9,13 @@ adapter models an external issue tracker. Source names (`support-desk`,
 docs/adapter-contract.md and docs/runtime-boundaries.md.
 """
 
+import json
+import sqlite3
+from pathlib import Path
 from typing import List
 
-from .policy import digest
+from .adapter_contract import AdapterContract
+from .policy import canonical, digest
 
 SEVERITIES = ("critical", "high", "normal")
 CATEGORIES = ("billing", "technical", "account")
@@ -147,3 +151,143 @@ class SupportPolicyV2(SupportPolicy):
 
     version = "demo-2"
     urgent_sla_budget_minutes = {"critical": 30, "high": 240}
+
+
+class FakeIssueTracker:
+    """A separate SQLite store models an external GitHub-issue-shaped tracker.
+
+    Survives worker crashes like FakeOA/FakePublisher. One issue per ticket
+    reference: the reference travels in the written object and in every
+    receipt, identical content under another idempotency key reuses the same
+    issue number (an alias receipt, no second issue), and changed content
+    under a used reference is a queryable business rejection. This family has
+    no compensation, so a link-carrying call is invalid.
+    """
+
+    # Declared assertions for trusted local configuration, not a remote
+    # guarantee. supports_action_context opts into the explicit forward
+    # action; compensates is always None for this family.
+    contract = AdapterContract(
+        actions=("ticket.dispatch",),
+        idempotency_scope="adapter-store:key",
+        retention="lifetime-of-store",
+        lookup_consistency="authoritative-by-key",
+        uniqueness=("ticket.reference",),
+        supports_action_context=True)
+
+    def __init__(self, path: str, timeout_after_commit: bool = False):
+        self.path = str(path)
+        self.timeout_after_commit = timeout_after_commit
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(self.path, timeout=15)
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("""CREATE TABLE IF NOT EXISTS receipts (
+                key TEXT PRIMARY KEY, digest TEXT NOT NULL, result TEXT NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS issues (
+                ticket_reference TEXT PRIMARY KEY, issue_number INTEGER NOT NULL UNIQUE,
+                digest TEXT NOT NULL, document TEXT NOT NULL)""")
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    @staticmethod
+    def _receipt(content_digest, ticket_reference, issue_number, *, status="accepted",
+                 reason=None):
+        result = {"status": status, "external_id": "#%d" % issue_number,
+                  "digest": content_digest, "ticket_reference": ticket_reference,
+                  "issue_number": issue_number, "issue_state": "open"}
+        if reason is not None:
+            result["reason"] = reason
+        return result
+
+    def execute(self, key: str, document: dict, content_digest: str, *,
+                action=None, compensates=None) -> dict:
+        if digest(document) != content_digest:
+            raise ValueError("Content digest does not match document")
+        if action is None:
+            # Tracker-side normalization for its own legacy direct callers;
+            # not a protocol rule (legacy adapters are never called with kwargs).
+            action = "ticket.dispatch"
+        if action != "ticket.dispatch":
+            raise ValueError("Unknown action: " + str(action))
+        if compensates is not None:
+            raise ValueError("ticket.dispatch has no compensation; a "
+                             "compensates link is invalid")
+        reference = document["ticket_reference"]
+        db = sqlite3.connect(self.path, timeout=15)
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            old = db.execute("SELECT digest,result FROM receipts WHERE key=?",
+                             (key,)).fetchone()
+            if old:
+                if old[0] != content_digest:
+                    raise ValueError("Idempotency key reused with different content")
+                result = json.loads(old[1])
+            else:
+                row = db.execute(
+                    "SELECT issue_number,digest FROM issues WHERE ticket_reference=?",
+                    (reference,)).fetchone()
+                if row is None:
+                    number = db.execute(
+                        "SELECT COALESCE(MAX(issue_number), 0) + 1 FROM issues"
+                    ).fetchone()[0]
+                    db.execute("INSERT INTO issues VALUES (?,?,?,?)",
+                               (reference, number, content_digest,
+                                canonical(document)))
+                    result = self._receipt(content_digest, reference, number)
+                elif row[1] == content_digest:
+                    # Identical content under a fresh key: reuse the issue
+                    # (alias receipt, no second external effect).
+                    result = self._receipt(content_digest, reference, row[0])
+                else:
+                    # Known conflict, authoritative and queryable — never a
+                    # second issue and never a fabricated acceptance.
+                    result = self._receipt(content_digest, reference, row[0],
+                                           status="rejected",
+                                           reason="TICKET_REFERENCE_CONTENT_CONFLICT")
+                db.execute("INSERT INTO receipts (key,digest,result) VALUES (?,?,?)",
+                           (key, content_digest, canonical(result)))
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+        if self.timeout_after_commit:
+            raise TimeoutError("Response lost after the tracker committed")
+        return result
+
+    def lookup(self, key: str):
+        db = sqlite3.connect(self.path)
+        try:
+            row = db.execute("SELECT result FROM receipts WHERE key=?",
+                             (key,)).fetchone()
+            return json.loads(row[0]) if row else None
+        finally:
+            db.close()
+
+    def issue_count(self) -> int:
+        """Issue rows: exactly one per dispatched ticket reference."""
+        db = sqlite3.connect(self.path)
+        try:
+            return db.execute("SELECT COUNT(*) FROM issues").fetchone()[0]
+        finally:
+            db.close()
+
+    def issue_for_reference(self, ticket_reference: str):
+        """The written issue object for a reference, or None."""
+        db = sqlite3.connect(self.path)
+        try:
+            row = db.execute(
+                "SELECT issue_number,digest,document FROM issues "
+                "WHERE ticket_reference=?", (ticket_reference,)).fetchone()
+            if row is None:
+                return None
+            return {"issue_number": row[0], "digest": row[1],
+                    "document": json.loads(row[2])}
+        finally:
+            db.close()
