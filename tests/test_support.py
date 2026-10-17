@@ -11,13 +11,15 @@ import uuid
 from pathlib import Path
 
 from work_runtime.policy import digest
+from work_runtime.runtime import Runtime
 from work_runtime.support import (FakeIssueTracker, SupportPolicy,
-                                   SupportPolicyV2)
+                                   SupportPolicyV2, support_grants)
 
 
 def ticket(ticket_reference="TCK-1001", summary="Payment failed after the update",
            severity="critical", category="billing"):
-    return {"ticket_reference": ticket_reference, "summary": summary,
+    # The document id is the external ticket reference.
+    return {"id": ticket_reference, "summary": summary,
             "severity": severity, "category": category}
 
 
@@ -33,7 +35,7 @@ class SupportDocumentTests(unittest.TestCase):
     def test_document_requires_exact_fields(self):
         policy = SupportPolicy()
         with self.assertRaises(ValueError):
-            policy.validate_document({"ticket_reference": "TCK-1", "severity": None,
+            policy.validate_document({"id": "TCK-1", "severity": None,
                                       "category": None})
         with self.assertRaises(ValueError):
             policy.validate_document({**ticket(), "priority": "critical"})
@@ -245,7 +247,7 @@ class SupportAdmissionTests(unittest.TestCase):
         work = work_state()
         key = self.policy.operation_key("ticket.dispatch", work)
         self.assertEqual(key, digest(["support-ticket", "ticket.dispatch",
-                                      work["document"]["ticket_reference"]]))
+                                      work["document"]["id"]]))
         revised = work_state(ticket(summary="Updated summary after triage"))
         self.assertEqual(key,
                          self.policy.operation_key("ticket.dispatch", revised))
@@ -297,7 +299,7 @@ class FakeIssueTrackerDomainTests(unittest.TestCase):
         self.assertEqual(receipt["external_id"], "#1")
         self.assertEqual(receipt["issue_number"], 1)
         self.assertEqual(receipt["issue_state"], "open")
-        self.assertEqual(receipt["ticket_reference"], document["ticket_reference"])
+        self.assertEqual(receipt["ticket_reference"], document["id"])
         self.assertEqual(receipt["digest"], digest(document))
         second = tracker.execute("key-2", ticket(ticket_reference="TCK-1002"), 
                                  digest(ticket(ticket_reference="TCK-1002")))
@@ -362,3 +364,135 @@ class FakeIssueTrackerDomainTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tracker.execute("key-2", document, digest(document), action="ticket.close")
         self.assertEqual(tracker.issue_count(), 0)
+
+
+class SupportFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / "runtime.sqlite")
+        self.tracker_path = str(Path(self.temp.name) / "tracker.sqlite")
+        self.runtime = self.fresh_runtime()
+        self.work_id = "ticket-1"
+
+    def fresh_runtime(self, policy=None):
+        return Runtime(self.path, policy or SupportPolicy(), support_grants())
+
+    def send(self, kind, payload=None, actor="agent", command_id=None):
+        version = None if kind in ("create_work", "record_evidence") \
+            else self.runtime.get_work(self.work_id)["state_version"]
+        return self.runtime.command(actor, command_id or uuid.uuid4().hex,
+                                    self.work_id, kind, payload, version)
+
+    def initialize(self, document=None):
+        self.send("create_work", {"document": document or ticket()})
+        self.send("bind_contract", {"policy_id": "support-ticket",
+                                    "policy_version": "demo-1",
+                                    "goal": "ticket.dispatched"})
+        self.send("revise_plan", {"steps": ["triage", "commit-sla", "dispatch"],
+                                  "open_requirements": ["T01", "T02"],
+                                  "replan_when": ["triage cannot resolve"]})
+
+    def record_sla(self, minutes=45, command_id=None):
+        work = self.runtime.get_work(self.work_id)
+        return self.send("record_evidence",
+                         {"event_id": "sla-" + uuid.uuid4().hex, "kind": "sla",
+                          "data": {"digest": work["document_digest"],
+                                   "response_target_minutes": minutes}},
+                         actor="support-desk", command_id=command_id)
+
+    def propose_payload(self):
+        work = self.runtime.get_work(self.work_id)
+        return {"capability": "ticket.dispatch",
+                "document_digest": work["document_digest"],
+                "contract_revision": work["contract"]["revision"],
+                "plan_revision": work["plan_revision"]}
+
+    def propose(self, command_id=None):
+        return self.send("propose_action", self.propose_payload(),
+                         command_id=command_id)
+
+    def admit(self):
+        self.record_sla()
+        self.runtime.verify_pending(self.work_id)
+        return self.propose(command_id="dispatch-once")
+
+    def test_unresolved_severity_blocks_acceptance(self):
+        self.initialize(ticket(severity=None))
+        rejection = self.propose()
+        self.assertEqual(rejection["decision"], "rejected")
+        self.assertEqual(rejection["code"], "APPLICABILITY_UNRESOLVED")
+        blocked = {b["rule_id"] for b in rejection["blockers"]}
+        self.assertEqual(blocked, {"T01", "T03"})
+
+    def test_unresolved_category_blocks_acceptance(self):
+        self.initialize(ticket(category=None))
+        rejection = self.propose()
+        self.assertEqual(rejection["code"], "APPLICABILITY_UNRESOLVED")
+        self.assertIn("T02", [b["rule_id"] for b in rejection["blockers"]])
+
+    def test_resolved_urgent_ticket_without_sla_is_blocked(self):
+        self.initialize(ticket())
+        rejection = self.propose()
+        self.assertEqual(rejection["decision"], "rejected")
+        self.assertEqual(rejection["code"], "REQUIREMENT_UNSATISFIED")
+        self.assertEqual([b["rule_id"] for b in rejection["blockers"]], ["T03"])
+
+    def test_wrong_budget_sla_still_blocks(self):
+        self.initialize(ticket())
+        self.record_sla(minutes=61)
+        self.runtime.verify_pending(self.work_id)
+        rejection = self.propose()
+        self.assertEqual(rejection["code"], "REQUIREMENT_UNSATISFIED")
+
+    def test_forward_flow_dispatches_and_closes_the_work(self):
+        self.initialize(ticket())
+        self.record_sla()
+        self.runtime.verify_pending(self.work_id)
+        version = self.runtime.get_work(self.work_id)["state_version"]
+        proposal = self.propose(command_id="dispatch-once")
+        self.assertEqual(proposal["decision"], "accepted")
+        replay_args = ("agent", "dispatch-once", self.work_id, "propose_action",
+                       self.propose_payload(), version)
+        self.assertEqual(self.runtime.command(*replay_args), proposal)
+        fresh = self.propose()
+        self.assertEqual(fresh["operation_id"], proposal["operation_id"])
+        tracker = FakeIssueTracker(self.tracker_path)
+        confirmed = self.runtime.dispatch(proposal["operation_id"], tracker)
+        self.assertEqual(confirmed["status"], "confirmed_succeeded")
+        self.assertEqual(confirmed["external_id"], "#1")
+        rules = self.runtime.get_work(self.work_id)["requirements"]
+        self.assertEqual(requirement(rules, "T04")["fulfillment"], "satisfied")
+        completion = self.send("request_completion", command_id="complete-1")
+        self.assertEqual(completion["decision"], "accepted")
+        work = self.runtime.get_work(self.work_id)
+        self.assertEqual((work["status"], work["outcome"]), ("closed", "succeeded"))
+        self.assertEqual(tracker.issue_count(), 1)
+        late = self.propose(command_id="late-proposal")
+        self.assertEqual(late["decision"], "rejected")
+        self.assertEqual(late["code"], "WORK_NOT_ACTIONABLE")
+        self.assertEqual(tracker.issue_count(), 1)
+
+    def test_cross_work_same_ticket_reference_conflicts(self):
+        self.initialize(ticket())
+        self.admit()
+        original = "ticket-1"
+        self.work_id = "ticket-2"
+        self.initialize(ticket())
+        self.admit()
+        conflict = self.propose(command_id="dispatch-second")
+        self.assertEqual(conflict["decision"], "rejected")
+        self.assertEqual(conflict["code"], "OPERATION_CONTENT_CONFLICT")
+        self.assertEqual(original, "ticket-1")
+
+    def test_same_work_content_revision_after_proposal_conflicts(self):
+        self.initialize(ticket())
+        self.admit()
+        self.send("revise_document", {"document": ticket(summary="Updated after triage")})
+        stale_sla = self.propose()
+        self.assertEqual(stale_sla["code"], "REQUIREMENT_UNSATISFIED")
+        self.record_sla()
+        self.runtime.verify_pending(self.work_id)
+        conflict = self.propose()
+        self.assertEqual(conflict["decision"], "rejected")
+        self.assertEqual(conflict["code"], "OPERATION_CONTENT_CONFLICT")

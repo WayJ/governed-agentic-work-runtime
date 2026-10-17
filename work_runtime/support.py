@@ -40,10 +40,10 @@ class SupportPolicy:
     # No compensation_capabilities: this family has no compensation (D94).
 
     def validate_document(self, document: dict) -> None:
-        if set(document) != {"ticket_reference", "summary", "severity", "category"}:
-            raise ValueError("Document requires ticket_reference, summary, "
-                             "severity and category")
-        for name in ("ticket_reference", "summary"):
+        if set(document) != {"id", "summary", "severity", "category"}:
+            raise ValueError("Document requires id, summary, severity and "
+                             "category")
+        for name in ("id", "summary"):
             if not isinstance(document[name], str) or not document[name]:
                 raise ValueError("Document %s must be a nonempty string" % name)
         for name, vocabulary in (("severity", SEVERITIES), ("category", CATEGORIES)):
@@ -77,7 +77,10 @@ class SupportPolicy:
         document = work["document"]
         current = work["document_digest"]
         proofs = [e for e in evidence if e["status"] == "verified"]
-        subject = document["ticket_reference"]
+        # The document id IS the external ticket reference (the frozen
+        # command surface keys object identity on document id), so the rule
+        # subject is the ticket reference.
+        subject = document["id"]
         result = []
 
         def add(rule: str, applicable: str, satisfied: bool,
@@ -139,7 +142,7 @@ class SupportPolicy:
         # policy versions of this family (distinct from the digest-bound
         # expense/publishing shapes). Changed content under a used reference
         # is a conflict for the runtime to surface, never a second operation.
-        return digest([self.id, capability, work["document"]["ticket_reference"]])
+        return digest([self.id, capability, work["document"]["id"]])
 
 
 class SupportPolicyV2(SupportPolicy):
@@ -217,7 +220,7 @@ class FakeIssueTracker:
         if compensates is not None:
             raise ValueError("ticket.dispatch has no compensation; a "
                              "compensates link is invalid")
-        reference = document["ticket_reference"]
+        reference = document["id"]
         db = sqlite3.connect(self.path, timeout=15)
         try:
             db.execute("BEGIN IMMEDIATE")
@@ -291,3 +294,13 @@ class FakeIssueTracker:
                     "document": json.loads(row[2])}
         finally:
             db.close()
+
+
+def support_grants():
+    """Demo grants for the support-ticket family: the owning agent holds the
+    dispatch capability, the support desk writes SLA evidence, and the lead
+    holds the admin intervention grant used for policy migration —
+    trusted-local configuration, not authentication."""
+    return {"agent": {"work.manage", "ticket.dispatch"},
+            "support-desk": {"evidence.write"},
+            "lead": {"work.intervene"}}
