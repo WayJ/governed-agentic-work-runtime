@@ -11,6 +11,8 @@ docs/adapter-contract.md and docs/runtime-boundaries.md.
 
 import json
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from typing import List
 
@@ -304,3 +306,32 @@ def support_grants():
     return {"agent": {"work.manage", "ticket.dispatch"},
             "support-desk": {"evidence.write"},
             "lead": {"work.intervene"}}
+
+_PACKAGE_PARENT = str(Path(__file__).resolve().parent.parent)
+
+
+def crash_worker_script(runtime_path, tracker_path, operation_id):
+    """Inline child source: a grants-carrying worker that dispatches the
+    prepared ticket through the public API and dies (exit 73) right after
+    the tracker accepted the write — before the outcome is recorded.
+    ``sys.path`` is seeded with this package's parent so the child imports
+    the exact same package copy in a checkout and in an install."""
+    return (
+        "import os, sys\n"
+        "sys.path.insert(0, {parent!r})\n"
+        "from work_runtime.support import FakeIssueTracker, SupportPolicy, "
+        "support_grants\n"
+        "from work_runtime.runtime import Runtime\n"
+        "runtime = Runtime({runtime!r}, SupportPolicy(), support_grants())\n"
+        "runtime.dispatch({operation!r}, FakeIssueTracker({tracker!r}),"
+        " fault=lambda: os._exit(73))\n"
+    ).format(parent=_PACKAGE_PARENT, runtime=str(runtime_path),
+             operation=operation_id, tracker=str(tracker_path))
+
+
+def run_crash_worker(runtime_path, tracker_path, operation_id):
+    """Run the crash worker as a real child process; returns its exit status."""
+    return subprocess.run([sys.executable, "-c",
+                           crash_worker_script(runtime_path, tracker_path,
+                                               operation_id)],
+                          check=False)

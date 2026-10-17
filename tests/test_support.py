@@ -14,7 +14,8 @@ from pathlib import Path
 from work_runtime.policy import digest
 from work_runtime.runtime import Runtime
 from work_runtime.support import (FakeIssueTracker, SupportPolicy,
-                                   SupportPolicyV2, support_grants)
+                                   SupportPolicyV2, run_crash_worker,
+                                   support_grants)
 
 
 def ticket(ticket_reference="TCK-1001", summary="Payment failed after the update",
@@ -591,3 +592,42 @@ class SupportMigrationTests(SupportFlowHarness, unittest.TestCase):
         rejection = self.migrate()
         self.assertEqual(rejection["decision"], "rejected")
         self.assertEqual(rejection["code"], "OUTCOME_UNRESOLVED")
+
+
+class SupportCrashRecoveryTests(SupportFlowHarness, unittest.TestCase):
+    """Real process death after tracker acceptance; restart never re-sends."""
+
+    def test_crash_after_acceptance_recovers_by_ticket_reference(self):
+        self.initialize(ticket())
+        proposal = self.admit()
+        child = run_crash_worker(self.path, self.tracker_path,
+                                 proposal["operation_id"])
+        self.assertEqual(child.returncode, 73)
+        tracker = FakeIssueTracker(self.tracker_path)
+        self.assertEqual(tracker.issue_count(), 1)
+        # The child died after the tracker accepted the write but before the
+        # outcome was recorded: the operation is still in flight.
+        restarted = self.fresh_runtime()
+        self.assertEqual(restarted.get_operation(
+            proposal["operation_id"])["status"], "dispatched")
+
+        recovered = restarted.recover(FakeIssueTracker(self.tracker_path))
+        self.assertEqual([op["status"] for op in recovered],
+                         ["confirmed_succeeded"])
+        operation = restarted.get_operation(proposal["operation_id"])
+        self.assertEqual(operation["status"], "confirmed_succeeded")
+        self.assertEqual(operation["external_id"], "#1")
+        self.assertEqual(len(operation["attempts"]), 1)
+        self.assertEqual(FakeIssueTracker(self.tracker_path).issue_count(), 1)
+        db = sqlite3.connect(self.tracker_path)
+        try:
+            receipts = db.execute("SELECT COUNT(*) FROM receipts").fetchone()[0]
+        finally:
+            db.close()
+        self.assertEqual(receipts, 1)
+        completion = restarted.command(
+            "agent", "close-1", self.work_id, "request_completion", None,
+            restarted.get_work(self.work_id)["state_version"])
+        self.assertEqual(completion["decision"], "accepted")
+        work = restarted.get_work(self.work_id)
+        self.assertEqual((work["status"], work["outcome"]), ("closed", "succeeded"))
