@@ -26,7 +26,7 @@ date: 2026-10-17
 
 | sprint | state | note |
 |---|---|---|
-| S15 | ready | 2026-10-17 owner decision: proceed per the adopted order ("其他的按照你推荐来进行。直接开始吧"). Strategic go verified against the DoD: design recon resolved Q1 (support-ticket family) and Q2 (forward + crash-recovery chapters) with byte pins and scope guard — [recon](../../../.agents/notes/2026-10-17-s15-design-recon.md). First slice: third-family command-surface freeze acceptance. Materialization follows per supervibe:start. |
+| S15 | started | 2026-10-17 owner decision: proceed per the adopted order ("其他的按照你推荐来进行。直接开始吧"). Strategic go verified against the DoD: design recon resolved Q1 (support-ticket family) and Q2 (forward + crash-recovery chapters) with byte pins and scope guard — [recon](../../../.agents/notes/2026-10-17-s15-design-recon.md). Materialized 2026-10-17 [S15](../sprints/2026-10-17-S15-plan.md) (rulings: deps none, WIP 0/1, no early/deferred start, no clauses; open note [2026-10-17-S15-open.md](../../../.agents/notes/2026-10-17-S15-open.md)). |
 
 ## Decisions (ADR)
 
