@@ -378,6 +378,56 @@ key (`digest([policy.id, capability, document.id, document_digest])`
 embeds no work id) with `OPERATION_CONTENT_CONFLICT`. The limit binds this
 adapter model, not the governed flow.
 
+## FakeIssueTracker's declared contract and store (S15)
+
+The support-ticket family's external stand-in is a GitHub-issue-shaped fake
+adapter: a separate SQLite store holding exactly one issue per ticket
+reference, with the reference carried in the written object and in every
+receipt. It declares:
+
+```python
+AdapterContract(actions=("ticket.dispatch",),
+                idempotency_scope="adapter-store:key",
+                retention="lifetime-of-store",
+                lookup_consistency="authoritative-by-key",
+                uniqueness=("ticket.reference",),
+                supports_action_context=True)
+```
+
+| value | assertion |
+|---|---|
+| `actions=("ticket.dispatch",)` | executes the single ticket-dispatch capability |
+| `uniqueness=("ticket.reference",)` | one external issue per ticket reference across all keys |
+
+- **Store**: `receipts(key PRIMARY KEY, digest, result)` is the per-key
+  call/lookup surface; `issues(ticket_reference PRIMARY KEY, issue_number
+  UNIQUE, digest, document)` holds one written issue per reference. The
+  store ships new in S15 — no migration story.
+- **Receipts are GitHub-issue-shaped**: `external_id "#<n>"` plus
+  `issue_number` (sequential integer), `issue_state "open"` and
+  `ticket_reference`; the extra fields ride `receipt_is_valid` unchanged.
+- **Replay and uniqueness**: same key + same content replays the identical
+  receipt; same key + changed content raises the established
+  `ValueError("Idempotency key reused with different content")` with zero
+  new effects; identical content under a *fresh* key reuses the same issue
+  number (an alias receipt, no second issue); **changed content under a used
+  reference is a queryable business rejection**
+  (`status:"rejected"`, `reason:"TICKET_REFERENCE_CONTENT_CONFLICT"`,
+  carrying the owning issue's number) — known conflict is authoritative,
+  never a second issue and never a fabricated acceptance, mirroring the
+  `ORIGINAL_ABSENT` refusal pattern.
+- **No compensation (D94)**: the adapter opts into the action/link context
+  (it always receives `action="ticket.dispatch"`, `compensates=None`), but a
+  link-carrying call raises `ValueError` before any write.
+- **Business-key shape**: the document's `id` IS the external ticket
+  reference (the frozen `revise_document` keys object identity on
+  `document id`), and the operation key is
+  `digest([policy id, capability, ticket reference])` — no content digest
+  and no policy version, so the key is stable across same-family policy
+  versions and changed content under a used reference surfaces
+  `OPERATION_CONTENT_CONFLICT` at proposal time (tested same-work and
+  cross-work).
+
 ## Reusable conformance tests
 
 `tests/adapter_conformance.py` provides `AdapterConformanceMixin`, a plain

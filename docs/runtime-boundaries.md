@@ -39,8 +39,33 @@ receipt carrying the currently observed state version — the stored
 receipt is never modified, and a later replay under restored authority
 returns it again. Closed-work actionability follows replay as before: a
 stored receipt is returned for a closed work while authority holds.
-| operation | business key derived by the policy (expense demo: policy id + capability + document id + document revision) | a new command proposing the same logical effect re-associates the existing operation instead of creating a second one; same key with different content is rejected `OPERATION_CONTENT_CONFLICT` |
+| operation | business key derived by the policy (expense demo: policy id + capability + document id + document digest; support-ticket family: policy id + capability + the ticket reference alone) | a new command proposing the same logical effect re-associates the existing operation instead of creating a second one; same key with different content is rejected `OPERATION_CONTENT_CONFLICT` |
 | external effect | idempotency key = the operation's business key, enforced by the adapter | the external system deduplicates repeated calls with the same key and content |
+
+## Third-family command-surface freeze (S15)
+
+The support-ticket family (`work_runtime/support.py`, tests
+`tests/test_support.py` + `tests/test_support_demo.py`) runs end-to-end over
+the unchanged command surface: proposal admission with an unknown-blocking
+rule (unresolved severity or category ⇒ `APPLICABILITY_UNRESOLVED`, and an
+unresolved severity keeps the SLA rule's applicability unknown too),
+SLA/dispatch rules, dispatch with result-unknown fencing, receipt
+reconciliation by the ticket-reference business key and business closure.
+**Freeze verdict: zero lifecycle edits** — `work_runtime/runtime.py` and
+`work_runtime/adapters.py` stayed byte-identical through S15 (SHA-256
+`80bf721b…` / `ce132f24…`, asserted at the wave boundaries in the sprint
+evidence); no freeze-gap escalation was needed. Two family constraints are
+disclosed, both consequences of designing inside the frozen surface and
+tested same-work and cross-work:
+
+- **Document identity is keyed on the ticket reference.** The frozen
+  `revise_document` command reads `document["id"]` for object identity, so
+  the family document carries `id` = the external ticket reference; id
+  stability under revision is exactly reference stability.
+- **One reference = one governed dispatch.** The business key embeds the
+  reference and no content digest, so changed content under an already-used
+  reference is rejected `OPERATION_CONTENT_CONFLICT` — never a second
+  operation, never a second external issue.
 
 ## Compensation boundary (S10/S14 — expense and publishing families, active-cancellation window)
 
