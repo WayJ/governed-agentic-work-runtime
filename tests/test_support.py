@@ -51,3 +51,41 @@ class SupportDocumentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SupportEvidenceShapeTests(unittest.TestCase):
+    def setUp(self):
+        self.policy = SupportPolicy()
+        self.work = {"document": ticket(), "document_digest": "d" * 64}
+
+    def candidate(self, kind, data):
+        return {"kind": kind, "data": data}
+
+    def test_sla_requires_exact_shape_with_positive_integer_minutes(self):
+        self.assertTrue(self.policy.validate_evidence(
+            self.work, self.candidate("sla", {"digest": "d" * 64,
+                                              "response_target_minutes": 60})))
+        for bad in ({"digest": "d" * 64},
+                    {"digest": "d" * 64, "response_target_minutes": 60, "x": 1},
+                    {"digest": "d" * 64, "response_target_minutes": 0},
+                    {"digest": "d" * 64, "response_target_minutes": -5},
+                    {"digest": "d" * 64, "response_target_minutes": "60"},
+                    {"response_target_minutes": 60}):
+            self.assertFalse(self.policy.validate_evidence(
+                self.work, self.candidate("sla", bad)), bad)
+
+    def test_accepted_requires_digest_and_nonempty_external_id(self):
+        self.assertTrue(self.policy.validate_evidence(
+            self.work, self.candidate("accepted", {"digest": "d" * 64,
+                                                   "external_id": "#1"})))
+        for bad in ({"digest": "d" * 64},
+                    {"digest": "d" * 64, "external_id": ""},
+                    {"digest": "d" * 64, "external_id": 1},
+                    {"external_id": "#1"}):
+            self.assertFalse(self.policy.validate_evidence(
+                self.work, self.candidate("accepted", bad)), bad)
+
+    def test_unknown_kinds_are_invalid(self):
+        for kind in ("approval", "triage", "TicketAccepted"):
+            self.assertFalse(self.policy.validate_evidence(
+                self.work, self.candidate(kind, {"digest": "d" * 64})), kind)

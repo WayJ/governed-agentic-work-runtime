@@ -43,3 +43,19 @@ class SupportPolicy:
             if value is not None and value not in vocabulary:
                 raise ValueError("Document %s must be one of %s or null (unknown)"
                                  % (name, ", ".join(vocabulary)))
+
+    def validate_evidence(self, work: dict, candidate: dict) -> bool:
+        data = candidate["data"]
+        kind = candidate["kind"]
+        if kind == "sla":
+            return (set(data) == {"digest", "response_target_minutes"}
+                    and isinstance(data["digest"], str)
+                    and type(data["response_target_minutes"]) is int
+                    and data["response_target_minutes"] > 0)
+        if kind == "accepted":
+            # Reserved shape adopted from Runtime-written receipts (design M5).
+            return (set(data) == {"digest", "external_id"}
+                    and isinstance(data["digest"], str)
+                    and isinstance(data["external_id"], str)
+                    and bool(data["external_id"]))
+        return False
