@@ -25,8 +25,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .adapter_contract import receipt_is_valid
 from .policy import canonical, digest
-from .workflow_spec import (ValidatorRegistry, eval_predicate, lint_template,
-                             template_digest, validate_shape)
+from .workflow_spec import (EFFECT_POLICIES, EFFECT_POLICY_ONCE,
+                             EFFECT_POLICY_PER_REVISION, ValidatorRegistry,
+                             eval_predicate, lint_template, template_digest,
+                             validate_shape)
 
 # Command kinds the runtime routes to the engine. They are ordinary runtime
 # commands: CAS-guarded, deduplicated and receipt-bearing like every other.
@@ -57,6 +59,15 @@ WORKFLOW_EVENT_SOURCE = "workflow-engine"
 # The codes of the native action context read.
 ACTION_CONTEXT_ABSENT = "ACTION_CONTEXT_ABSENT"
 ACTION_CONTEXT_REFUSED = "ACTION_CONTEXT_REFUSED"
+
+# The reasons an automatic node refuses to produce its external effect. The
+# default policy refuses with WORKFLOW_EFFECT_ALREADY_APPLIED; the
+# per-revision policy names the exact reason it refuses.
+WORKFLOW_EFFECT_ALREADY_APPLIED = "WORKFLOW_EFFECT_ALREADY_APPLIED"
+WORKFLOW_EFFECT_SUBJECT_UNCHANGED = "WORKFLOW_EFFECT_SUBJECT_UNCHANGED"
+WORKFLOW_EFFECT_UNRESOLVED = "WORKFLOW_EFFECT_UNRESOLVED"
+WORKFLOW_EFFECT_OUTPUT_INVALID = "WORKFLOW_EFFECT_OUTPUT_INVALID"
+WORKFLOW_EFFECT_REUSED = "WORKFLOW_EFFECT_REUSED"
 
 # Bounds on what the engine keeps of an external receipt.
 MAX_RECEIPT_BYTES = 8192
@@ -458,6 +469,10 @@ class WorkflowEngine:
         unknown = self._unknown_validators(spec)
         if unknown:
             return self.runtime._reject("WORKFLOW_VALIDATOR_UNKNOWN", version, unknown)
+        unknown_policies = self._unknown_effect_policies(spec)
+        if unknown_policies:
+            return self.runtime._reject("WORKFLOW_EFFECT_POLICY_UNKNOWN", version,
+                                        unknown_policies)
         authority = self._unknown_authorities(spec, policy)
         if authority:
             return self.runtime._reject("WORKFLOW_AUTHORITY_UNKNOWN", version, authority)
@@ -618,6 +633,25 @@ class WorkflowEngine:
                    for blocker in blockers):
                 unsupported.append(capability)
         return sorted(set(unsupported))
+
+    def _unknown_effect_policies(self, spec: Dict[str, Any]) -> List[Dict[str, str]]:
+        """The action nodes whose declared effect policy this engine does not know.
+
+        The definition is published against one engine. A policy a later
+        engine does not know is refused at binding, exactly like an unknown
+        validator version: the pinned definition is never executed under
+        rules its author did not read.
+        """
+        unknown = []
+        for node_id, node in (spec.get("nodes") or {}).items():
+            if not isinstance(node, dict) or node.get("kind") != "action":
+                continue
+            policy = node.get("effect_policy")
+            if policy is None:
+                continue
+            if policy not in EFFECT_POLICIES:
+                unknown.append({"node": node_id, "effect_policy": str(policy)})
+        return unknown[:MAX_FINDINGS]
 
     # ------------------------------------------------------------------
     # Named objects
@@ -1119,18 +1153,9 @@ class WorkflowEngine:
             instance["blockers"] = [{"code": "SUBJECT_MISSING",
                                       "detail": "Action subject is not available"}]
             return
-        if self._effect_already_applied(db, work["id"], node_id):
-            # The external effect of an earlier attempt of this node really
-            # happened. It is never produced a second time: the node fails
-            # closed and the record of the effect stays.
-            instance["state"] = "failed"
-            instance["outcome"] = "failed"
-            instance["reason"] = "WORKFLOW_EFFECT_ALREADY_APPLIED"
-            instance["blockers"] = [{"code": "WORKFLOW_EFFECT_ALREADY_APPLIED",
-                                      "detail": "The external effect was already applied"}]
-            self._save_instance(db, work, instance, "WorkflowNodeFailed",
-                                {"outcome": "failed",
-                                 "reason": "WORKFLOW_EFFECT_ALREADY_APPLIED"})
+        denial = self._effect_admission(db, work, node_id, instance, node, subject)
+        if denial is not None:
+            self._refuse_effect(db, work, instance, denial)
             return
         # The automatic action is proposed by the work owner: binding a
         # published template is the owner's authorization of its action
@@ -1154,7 +1179,163 @@ class WorkflowEngine:
             instance["blockers"] = [{"code": receipt.get("code", "PROPOSAL_REJECTED"),
                                       "detail": "The automatic action was not admitted"}]
             return
-        instance["operation_id"] = receipt.get("operation_id")
+        operation_id = receipt.get("operation_id")
+        reused = self._reused_operation(db, work["id"], node_id, instance,
+                                         operation_id)
+        if reused is not None:
+            # The admission must own a new operation: an operation this node
+            # already used is the effect of an earlier attempt, never a new
+            # one.
+            self._refuse_effect(db, work, instance, reused)
+            return
+        instance["operation_id"] = operation_id
+
+    def _refuse_effect(self, db, work, instance, denial) -> None:
+        """Record the refusal to produce the external effect.
+
+        A refusal that waits (an operation that must be reconciled first)
+        keeps the node blocked: nothing is written and the workflow waits
+        for the truth. Every other refusal fails the node closed, exactly
+        like the default policy does.
+        """
+        code = denial["code"]
+        instance["reason"] = code
+        instance["blockers"] = [{"code": code, "detail": denial["detail"]}]
+        if denial.get("waiting"):
+            instance["state"] = "blocked"
+            self._save_instance(db, work, instance, "WorkflowNodeBlocked",
+                                {"reason": code})
+            return
+        instance["state"] = "failed"
+        instance["outcome"] = "failed"
+        self._save_instance(db, work, instance, "WorkflowNodeFailed",
+                            {"outcome": "failed", "reason": code})
+
+    def _effect_admission(self, db, work, node_id, instance, node, subject):
+        """Whether this attempt may produce the node's external effect.
+
+        The default is one effect per node: a later attempt of a node whose
+        effect already happened fails closed and never repeats it. The
+        per-revision policy admits a new effect for a **new revision with a
+        new digest** of the node's subject, and only after the previous
+        effect of the node is settled.
+        """
+        policy = node.get("effect_policy") or EFFECT_POLICY_ONCE
+        if policy != EFFECT_POLICY_PER_REVISION:
+            if self._effect_already_applied(db, work["id"], node_id):
+                return {"code": WORKFLOW_EFFECT_ALREADY_APPLIED,
+                        "detail": "The external effect was already applied"}
+            return None
+        for prior in self._instances(db, work["id"]):
+            if prior["node"] != node_id or prior["attempt"] >= instance["attempt"]:
+                continue
+            denial = self._prior_effect_denial(db, prior, subject)
+            if denial is not None:
+                return denial
+        return None
+
+    def _prior_effect_denial(self, db, prior, subject):
+        """The refusal an earlier attempt of this node causes, if any.
+
+        An earlier attempt constrains the new one through its operation:
+        the operation says whether an external effect really happened, and
+        the attempt says whether its output was accepted. Neither is
+        inferred from the capability or from the work's cursor.
+        """
+        operation_id = prior.get("operation_id")
+        if not operation_id:
+            # The attempt never left: it produced no effect.
+            return None
+        row = db.execute("SELECT body FROM operations WHERE id=?",
+                         (operation_id,)).fetchone()
+        if row is None:
+            return {"code": WORKFLOW_EFFECT_UNRESOLVED, "waiting": True,
+                    "detail": "The previous operation is unknown and must be "
+                              "reconciled before a new effect"}
+        operation = json.loads(row[0])
+        status = operation.get("status")
+        if status == "confirmed_failed":
+            # The effect did not happen: it constrains nothing.
+            return None
+        if status != "confirmed_succeeded":
+            # The effect may still happen — the operation is prepared, in
+            # flight or of an unknown outcome. It is reconciled, never
+            # written over, and nothing new is written while it is unsettled.
+            return {"code": WORKFLOW_EFFECT_UNRESOLVED, "waiting": True,
+                    "detail": "The previous operation is not settled and must "
+                              "be reconciled before a new effect"}
+        if prior.get("reason") == "WORKFLOW_OUTPUT_INVALID":
+            # The effect happened and its output was refused. A new subject
+            # does not bypass it and a manual retry does not either.
+            return {"code": WORKFLOW_EFFECT_OUTPUT_INVALID,
+                    "detail": "The previous effect really happened and its "
+                              "output failed validation"}
+        previous = operation.get("object") or prior.get("subject") or {}
+        if (subject.get("revision") == previous.get("revision")
+                and subject.get("digest") == previous.get("digest")):
+            return {"code": WORKFLOW_EFFECT_ALREADY_APPLIED,
+                    "detail": "The external effect was already applied to this "
+                              "subject"}
+        revision = previous.get("revision")
+        if (not isinstance(revision, int)
+                or not isinstance(subject.get("revision"), int)
+                or subject["revision"] <= revision
+                or subject.get("digest") == previous.get("digest")):
+            # The subject is not a new version of the pinned object: the
+            # effect would be the same one.
+            return {"code": WORKFLOW_EFFECT_SUBJECT_UNCHANGED,
+                    "detail": "The subject is not a new version of the pinned "
+                              "object"}
+        return None
+
+    def _reused_operation(self, db, work_id, node_id, instance, operation_id):
+        """The refusal when the admitted operation is not a new one.
+
+        A new effect needs a new operation: an operation id or a business
+        key this node already used belongs to an earlier attempt, and the
+        effect behind it is never produced again. An operation that another
+        node instance already links is refused as well — the linkage of an
+        operation is exact, and a second link would make the native action
+        context ambiguous.
+        """
+        if not operation_id:
+            return None
+        row = db.execute("SELECT body FROM operations WHERE id=?",
+                         (operation_id,)).fetchone()
+        if row is None:
+            return {"code": WORKFLOW_EFFECT_UNRESOLVED, "waiting": True,
+                    "detail": "The admitted operation is not readable"}
+        operation = json.loads(row[0])
+        for prior in self._instances(db, work_id):
+            if prior["node"] != node_id or prior["attempt"] >= instance["attempt"]:
+                continue
+            other_id = prior.get("operation_id")
+            if not other_id:
+                continue
+            if other_id == operation_id:
+                return {"code": WORKFLOW_EFFECT_REUSED,
+                        "detail": "The admitted operation belongs to an "
+                                  "earlier attempt of this node"}
+            other = db.execute("SELECT body FROM operations WHERE id=?",
+                               (other_id,)).fetchone()
+            if other is None:
+                continue
+            previous = json.loads(other[0])
+            if previous.get("business_key") == operation.get("business_key"):
+                return {"code": WORKFLOW_EFFECT_REUSED,
+                        "detail": "The admitted operation belongs to an "
+                                  "earlier attempt of this node"}
+        for link in self._operation_links(db, operation_id):
+            link_work, link_node, link_attempt = link[0], link[1], link[2]
+            if (link_work == work_id and link_node == node_id
+                    and link_attempt == instance["attempt"]):
+                # The very instance that is being admitted: its own pending
+                # operation, still linked to it alone.
+                continue
+            return {"code": WORKFLOW_EFFECT_REUSED,
+                    "detail": "The admitted operation is already linked to "
+                              "another node instance"}
+        return None
 
     # ------------------------------------------------------------------
     # Settling a node

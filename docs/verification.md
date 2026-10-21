@@ -859,7 +859,7 @@ existing Work/Evidence/Operation/Wait machinery. The language, the engine and
 the bridge are described in [workflow-runtime.md](workflow-runtime.md); this
 section records what is verified and what is not.
 
-### Workflow matrix (W01–W69)
+### Workflow matrix (W01–W78)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -932,6 +932,15 @@ section records what is verified and what is not.
 | W67 | A migrated contract keeps the historical action readable | covered | `test_a_migrated_contract_keeps_the_historical_action_readable` — after `migrate_policy` the action still resolves with the contract it was proposed under (`context.contract.source` is `ledger`), and the contract in force now is an observation under `current` |
 | W68 | A row that disagrees with its body is refused | covered | `test_an_operation_row_that_disagrees_with_its_body_is_refused`, `test_a_node_row_that_disagrees_with_its_body_is_refused` — `OPERATION_ROW_INCONSISTENT`, `NODE_ROW_INCONSISTENT`; the answer never carries a self-contradictory relation |
 | W69 | The stable context does not move when the work does | covered | `test_the_stable_context_survives_a_migration_and_an_owner_transfer` — after a real `migrate_policy` **and** a real `transfer_owner` the complete `context` of the action is equal to the one captured before; only `current` moves (the contract in force, the owner, the provenance of the historical contract) |
+| W70 | The effect policy is declared in the published definition | covered | `test_an_action_node_may_declare_the_per_revision_policy`, `test_an_unknown_effect_policy_is_refused`, `test_the_per_revision_policy_needs_a_second_attempt`, `test_the_effect_policy_is_an_action_node_field`, `test_the_policy_is_part_of_the_published_digest` — `NODE_EFFECT_POLICY_UNKNOWN`, `NODE_EFFECT_POLICY_ATTEMPTS`, `NODE_FIELD_UNKNOWN`; the policy is part of the pinned digest (`tests/test_workflow_effect_policy.py`) |
+| W71 | A new subject version produces a new effect | covered | `test_a_new_proposal_produces_a_new_draft_and_one_final_effect`, `test_the_new_effect_is_a_new_operation_with_a_new_business_key`, `test_the_original_receipt_is_retained` — agent proposal v1, automatic draft v1, human rejection, reworked and independently reviewed proposal v2, automatic draft v2, two approvals, one formal final action: two version drafts, one final effect, the first receipt retained |
+| W72 | The default stays once per node | covered | `test_a_node_without_the_policy_never_repeats_its_effect`, `test_the_explicit_once_policy_never_repeats_its_effect` — `WORKFLOW_EFFECT_ALREADY_APPLIED`, one effect in the business system's own store |
+| W73 | A new revision of the same content is not a new version | covered | `test_the_same_digest_under_a_new_revision_is_refused` — `WORKFLOW_EFFECT_SUBJECT_UNCHANGED` |
+| W74 | An unsettled effect is reconciled before any new write | covered | `test_an_unresolved_prior_effect_is_not_rewritten` — `WORKFLOW_EFFECT_UNRESOLVED`; the node waits and no second operation is prepared |
+| W75 | A failed output is not bypassed | covered | `test_a_failed_output_is_not_bypassed_by_a_new_subject` — `WORKFLOW_EFFECT_OUTPUT_INVALID`; the effect really happened and stays |
+| W76 | A new admission owns a new operation and an exact linkage | covered | `test_an_operation_already_linked_to_another_node_is_refused` — `WORKFLOW_EFFECT_REUSED`; the native context of a business key stays unambiguous |
+| W77 | Both business keys resolve after a restart | covered | `test_both_business_keys_resolve_after_a_restart` — the old key names attempt 1, the new key attempt 2 |
+| W78 | An unknown policy is refused at publication and at binding | covered | `test_an_unknown_policy_is_refused_at_publication`, `test_an_unknown_policy_is_refused_at_binding`, `test_a_pinned_template_cannot_be_changed_under_the_same_version` — `WORKFLOW_SPEC_INVALID`, `WORKFLOW_EFFECT_POLICY_UNKNOWN`, `WORKFLOW_TEMPLATE_IMMUTABLE` |
 
 ### Bridge, recovery and demonstration
 
@@ -1002,6 +1011,17 @@ section records what is verified and what is not.
   of the proof it matched, and an old proof never satisfies a new attempt; a
   wait's output is judged before the workflow routes on; and a node that
   declared no quality says so plainly.
+- **The action effect policy** (`tests/test_workflow_effect_policy.py`, 18
+  tests): the default stays one effect per node; the opt-in
+  `per_revision` is declared in the immutable published definition and
+  admits a new effect only for a new revision with a new digest of the
+  subject and only after the previous effect is settled; the same subject
+  never repeats an effect, an unsettled operation is reconciled before any
+  new write, and a succeeded effect whose output failed validation is never
+  bypassed; the new admission owns a new operation with a new business key
+  and an exact node linkage, and both keys resolve after a restart; an
+  unknown policy is refused at publication and at binding, and a pinned
+  template cannot be changed under the same version.
 - **Recovery** (`tests/test_workflow_recovery.py`, 7 tests): a prepared
   action dispatched once after a restart, an effect committed before a real
   crash looked up rather than repeated, a restart that resumes without

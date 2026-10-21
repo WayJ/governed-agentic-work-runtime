@@ -27,6 +27,14 @@ MAX_SCHEMA_DEPTH = 8
 
 NODE_KINDS = ("agent", "human", "action", "wait")
 
+# The effect policies an action node may declare. "once" is the default:
+# the node's external effect happens once and a later attempt of the node
+# never repeats it. "per_revision" admits a new effect for a new revision
+# of the node's subject, and only after the previous effect is settled.
+EFFECT_POLICY_ONCE = "once"
+EFFECT_POLICY_PER_REVISION = "per_revision"
+EFFECT_POLICIES = (EFFECT_POLICY_ONCE, EFFECT_POLICY_PER_REVISION)
+
 _TOP_REQUIRED = ("id", "version", "policy_family", "nodes", "edges")
 _TOP_OPTIONAL = ("entry", "terminal", "parameters_schema", "required_checks",
                  "description")
@@ -443,6 +451,10 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
         # Every node kind that produces a record may declare the object it
         # produces. A human node produces its decision record.
         allowed.add("output")
+    if kind == "action":
+        # Only an automatic node produces an external effect, so only it may
+        # declare the policy that governs that effect.
+        allowed.add("effect_policy")
     for name in required:
         if name not in node:
             findings.append(_finding("NODE_FIELD_MISSING", path + "." + name,
@@ -457,6 +469,8 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
     if "capability" in node and not _is_identifier(node["capability"]):
         findings.append(_finding("NODE_FIELD_TYPE", path + ".capability",
                                  "Capability must be an identifier"))
+    if kind == "action" and "effect_policy" in node:
+        _lint_effect_policy(node, path, findings)
     if "evidence_kind" in node and not _is_identifier(node["evidence_kind"]):
         findings.append(_finding("NODE_FIELD_TYPE", path + ".evidence_kind",
                                  "Evidence kind must be an identifier"))
@@ -618,6 +632,31 @@ def _lint_judges(node: Dict[str, Any], path: str, entries: List[Any],
                     "validator"))
         if identifier is None:
             continue
+
+
+def _lint_effect_policy(node: Dict[str, Any], path: str,
+                        findings: List[Dict[str, str]]) -> None:
+    """The policy that governs an automatic node's external effect.
+
+    The opt-in is explicit: a node either keeps the default (one effect per
+    node) or declares that a new revision of its subject may produce a new
+    effect. A policy that allows a second effect needs the rework allowance
+    that can open a second attempt — otherwise it could never take effect
+    and the definition would promise something it cannot deliver.
+    """
+    policy = node.get("effect_policy")
+    if policy not in EFFECT_POLICIES:
+        findings.append(_finding("NODE_EFFECT_POLICY_UNKNOWN",
+                                 path + ".effect_policy",
+                                 "The effect policy must be one of the supported ones"))
+        return
+    if policy == EFFECT_POLICY_PER_REVISION:
+        attempts = node.get("max_attempts")
+        if not _is_int(attempts) or attempts < 2:
+            findings.append(_finding("NODE_EFFECT_POLICY_ATTEMPTS",
+                                     path + ".max_attempts",
+                                     "A per-revision effect policy needs a second "
+                                     "attempt to open"))
 
 
 def _lint_authority(authority: Any, path: str, findings: List[Dict[str, str]]) -> None:

@@ -66,7 +66,7 @@ Per node kind:
 |---|---|---|
 | `agent` | `executor`, `output`, `max_attempts` | `inputs`, `checks`, `on_failure`, `deadline_s`, `max_attempts`, `description` |
 | `human` | `evidence_kind`, `subject` | `authority` (a principal or `{"assigned": true}`), `distinct_from`, `on_reject`, `max_attempts`, `checks`, `output`, `inputs`, `deadline_s`, `description` |
-| `action` | `capability`, `subject` | `output`, `checks`, `inputs`, `on_failure`, `deadline_s`, `description` |
+| `action` | `capability`, `subject` | `output`, `checks`, `inputs`, `on_failure`, `on_timeout`, `max_attempts`, `effect_policy`, `deadline_s`, `description` |
 | `wait` | `match`, `deadline_s` | `output`, `checks`, `on_timeout`, `description` |
 
 An `output` is `{object, evidence_kind?, validation}`: the named object the
@@ -93,7 +93,8 @@ coerces a value and never echoes payload content. The codes are:
 `ENTRY_HAS_INBOUND`, `TERMINAL_HAS_OUTBOUND`, `GRAPH_CYCLE`,
 `PREDICATE_INVALID`, `PREDICATE_TOO_DEEP`, `SHAPE_INVALID`, `SHAPE_TYPE`,
 `SHAPE_TYPE_UNKNOWN`, `SHAPE_FIELD_UNKNOWN`, `SHAPE_TOO_DEEP`,
-`NODE_JUDGE_MISSING`.
+`NODE_JUDGE_MISSING`, `NODE_EFFECT_POLICY_UNKNOWN`,
+`NODE_EFFECT_POLICY_ATTEMPTS`.
 
 `NODE_JUDGE_MISSING` is the orphan-judge rule: a **required** criterion
 whose judge is `AGENT` needs a declared review path, and a **required**
@@ -369,6 +370,71 @@ output object is written. The read model says so explicitly —
 `quality.declared` is `false` and `quality.mode` is `undeclared` — so no
 quality is implied for a node that never asked for it, and the stored check
 report stays empty.
+
+### The effect policy of an automatic node
+
+By default an automatic node produces its external effect **once**: a later
+attempt of a node whose effect really happened fails closed with
+`WORKFLOW_EFFECT_ALREADY_APPLIED`, and the record of the effect stays. A
+host that needs the effect to run again for a **new version** of the
+material declares the policy in the published definition:
+
+```json
+"n02": {"kind": "action", "capability": "work.dispatch",
+        "subject": {"object": "proposal"},
+        "max_attempts": 2,
+        "effect_policy": "per_revision"}
+```
+
+The policy is **data in an immutable published definition**: it is linted,
+digested, published and pinned by digest at binding, so the opt-in is
+explicit, versioned and auditable. There are exactly two values:
+
+| value | meaning |
+|---|---|
+| `once` | the default: the node's effect happens once and a later attempt never repeats it |
+| `per_revision` | a later attempt may produce a new effect for a **new revision with a new digest** of the node's subject, and only after the previous effect of the node is settled |
+
+`effect_policy` is an **action node** field: another node kind that declares
+it is refused (`NODE_FIELD_UNKNOWN`). A `per_revision` node needs
+`max_attempts` of at least two — the policy promises a second attempt that
+the definition's own allowance could never open (`NODE_EFFECT_POLICY_ATTEMPTS`).
+An unknown value is refused at publication (`NODE_EFFECT_POLICY_UNKNOWN`)
+and again at binding (`WORKFLOW_EFFECT_POLICY_UNKNOWN`).
+
+**The exact admission of `per_revision`.** For an attempt with the pinned
+subject *S*, every earlier attempt of the same node that proposed an
+operation is read from the store, and its operation decides:
+
+| the previous operation | the previous attempt | the new attempt |
+|---|---|---|
+| the row is missing, or the status is not terminal (prepared, dispatched, unknown outcome) | — | **refused**: `WORKFLOW_EFFECT_UNRESOLVED`; the node waits and nothing is written until the operation is reconciled |
+| `confirmed_failed` | — | admitted: the effect did not happen |
+| `confirmed_succeeded` | the output failed validation (`WORKFLOW_OUTPUT_INVALID`) | **refused**: `WORKFLOW_EFFECT_OUTPUT_INVALID` — a new subject does not bypass it and a manual retry does not either |
+| `confirmed_succeeded` | the output was accepted | the same revision **and** the same digest → **refused**: `WORKFLOW_EFFECT_ALREADY_APPLIED`; a newer revision with a different digest → admitted; anything else (the same digest, or not newer) → **refused**: `WORKFLOW_EFFECT_SUBJECT_UNCHANGED` |
+
+The subject comparison is on the **revision and the digest of the same
+object**. It never looks at the capability, at the work's cursor or at the
+node's position in the graph.
+
+**A new admission is a new operation.** After the admission the engine
+proposes through the ordinary path, so the runtime creates an actual new
+operation with a new business key (the key of an object-bound operation
+names the subject revision), and the node instance stores that operation id.
+An operation this node already used, or one another node instance already
+links, is refused (`WORKFLOW_EFFECT_REUSED`): the linkage of an operation is
+exact, so the native action context of the old business key stays resolvable
+and the new one names the new attempt.
+
+**What the policy does not do.** It changes nothing else: the declared
+input and output validators still judge the material before and after the
+effect, a required independent review is still required, the order of the
+dispatch and the final close are untouched, and the policy is never a
+permission for a participant to certify its own work. A refusal that waits
+(`WORKFLOW_EFFECT_UNRESOLVED`) keeps the node **blocked** with the code on
+its blockers: nothing is written, the recovery pass reconciles the unknown
+outcome, and the node then either proceeds with a new version or fails
+closed. Every other refusal fails the node closed.
 
 ### Review nodes
 
