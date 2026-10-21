@@ -915,10 +915,14 @@ section records what is verified and what is not.
 | W50 | A wait is bound to the current revision of its subject | covered | `test_a_proof_of_a_superseded_revision_does_not_satisfy_the_wait`, `test_a_proof_of_another_digest_does_not_satisfy_the_wait` |
 | W51 | A wait's output is judged before the workflow routes on | covered | `test_a_wait_writes_its_validated_output`, `test_a_wait_output_failure_stops_the_downstream_node` — the validated payload becomes the named object; a rejected output stops the next node |
 | W52 | A node that asked for no quality is not implied to have it | covered | `test_a_node_without_a_declaration_is_not_implied_to_be_checked` — `quality.declared` is `false`, `quality.mode` is `undeclared`, the report stays empty |
+| W53 | A creation is resumable after a crash at any stage | covered | `test_a_crash_after_the_work_was_created_resumes_the_creation`, `test_a_crash_after_the_contract_resumes_the_creation`, `test_a_crash_after_the_plan_resumes_the_creation`, `test_a_crash_after_the_binding_resumes_the_creation` — the resume completes the creation (`tests/test_workflow_create_resume.py`) |
+| W54 | A replay adds no revision, no intent and no event | covered | `test_a_replay_adds_no_revision_no_intent_and_no_event`, `test_a_replay_does_not_issue_an_accepted_stage_again`, `test_the_resume_issues_an_accepted_stage_only_once` — each accepted stage appears exactly once in the event history |
+| W55 | A command id belongs to one request | covered | `test_a_changed_document_conflicts`, `test_a_changed_template_conflicts`, `test_a_changed_instance_conflicts`, `test_a_changed_session_conflicts`, `test_a_changed_plan_conflicts`, `test_a_changed_actor_conflicts`, `test_a_changed_work_conflicts` — `COMMAND_ID_REUSED`, never a silent reuse of the first request's stages |
+| W56 | The binding receipt is the platform's probe point | covered | `test_the_binding_receipt_is_readable_after_a_crash`, `test_the_binding_receipt_is_readable_after_a_replay` — the receipt is absent before the binding and accepted after it |
 
 ### Bridge, recovery and demonstration
 
-- **HTTP bridge** (`tests/test_workflow_http.py`, 24 tests, real loopback
+- **HTTP bridge** (`tests/test_workflow_http.py`, 47 tests, real loopback
   socket): the route whitelist (the product's `/v1/deliveries` route is not
   part of this surface and answers 404 here), a published template read
   back including every criterion's text, an instance created and read back,

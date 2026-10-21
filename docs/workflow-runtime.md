@@ -546,6 +546,58 @@ The bridge is **single-coordinator**: `CoordinatorLock` takes an operating
 system file lock over the store, so a second coordinator fails fast instead
 of racing the command dedup.
 
+### The creation is resumable
+
+`POST /v1/workflows/instances` is **four** commands, not one:
+`<commandId>:create` creates the work, `<commandId>:contract` binds the
+contract, `<commandId>:plan` revises the plan and `<commandId>:bind` binds
+the published definition. Each of them is a compare-and-swap on the work's
+`state_version`, and the version is part of the command's identity in the
+runtime's dedup: a version recomputed on a later attempt is a *different*
+command, and the runtime refuses it as `COMMAND_ID_REUSED`.
+
+So the bridge records the **preparation** of the creation before it issues
+a stage. The preparation is one row per creation in the `workflow_creates`
+table of the runtime store:
+
+| column | meaning |
+|---|---|
+| `command_id`, `work_id` | the creation the row belongs to |
+| `actor` | the principal the creation was issued by |
+| `request_digest` | the digest of the normalized request (actor, work, document, template, parameters, session, participants, plan, instance snapshot) |
+| `stages` | per stage: the command kind, the command id, the body and the compare-and-swap version the stage was prepared with |
+
+The record is written **ahead** of the stage it prepares, so a crash
+between the record and the command resumes with the same command, and a
+crash after the command resumes by re-issing it: the runtime recognises
+the identical command and returns its stored receipt. Nothing is reset,
+no second command key is invented, and no effect is hidden.
+
+Three rules follow from it:
+
+* **A replay of the same body resumes.** A creation that crashed after the
+  work, the contract, the plan or the binding is completed by sending the
+  same body again; the already accepted stages are not issued a second
+  time, so the creation adds no revision, no intent, no event and no
+  external effect.
+* **A changed body conflicts.** A command id belongs to one request. A
+  different document, template, instance, plan, session, work or actor
+  under the same command id is `409 COMMAND_ID_REUSED` — a receipt that
+  exists is never proof that the request is the same one.
+* **A refused request creates nothing.** The plan, the pinned template
+  digest and the submitted policy are checked before the first command,
+  so a `400` or a `422` leaves no half-created work behind.
+
+The binding receipt stays `<commandId>:bind`, and it is the receipt a
+platform that lost the response reads back
+(`GET /v1/workflows/commands/{commandId}?workId=&actor=`). It answers
+"was this creation bound?" without re-sending anything; when it is absent,
+the creation was not bound yet and the same body may be sent again.
+
+The bridge owns the `workflow_creates` table: `work_runtime/runtime.py`
+is byte-pinned and its schema is untouched, so the bridge creates the one
+table it needs in the same store and keeps it with the runtime's data.
+
 ## 8. Recovery
 
 `engine.recover(adapter, now)` runs, in order: evidence verification, wait

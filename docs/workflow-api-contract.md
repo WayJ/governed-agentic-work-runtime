@@ -179,6 +179,28 @@ the host policy, not by arbitrary caller input. `parameters` are validated
 against the definition's `parameters_schema`; an arbitrary dynamic graph is
 refused.
 
+The creation is four commands — `<commandId>:create`, `:contract`, `:plan`
+and `:bind` — and it is **resumable**:
+
+* **Send the same body again** after a crash or a lost response. The
+  already accepted stages are not issued a second time, the creation is
+  completed where it stopped, and the answer is the same `201` with the
+  same instance view. A replay adds no revision, no intent, no event and
+  no external effect.
+* **A changed body conflicts.** A `commandId` belongs to one request. A
+  different document, template, instance, plan, session, work or actor
+  under the same `commandId` is `409 COMMAND_ID_REUSED`; the first
+  request's stages are never silently reused for a second one.
+* **A refused request creates nothing.** The plan, the pinned
+  `templateDigest` and the submitted `policy` are checked before the first
+  command, so a `400` or a `422` leaves no half-created work behind.
+
+The **binding** receipt is `<commandId>:bind`; the response returns it as
+`bindingCommandId` and lists the four ids under `commandIds`. A platform
+that lost the response reads it back with
+`GET /v1/workflows/commands/{commandId}?workId=&actor=`: the receipt is
+present when the creation was bound and absent when it was not.
+
 ### `GET /v1/workflows/instances/{workId}`
 
 ```json

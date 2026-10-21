@@ -67,8 +67,9 @@ class HttpBridgeTestCase(unittest.TestCase):
         self.assertEqual(status, 201, body)
         return body
 
-    def create(self, work_id="W-1", session_id="sess-1", command_id=None,
-               extra=None, participants=None, plan=None, policy=None):
+    def create_body(self, work_id="W-1", session_id="sess-1", command_id=None,
+                    extra=None, participants=None, plan=None, policy=None):
+        """The create request the platform sends."""
         body = {
             "workId": work_id,
             "document": {"id": "H-001", "subject": "east parapet"},
@@ -90,6 +91,12 @@ class HttpBridgeTestCase(unittest.TestCase):
             body["policy"] = policy
         if extra:
             body.update(extra)
+        return body
+
+    def create(self, work_id="W-1", session_id="sess-1", command_id=None,
+               extra=None, participants=None, plan=None, policy=None):
+        body = self.create_body(work_id, session_id, command_id, extra,
+                                 participants, plan, policy)
         status, response = self.call("POST", API_PREFIX + "/instances", body)
         self.assertEqual(status, 201, response)
         return response
@@ -394,6 +401,71 @@ class CreateContractTests(HttpBridgeTestCase):
                          "participants": {"n99": "member-123"}}})
         self.assertEqual(status, 422)
         self.assertEqual(body["error"]["code"], "WORKFLOW_PARTICIPANT_UNKNOWN")
+
+
+class CreateReplayTests(HttpBridgeTestCase):
+    """The creation is resumable over the wire as well."""
+
+    def crash_after(self, stage_number):
+        """Crash the coordinator right after the n-th command committed."""
+        original = self.runtime.command
+        issued = []
+
+        def crashing(actor, command_id, work_id, kind, payload=None,
+                     expected_version=None):
+            receipt = original(actor, command_id, work_id, kind, payload,
+                               expected_version)
+            issued.append(command_id)
+            if len(issued) >= stage_number:
+                raise RuntimeError("the coordinator crashed")
+            return receipt
+
+        self.runtime.command = crashing
+        return original
+
+    def test_a_replay_over_http_returns_the_same_instance(self):
+        self.publish()
+        body = self.create_body(command_id="create-1")
+        status, first = self.call("POST", API_PREFIX + "/instances", body)
+        self.assertEqual(status, 201, first)
+        status, second = self.call("POST", API_PREFIX + "/instances", body)
+        self.assertEqual(status, 201, second)
+        self.assertEqual(second["stateVersion"], first["stateVersion"])
+        self.assertEqual(second["commandIds"], first["commandIds"])
+
+    def test_a_changed_body_over_http_conflicts(self):
+        self.publish()
+        status, first = self.call("POST", API_PREFIX + "/instances",
+                                  self.create_body(command_id="create-1"))
+        self.assertEqual(status, 201, first)
+        changed = self.create_body(command_id="create-1")
+        changed["document"] = {"id": "H-002", "subject": "east parapet"}
+        status, body = self.call("POST", API_PREFIX + "/instances", changed)
+        self.assertEqual(status, 409, body)
+        self.assertEqual(body["error"]["code"], "COMMAND_ID_REUSED")
+
+    def test_a_lost_response_is_recovered_by_replaying_the_same_body(self):
+        self.publish()
+        original = self.crash_after(2)
+        status, body = self.call("POST", API_PREFIX + "/instances",
+                                  self.create_body(command_id="create-1"))
+        self.assertEqual(status, 500, body)
+        self.runtime.command = original
+        status, body = self.call("POST", API_PREFIX + "/instances",
+                                  self.create_body(command_id="create-1"))
+        self.assertEqual(status, 201, body)
+        self.assertEqual(body["workflow"]["templateId"],
+                         scenario_template()["id"])
+
+    def test_the_binding_receipt_is_readable_after_a_replay(self):
+        self.publish()
+        self.call("POST", API_PREFIX + "/instances",
+                  self.create_body(command_id="create-1"))
+        status, body = self.call("GET", API_PREFIX + "/commands/create-1:bind"
+                                  "?workId=W-1&actor=coordinator")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["receipt"]["decision"], "accepted")
+
 
 
 class DecisionContractTests(HttpBridgeTestCase):
