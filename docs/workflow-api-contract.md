@@ -234,6 +234,15 @@ judged, never that something was checked when it was not.
   the work, the node and attempt, the bound node and attempt, and the
   object revision and digest. `kind_only` says plainly that the wait
   matched any verified proof of its kind.
+* `outputBinding` is the binding a human node's named record was made
+  under: the actor who decided, the ingress source it came through, the
+  node and attempt, the subject's revision and digest, the input digest
+  and the digest of the record itself.
+
+The criterion report is ordered by the definition's declared criteria and
+keeps the judges apart: a `HUMAN` entry names the person who decided
+(`decidedBy`), a `PROGRAM` entry names the validator that judged it
+(`validator`, `validatorVersion`) and has no `decidedBy`.
 
 The same `quality`, `effect` and `waitMatch` records are returned per
 attempt by `GET /v1/workflows/instances/{workId}/nodes/{nodeId}/attempts`.
@@ -252,6 +261,17 @@ attempt by `GET /v1/workflows/instances/{workId}/nodes/{nodeId}/attempts`.
 and the node does not complete.
 
 ### `POST /v1/workflows/instances/{workId}/decisions`
+
+The body may carry an optional `result`: the named record the human's
+submission produced (the signed external approval-record reference, the
+feedback, the verification). When the node declares an `output`, the core
+judges the record against the declared shape and the pinned validator and
+writes it as the named object **in this same command** — the caller's
+`expectedVersion` covers the record as well as the decision. A record that
+fails its quality is not written (the previous revision of the object is
+untouched), the decision itself is still admitted, and the node does not
+complete.
+
 
 ```json
 {"node": "n04", "attempt": 1, "decision": "approved", "digest": "…", "revision": 1,

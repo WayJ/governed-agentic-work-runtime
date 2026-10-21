@@ -65,16 +65,16 @@ Per node kind:
 | kind | required | optional |
 |---|---|---|
 | `agent` | `executor`, `output`, `max_attempts` | `inputs`, `checks`, `on_failure`, `deadline_s`, `max_attempts`, `description` |
-| `human` | `evidence_kind`, `subject` | `authority` (a principal or `{"assigned": true}`), `distinct_from`, `on_reject`, `max_attempts`, `checks`, `deadline_s`, `description` |
+| `human` | `evidence_kind`, `subject` | `authority` (a principal or `{"assigned": true}`), `distinct_from`, `on_reject`, `max_attempts`, `checks`, `output`, `inputs`, `deadline_s`, `description` |
 | `action` | `capability`, `subject` | `output`, `checks`, `inputs`, `on_failure`, `deadline_s`, `description` |
 | `wait` | `match`, `deadline_s` | `output`, `checks`, `on_timeout`, `description` |
 
 An `output` is `{object, evidence_kind?, validation}`: the named object the
 node produces, the kind of the event it constitutes (optional) and the
-validation that judges it. Only a node that produces an object may declare
-one, so `output` is refused on a human node. A `wait` `match` declares
-exactly one of `evidence_kind`, `node_completed` or `timeout`, and may
-additionally declare `subject` and `bind`.
+validation that judges it. A `subject` is `{object, validation?}`: a
+subject that declares a validation is a protected input. A `wait` `match`
+declares exactly one of `evidence_kind`, `node_completed` or `timeout`, and
+may additionally declare `subject` and `bind`.
 
 `authority` names the principal that may decide a human node. It is checked
 against the proof's source; the proof itself can only be written by the
@@ -92,7 +92,15 @@ coerces a value and never echoes payload content. The codes are:
 `EDGE_REFERENCE_UNKNOWN`, `EDGE_SELF`, `ENTRY_AMBIGUOUS`,
 `ENTRY_HAS_INBOUND`, `TERMINAL_HAS_OUTBOUND`, `GRAPH_CYCLE`,
 `PREDICATE_INVALID`, `PREDICATE_TOO_DEEP`, `SHAPE_INVALID`, `SHAPE_TYPE`,
-`SHAPE_TYPE_UNKNOWN`, `SHAPE_FIELD_UNKNOWN`, `SHAPE_TOO_DEEP`.
+`SHAPE_TYPE_UNKNOWN`, `SHAPE_FIELD_UNKNOWN`, `SHAPE_TOO_DEEP`,
+`NODE_JUDGE_MISSING`.
+
+`NODE_JUDGE_MISSING` is the orphan-judge rule: a **required** criterion
+whose judge is `AGENT` needs a declared review path, and a **required**
+criterion whose judge is `PROGRAM` needs an output validator — the program
+is the only judge that runs in the input/output phase. A criterion with no
+judge that can actually run is refused at publication, so it can never
+become a completed node that triggers effects.
 
 `template_digest(spec)` is the canonical content digest of a definition; it
 is stable across key order.
@@ -242,6 +250,42 @@ A stale decision never satisfies a node: after a rework the subject has a
 new revision and digest, so the previous approval stays on the record but no
 longer covers the current version.
 
+### Human nodes
+
+A human node may also declare the **named record** its decision carries:
+
+```json
+"n04": {"kind": "human", "evidence_kind": "safety_review",
+        "authority": "reviewer-a", "subject": {"object": "proposal"},
+        "output": {"object": "safety_approval",
+                   "validation": {"shape": {"…": "…"},
+                                  "validator": "record", "validator_version": "1"}},
+        "checks": [{"id": "N04-2", "method": "HUMAN", "criterion": "…"},
+                   {"id": "N04-3", "method": "PROGRAM", "criterion": "…"}]}
+```
+
+The record travels **with the decision**: `record_decision` accepts an
+optional `result`, and the core judges it against the declared shape and the
+pinned validator and writes it as the named object **inside the same
+compare-and-swap guarded command**. There is no separate object write that
+could rebase the caller's version.
+
+The decision itself is never lost. A record that fails its quality is not
+written — the previous revision of the object is untouched — the node does
+not complete, and the findings say why (`WORKFLOW_OUTPUT_MISSING`, the
+validator's own codes). A node that declares an output and whose decision
+carries no record keeps waiting: the declared record is part of the node's
+completion contract.
+
+The binding the record was made under is persisted with it: the actor who
+decided, the ingress source it came through, the node and attempt, the
+subject's revision and digest, the input digest and the digest of the
+record itself (`outputBinding`).
+
+A human node that declares **no** output keeps its previous behaviour, and
+the record says so: `quality.declared` is `false` and `quality.mode` is
+`undeclared`. No quality is implied for it.
+
 ### Action nodes
 
 An action node prepares an **operation** through the existing proposal path,
@@ -278,7 +322,15 @@ An action node may declare the same two things an agent node declares:
 * **Inputs are judged before the effect.** A node's declared input
   validation runs the pinned validator, not only the shape descriptor. A
   failing input blocks the node, and a blocked action node never proposes an
-  operation: no external effect is authorized.
+  operation: no external effect is authorized. A subject that declares its
+  own validation is a protected input and is judged the same way. Every
+  judgment is reported: the node instance carries `input_report` with the
+  object, its role, the exact revision and digest that was judged, the
+  pinned validator and its version, and the verdict; a finding carries the
+  same provenance. The `input_digest` covers exactly the declared
+  `inputs`; the subject is pinned separately in `subject`, and a decision
+  must cover the subject's exact revision and digest. The two digests mean
+  two different things and neither is presented as the other.
 * **The receipt is the material.** The engine wraps the adapter it calls and
   keeps the receipt the external system really returned, bounded (8 KiB for
   the transport fields, 64 KiB for the business payload), together with its

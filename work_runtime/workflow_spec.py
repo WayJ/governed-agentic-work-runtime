@@ -399,16 +399,32 @@ def eval_predicate(predicate: Any, context: PredicateContext) -> str:
 # --------------------------------------------------------------------------
 
 def _lint_subject(subject: Any, path: str, findings: List[Dict[str, str]]) -> None:
+    """The object a node decides on.
+
+    A subject may declare its own validation: it is then a protected
+    input, judged before the node starts, exactly like a declared input.
+    """
     if not isinstance(subject, dict):
         findings.append(_finding("SPEC_FIELD_TYPE", path, "Subject must be an object reference"))
         return
-    if set(subject) != {"object"}:
+    if not {"object"} <= set(subject):
+        findings.append(_finding("SPEC_FIELD_MISSING", path + ".object",
+                                 "Subject reference requires an object name"))
+        return
+    if set(subject) - {"object", "validation"}:
         findings.append(_finding("SPEC_FIELD_UNKNOWN", path,
-                                 "Subject reference requires exactly an object name"))
+                                 "Subject reference supports only object and validation"))
         return
     if not _is_identifier(subject.get("object")):
         findings.append(_finding("SPEC_FIELD_TYPE", path + ".object",
                                  "Subject requires an object name"))
+    if "validation" in subject:
+        validation = subject["validation"]
+        if not isinstance(validation, dict):
+            findings.append(_finding("SPEC_FIELD_TYPE", path + ".validation",
+                                     "Subject validation must be an object"))
+        else:
+            _lint_validation(validation, path + ".validation", findings)
 
 
 def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
@@ -423,9 +439,9 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
         return
     required = _NODE_REQUIRED[kind]
     allowed = set(required) | set(_NODE_OPTIONAL) | {"kind"}
-    if kind in ("agent", "action", "wait"):
-        # Only a node that produces an object may declare one. A human node
-        # produces a decision, not a named object.
+    if kind in ("agent", "action", "wait", "human"):
+        # Every node kind that produces a record may declare the object it
+        # produces. A human node produces its decision record.
         allowed.add("output")
     for name in required:
         if name not in node:
@@ -536,6 +552,7 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
                                                  path + ".checks[" + str(index) + "].id",
                                                  "A node may not declare a criterion twice"))
                     seen.add(entry["id"])
+            _lint_judges(node, path, entries, findings)
     if kind == "wait" and "match" in node:
         match = node["match"]
         if not isinstance(match, dict):
@@ -564,6 +581,43 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
                 findings.append(_finding("SPEC_FIELD_MISSING", path,
                                          "A wait match declares exactly one of "
                                          "evidence_kind, node_completed or timeout"))
+
+
+def _lint_judges(node: Dict[str, Any], path: str, entries: List[Any],
+                 findings: List[Dict[str, str]]) -> None:
+    """A required criterion must have a judge that can actually run.
+
+    A criterion whose judge is the program needs an output validator: the
+    program is the only judge that runs in the input/output phase. A
+    criterion whose judge is an independent model needs a declared review
+    path, because nothing else can judge it. An orphan declaration is
+    refused at publication instead of being quietly satisfied later.
+    """
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("required") is False:
+            continue
+        method = entry.get("method")
+        identifier = entry.get("id")
+        if method == "AGENT":
+            review = node.get("review")
+            if not (isinstance(review, dict) and review.get("evidence_kind")
+                    and review.get("reviewer") and review.get("rubric")):
+                findings.append(_finding(
+                    "NODE_JUDGE_MISSING", path + ".checks",
+                    "A criterion judged by an independent model requires a "
+                    "declared review path"))
+        elif method == "PROGRAM":
+            output = node.get("output")
+            validation = output.get("validation") if isinstance(output, dict) else None
+            if not (isinstance(validation, dict) and validation.get("validator")):
+                findings.append(_finding(
+                    "NODE_JUDGE_MISSING", path + ".checks",
+                    "A criterion judged by the program requires an output "
+                    "validator"))
+        if identifier is None:
+            continue
 
 
 def _lint_authority(authority: Any, path: str, findings: List[Dict[str, str]]) -> None:

@@ -100,7 +100,8 @@ def input_digest_of(engine, work_id, node):
 
 
 def decide(runtime, engine, work_id, kind, source, decision, digest_value, revision,
-           event_id=None, node=None, attempt=None, actor=None, items=None):
+           event_id=None, node=None, attempt=None, actor=None, items=None,
+           result=None, raw=False):
     """Record a human decision as evidence from its configured trusted source.
 
     The decision binds the node and the attempt it was made for, names the
@@ -113,6 +114,16 @@ def decide(runtime, engine, work_id, kind, source, decision, digest_value, revis
         attempt = current_attempt(engine, runtime, work_id, node)
     if items is None and node is not None:
         items = default_items(node)
+    if result is None and not raw:
+        result = default_result(node, actor or source)
+    if result is not None:
+        # The node declares a named record. A record can only arrive with
+        # the decision itself, so the decision goes through the workflow
+        # command — the same CAS-guarded path a host uses.
+        return decide_command(engine, runtime, work_id, kind, source, decision,
+                              digest_value, revision, node=node, attempt=attempt,
+                              actor=actor, items=items, command_id=event_id,
+                              result=result)
     data = {"decision": decision, "digest": digest_value, "revision": revision,
             "node": node, "attempt": attempt, "actor": actor or source,
             "items": items or []}
@@ -134,24 +145,45 @@ NODE_BY_EVIDENCE_KIND = {
 
 def default_items(node, verdict="passed", reason="reviewed against the criterion",
                   evidence=None):
-    """One verdict per criterion the node declared."""
+    """One verdict per criterion the human judges.
+
+    A criterion another judge owns keeps its own identifier and its own
+    record: the program criterion of a node is judged by the validator, not
+    by the human's decision.
+    """
     template = scenario_template()
     declaration = (template.get("nodes") or {}).get(node) or {}
     items = []
     for check in declaration.get("checks") or []:
         identifier = check["id"] if isinstance(check, dict) else check
+        method = check.get("method") if isinstance(check, dict) else None
+        if method not in (None, "HUMAN"):
+            continue
         items.append({"check": identifier, "verdict": verdict, "reason": reason,
                       "evidence": evidence or ["document#revision-1"]})
     return items
 
 
+def default_result(node, actor):
+    """The named record a human decision carries, when the node declares one."""
+    template = scenario_template()
+    declaration = (template.get("nodes") or {}).get(node) or {}
+    output = declaration.get("output") or {}
+    if not output:
+        return None
+    kind = declaration.get("evidence_kind") or "record"
+    return {"recordId": "REC-" + kind + "-" + uuid.uuid4().hex[:6],
+            "kind": kind, "actor": actor, "items": ["M-1"]}
+
+
 def decide_command(engine, runtime, work_id, kind, source, decision, digest_value,
                    revision, node=None, attempt=None, actor=None, items=None,
-                   command_id=None, expected_version=None):
+                   command_id=None, expected_version=None, result=None):
     """Admit a decision through the workflow command (CAS + dedup).
 
     The command's actor is the ingress source; the actual decider is the
-    asserted actor in the payload.
+    asserted actor in the payload. The named record the node declares is
+    carried in the same command, so the caller's compare-and-swap covers it.
     """
     if node is None:
         node = NODE_BY_EVIDENCE_KIND.get(kind)
@@ -162,6 +194,8 @@ def decide_command(engine, runtime, work_id, kind, source, decision, digest_valu
     payload = {"node": node, "attempt": attempt, "decision": decision,
                "digest": digest_value, "revision": revision,
                "actor": actor or source, "items": items or []}
+    if result is not None:
+        payload["result"] = result
     if expected_version is None:
         expected_version = version_of(runtime, work_id)
     receipt = engine.command(source, command_id or uuid.uuid4().hex, work_id,

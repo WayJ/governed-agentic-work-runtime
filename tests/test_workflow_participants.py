@@ -17,12 +17,14 @@ import unittest
 
 try:
     from workflow_support import (DemoPolicy, build, decide, decide_command,
-                                  demo_grants, instantiate, scenario_template,
-                                  send, submit_valid, version_of)
+                                  default_result, demo_grants, instantiate,
+                                  scenario_template, send, submit_valid,
+                                  version_of)
 except ImportError:  # pragma: no cover - repository-root import style
     from tests.workflow_support import (DemoPolicy, build, decide, decide_command,
-                                        demo_grants, instantiate, scenario_template,
-                                        send, submit_valid, version_of)
+                                        default_result, demo_grants, instantiate,
+                                        scenario_template, send, submit_valid,
+                                        version_of)
 
 
 class PlatformPolicy(DemoPolicy):
@@ -101,7 +103,7 @@ class AssignmentTests(ParticipantTestCase):
         receipt = decide(self.runtime, self.engine, self.work_id, "safety_review",
                          "platform-ingress", "approved", self.proposal()["digest"],
                          self.proposal()["revision"], node="n04", attempt=1,
-                         actor="member-123")
+                         actor="member-123", raw=True)
         self.assertEqual(receipt["decision"], "accepted")
         self.runtime.verify_pending(self.work_id)
         self.engine.advance(self.work_id, 1000)
@@ -130,7 +132,8 @@ class AssignmentTests(ParticipantTestCase):
         self.drive_agents()
         decide(self.runtime, self.engine, self.work_id, "safety_review",
                "platform-ingress", "approved", self.proposal()["digest"],
-               self.proposal()["revision"], node="n04", attempt=1, actor="user-2")
+               self.proposal()["revision"], node="n04", attempt=1, actor="user-2",
+               raw=True)
         node = self.node("n04")
         self.assertNotEqual(node["state"], "completed")
         self.assertTrue(any(finding["code"] == "WORKFLOW_AUTHORITY_MISMATCH"
@@ -203,7 +206,8 @@ class CriterionQualityTests(ParticipantTestCase):
                               "safety_review", "reviewer-a", decision,
                               self.proposal()["digest"],
                               self.proposal()["revision"], node=node, attempt=1,
-                              actor="reviewer-a", items=items)
+                              actor="reviewer-a", items=items,
+                              result=default_result(node, "reviewer-a"))
 
     def test_an_unknown_criterion_is_refused(self):
         self.build()

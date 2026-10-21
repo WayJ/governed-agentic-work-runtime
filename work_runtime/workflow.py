@@ -659,7 +659,13 @@ class WorkflowEngine:
                                       superseded_nodes=superseded)
 
     def _supersede_pinned(self, db, work, name) -> List[str]:
-        """Cancel node instances pinned to a superseded object revision."""
+        """Cancel node instances pinned to a superseded object revision.
+
+        A node pins three kinds of material: its declared inputs, the
+        subject it decides on and the candidate it produced. A new revision
+        of any of them supersedes the node — a review of a superseded
+        candidate must never be able to complete it.
+        """
         affected = []
         rows = db.execute("SELECT node,attempt,body FROM workflow_nodes WHERE work_id=?",
                           (work["id"],)).fetchall()
@@ -667,7 +673,13 @@ class WorkflowEngine:
             instance = json.loads(row["body"])
             if instance["state"] not in ("running", "blocked", "submitted"):
                 continue
-            pinned = list(instance.get("inputs") or []) + list(instance.get("subject") or [])
+            pinned = []
+            for key in ("inputs", "subject", "output"):
+                value = instance.get(key)
+                if isinstance(value, list):
+                    pinned.extend(entry for entry in value if isinstance(entry, dict))
+                elif isinstance(value, dict):
+                    pinned.append(value)
             if not any(entry.get("name") == name for entry in pinned):
                 continue
             instance["state"] = "cancelled"
@@ -964,6 +976,7 @@ class WorkflowEngine:
         before = canonical(instance)
         findings: List[Dict[str, Any]] = []
         pinned_inputs = []
+        input_report: List[Dict[str, Any]] = []
         for entry in node.get("inputs") or []:
             name = entry.get("object")
             row = self._object_row(db, work["id"], name)
@@ -972,42 +985,11 @@ class WorkflowEngine:
                                          "Required input object is not available",
                                          node=node_id, object=name))
                 continue
-            validation = entry.get("validation")
-            if isinstance(validation, dict) and isinstance(validation.get("shape"), dict):
-                problems = validate_shape(validation["shape"], json.loads(row["body"]),
-                                           name)
-                for problem in problems:
-                    findings.append(_finding(problem["code"],
-                                             "Input does not match the declared shape",
-                                             node=node_id, object=name,
-                                             location=problem.get("path", "")))
-            if isinstance(validation, dict) and validation.get("validator") is not None:
-                # The pinned validator judges the input itself, not only its
-                # shape. An input that fails is not usable, and a node whose
-                # input is unusable never authorizes an external effect.
-                validator_id = validation.get("validator")
-                validator_version = validation.get("validator_version")
-                validator = self.validators.resolve(validator_id, validator_version)
-                if validator is None:
-                    findings.append(_finding("INPUT_VALIDATOR_UNKNOWN",
-                                             "The declared input validator does "
-                                             "not resolve",
-                                             node=node_id, object=name,
-                                             validator=str(validator_id),
-                                             validator_version=str(validator_version)))
-                else:
-                    reported = validator(work, {"node": node_id,
-                                                "attempt": instance["attempt"],
-                                                "checks": [], "role": "input",
-                                                "object": name},
-                                         json.loads(row["body"]))
-                    raw_findings, _ = self._split_validator_report(reported)
-                    for problem in raw_findings:
-                        findings.append(_finding(
-                            problem.get("code", "VALIDATOR_REJECTED"),
-                            problem.get("message", "The input was rejected"),
-                            node=node_id, object=name,
-                            location=problem.get("location", "")))
+            problems, report = self._judge_material(
+                work, node_id, instance, name, row, entry.get("validation"), "input")
+            findings.extend(problems)
+            if report is not None:
+                input_report.append(report)
             pinned_inputs.append({"name": name, "revision": row["revision"],
                                   "digest": row["digest"]})
         subject = None
@@ -1020,10 +1002,20 @@ class WorkflowEngine:
                                          "Approval subject is not available",
                                          node=node_id, object=name))
             else:
+                # A subject that declares its own validation is a protected
+                # input: it is judged before the node starts, exactly like a
+                # declared input.
+                problems, report = self._judge_material(
+                    work, node_id, instance, name, row,
+                    subject_spec.get("validation"), "subject")
+                findings.extend(problems)
+                if report is not None:
+                    input_report.append(report)
                 subject = {"name": name, "revision": row["revision"],
                            "digest": row["digest"]}
         instance["inputs"] = pinned_inputs
         instance["input_digest"] = digest(pinned_inputs)
+        instance["input_report"] = input_report
         instance["subject"] = subject
         instance["findings"] = _bounded(findings)
         if findings:
@@ -1243,7 +1235,7 @@ class WorkflowEngine:
         if verdict == "approved" and shortfalls:
             # An approval that carries a failing required criterion does not
             # complete the node. The shortage is kept, exactly as reported.
-            instance["check_results"] = report
+            instance["check_results"] = self._ordered_report(                node, (instance.get("check_results") or []) + report)
             instance["actor"] = actor
             return self._block_with_finding(
                 db, work, instance,
@@ -1256,7 +1248,7 @@ class WorkflowEngine:
             # neither an approval nor a rejection: it does not complete the
             # node and it does not open a rework attempt.
             instance["actor"] = actor
-            instance["check_results"] = report
+            instance["check_results"] = self._ordered_report(                node, (instance.get("check_results") or []) + report)
             instance["material_request"] = {
                 "items": data.get("items") or [],
                 "reason": data.get("reason") or "",
@@ -1264,10 +1256,28 @@ class WorkflowEngine:
             self._save_instance(db, work, instance, "WorkflowMaterialRequested",
                                 {"actor": actor})
             return False
+        output = node.get("output") or {}
+        if not output:
+            # Compatibility: this node declared no named record. It completes
+            # exactly as it always did, and the record says plainly that
+            # nothing was checked.
+            instance["quality"] = {"declared": False, "mode": "undeclared"}
+        if output and not instance.get("output"):
+            # The node declared a named record and the record is not on the
+            # node yet: the decision stands, but nothing downstream is
+            # routed on a node whose own output is missing.
+            instance["actor"] = actor
+            instance["check_results"] = self._ordered_report(                node, (instance.get("check_results") or []) + report)
+            return self._block_with_finding(
+                db, work, instance,
+                _finding("WORKFLOW_OUTPUT_MISSING",
+                         "The declared output has not been produced yet",
+                         node=node_id, object=output.get("object")),
+                "WorkflowOutputMissing")
         instance["actor"] = actor
         instance["outcome"] = verdict
         instance["state"] = "completed"
-        instance["check_results"] = report
+        instance["check_results"] = self._ordered_report(            node, (instance.get("check_results") or []) + report)
         instance["decision_event_id"] = proof["event_id"]
         self._finish_intent(db, work, instance)
         self._save_instance(db, work, instance, "WorkflowNodeCompleted",
@@ -1525,7 +1535,7 @@ class WorkflowEngine:
             result["digest"], now, method="AGENT",
             validator_id=(review.get("rubric") or {}).get("validator"),
             validator_version=(review.get("rubric") or {}).get("validator_version"))
-        instance["check_results"] = (instance.get("check_results") or []) + report
+        instance["check_results"] = self._ordered_report(            node, (instance.get("check_results") or []) + report)
         shortfalls = self._criterion_shortfalls(node, report, "AGENT")
         if data.get("verdict") != "passed" or shortfalls:
             instance["state"] = "failed"
@@ -1542,6 +1552,118 @@ class WorkflowEngine:
         self._save_instance(db, work, instance, "WorkflowNodeCompleted",
                             {"outcome": "completed", "producer": producer})
         return True
+
+    def _judge_material(self, work, node_id, instance, name, row, validation,
+                        role):
+        """Judge one declared material: its shape and its pinned validator.
+
+        The report says who judged it, at which version, against which exact
+        revision and digest. A material that is refused blocks the node
+        before it starts any work, so no intent is opened and no external
+        effect is authorized.
+        """
+        findings: List[Dict[str, Any]] = []
+        report = None
+        body = json.loads(row["body"])
+        if isinstance(validation, dict) and isinstance(validation.get("shape"), dict):
+            for problem in validate_shape(validation["shape"], body, name):
+                findings.append(_finding(problem["code"],
+                                         "The material does not match the declared shape",
+                                         node=node_id, object=name, role=role,
+                                         revision=row["revision"],
+                                         digest=row["digest"],
+                                         location=problem.get("path", "")))
+        if not (isinstance(validation, dict)
+                and validation.get("validator") is not None):
+            return findings, report
+        validator_id = validation.get("validator")
+        validator_version = validation.get("validator_version")
+        validator = self.validators.resolve(validator_id, validator_version)
+        if validator is None:
+            findings.append(_finding("INPUT_VALIDATOR_UNKNOWN",
+                                     "The declared validator does not resolve",
+                                     node=node_id, object=name, role=role,
+                                     validator=str(validator_id),
+                                     validator_version=str(validator_version),
+                                     revision=row["revision"],
+                                     digest=row["digest"]))
+            return findings, report
+        reported = validator(work, {"node": node_id, "attempt": instance["attempt"],
+                                    "checks": [], "role": role, "object": name},
+                             body)
+        raw_findings, _ = self._split_validator_report(reported)
+        for problem in raw_findings:
+            findings.append(_finding(
+                problem.get("code", "VALIDATOR_REJECTED"),
+                problem.get("message", "The material was rejected"),
+                node=node_id, object=name, role=role,
+                validator=validator_id, validator_version=validator_version,
+                revision=row["revision"], digest=row["digest"],
+                location=problem.get("location", "")))
+        report = {"object": name, "role": role, "revision": row["revision"],
+                  "digest": row["digest"], "validator": validator_id,
+                  "validatorVersion": validator_version,
+                  "verdict": "failed" if raw_findings else "passed"}
+        return findings, report
+
+    def _validate_output_material(self, work, node_id, node, instance, material,
+                                  role, capability=None):
+        """Judge a material against the node's declared output.
+
+        Returns the findings and the per-criterion report. The material is
+        judged by the declared shape and by the pinned validator; the report
+        says which judge produced every verdict and against which exact
+        digests.
+        """
+        output = node.get("output") or {}
+        validation = output.get("validation") or {}
+        declarations = self._check_declarations(node)
+        findings: List[Dict[str, Any]] = []
+        check_report: List[Dict[str, Any]] = []
+        shape = validation.get("shape")
+        if isinstance(shape, dict):
+            for problem in validate_shape(shape, material,
+                                          output.get("object") or "output"):
+                findings.append(_finding(problem["code"],
+                                         "The material does not match the declared shape",
+                                         location=problem.get("path", "")))
+        validator_id = validation.get("validator")
+        validator_version = validation.get("validator_version")
+        if validator_id is None:
+            findings.append(_finding("WORKFLOW_VALIDATOR_MISSING",
+                                     "A declared output requires a pinned validator"))
+            return findings, check_report
+        validator = self.validators.resolve(validator_id, validator_version)
+        if validator is None:
+            findings.append(_finding("WORKFLOW_VALIDATOR_UNKNOWN",
+                                     "The declared validator does not resolve"))
+            return findings, check_report
+        check_ids = [declaration["id"] for declaration in declarations
+                     if declaration.get("method") in (None, "PROGRAM")]
+        reported = validator(work, {"node": node_id, "attempt": instance["attempt"],
+                                    "checks": check_ids, "role": role,
+                                    "capability": capability}, material)
+        raw_findings, raw_checks = self._split_validator_report(reported)
+        for problem in raw_findings:
+            findings.append(_finding(problem.get("code", "VALIDATOR_REJECTED"),
+                                     problem.get("message",
+                                                 "The validator rejected the material"),
+                                     location=problem.get("location", "")))
+        check_report = self._check_report_from_validator(
+            node, raw_checks, validator_id, validator_version,
+            instance.get("input_digest"), digest(material), int(time.time()))
+        findings.extend(self._report_findings(node, check_report))
+        missing = self._missing_check_results(node, check_report, "PROGRAM")
+        if missing:
+            findings.append(_finding("WORKFLOW_CHECK_RESULT_MISSING",
+                                     "A declared criterion has no verdict from the validator",
+                                     checks=missing))
+        shortfalls = self._criterion_shortfalls(node, check_report, "PROGRAM")
+        if shortfalls:
+            findings.append(_finding("WORKFLOW_CHECK_SHORTFALL",
+                                     "A required criterion is not satisfied by the validator",
+                                     shortfalls=shortfalls))
+        return findings, check_report
 
     def _effect_already_applied(self, db, work_id, node_id) -> bool:
         """True when an earlier attempt of this node already had its effect.
@@ -1647,54 +1769,13 @@ class WorkflowEngine:
         validator_version = validation.get("validator_version")
         check_report = []
         if payload is not None:
-            shape = validation.get("shape")
-            if isinstance(shape, dict):
-                for problem in validate_shape(shape, payload,
-                                              output.get("object") or "output"):
-                    findings.append(_finding(
-                        problem["code"],
-                        "The external payload does not match the declared shape",
-                        location=problem.get("path", "")))
-            if validator_id is None:
-                findings.append(_finding("WORKFLOW_VALIDATOR_MISSING",
-                                         "A declared output requires a pinned validator"))
-            else:
-                validator = self.validators.resolve(validator_id, validator_version)
-                if validator is None:
-                    findings.append(_finding("WORKFLOW_VALIDATOR_UNKNOWN",
-                                             "The declared validator does not resolve"))
-                else:
-                    check_ids = [declaration["id"] for declaration in declarations
-                                 if declaration.get("method") in (None, "PROGRAM")]
-                    reported = validator(
-                        work, {"node": node_id, "attempt": instance["attempt"],
-                               "checks": check_ids, "role": "output",
-                               "capability": operation["capability"]}, payload)
-                    raw_findings, raw_checks = self._split_validator_report(reported)
-                    for problem in raw_findings:
-                        findings.append(_finding(
-                            problem.get("code", "VALIDATOR_REJECTED"),
-                            problem.get("message", "The validator rejected the payload"),
-                            location=problem.get("location", "")))
-                    check_report = self._check_report_from_validator(
-                        node, raw_checks, validator_id, validator_version,
-                        instance.get("input_digest"), digest(payload), now)
-                    findings.extend(self._report_findings(node, check_report))
-                    missing = self._missing_check_results(node, check_report, "PROGRAM")
-                    if missing:
-                        findings.append(_finding(
-                            "WORKFLOW_CHECK_RESULT_MISSING",
-                            "A declared criterion has no verdict from the validator",
-                            checks=missing))
-                    shortfalls = self._criterion_shortfalls(node, check_report, "PROGRAM")
-                    if shortfalls:
-                        findings.append(_finding(
-                            "WORKFLOW_CHECK_SHORTFALL",
-                            "A required criterion is not satisfied by the validator",
-                            shortfalls=shortfalls))
+            problems, check_report = self._validate_output_material(
+                work, node_id, node, instance, payload, "output",
+                operation["capability"])
+            findings.extend(problems)
         if findings:
             instance["findings"] = _bounded(findings)
-            instance["check_results"] = check_report
+            instance["check_results"] = self._ordered_report(node, check_report)
             instance["quality"] = {
                 "declared": True, "mode": "rejected",
                 "validator": ({"id": validator_id, "version": validator_version}
@@ -1714,7 +1795,7 @@ class WorkflowEngine:
         if output.get("object"):
             reference = self._write_object(db, work["id"], output["object"], payload)
             instance["output"] = reference
-        instance["check_results"] = check_report
+        instance["check_results"] = self._ordered_report(node, check_report)
         instance["quality"] = {
             "declared": True, "mode": "validated",
             "validator": ({"id": validator_id, "version": validator_version}
@@ -1730,6 +1811,19 @@ class WorkflowEngine:
         self._save_instance(db, work, instance, "WorkflowNodeCompleted",
                             {"outcome": "completed", "output": reference})
         return True
+
+    @staticmethod
+    def _ordered_report(node, report) -> List[Dict[str, Any]]:
+        """The report in the order the definition declares its criteria.
+
+        A reader sees the criteria of a node in the order the protected
+        definition declares them, whichever judge produced the verdict.
+        """
+        order = {declaration["id"]: index
+                 for index, declaration
+                 in enumerate(WorkflowEngine._check_declarations(node))}
+        return sorted(report,
+                      key=lambda entry: order.get(entry.get("checkId"), len(order)))
 
     def _report_findings(self, node, report) -> List[Dict[str, Any]]:
         """The quality of a validator's per-criterion report.
@@ -1917,54 +2011,12 @@ class WorkflowEngine:
             findings.append(_finding("WORKFLOW_OUTPUT_MISSING",
                                      "The matched evidence carries no payload"))
             payload = {}
-        shape = validation.get("shape")
-        if isinstance(shape, dict):
-            for problem in validate_shape(shape, payload,
-                                          output.get("object") or "output"):
-                findings.append(_finding(
-                    problem["code"],
-                    "The matched evidence does not match the declared shape",
-                    location=problem.get("path", "")))
-        if validator_id is None:
-            findings.append(_finding("WORKFLOW_VALIDATOR_MISSING",
-                                     "A declared output requires a pinned validator"))
-        else:
-            validator = self.validators.resolve(validator_id, validator_version)
-            if validator is None:
-                findings.append(_finding("WORKFLOW_VALIDATOR_UNKNOWN",
-                                         "The declared validator does not resolve"))
-            else:
-                check_ids = [declaration["id"] for declaration in declarations
-                             if declaration.get("method") in (None, "PROGRAM")]
-                reported = validator(work, {"node": node_id,
-                                            "attempt": instance["attempt"],
-                                            "checks": check_ids, "role": "output"},
-                                     payload)
-                raw_findings, raw_checks = self._split_validator_report(reported)
-                for problem in raw_findings:
-                    findings.append(_finding(
-                        problem.get("code", "VALIDATOR_REJECTED"),
-                        problem.get("message", "The validator rejected the evidence"),
-                        location=problem.get("location", "")))
-                check_report = self._check_report_from_validator(
-                    node, raw_checks, validator_id, validator_version,
-                    instance.get("input_digest"), digest(payload), now)
-                findings.extend(self._report_findings(node, check_report))
-                missing = self._missing_check_results(node, check_report, "PROGRAM")
-                if missing:
-                    findings.append(_finding(
-                        "WORKFLOW_CHECK_RESULT_MISSING",
-                        "A declared criterion has no verdict from the validator",
-                        checks=missing))
-                shortfalls = self._criterion_shortfalls(node, check_report, "PROGRAM")
-                if shortfalls:
-                    findings.append(_finding(
-                        "WORKFLOW_CHECK_SHORTFALL",
-                        "A required criterion is not satisfied by the validator",
-                        shortfalls=shortfalls))
+        problems, check_report = self._validate_output_material(
+            work, node_id, node, instance, payload, "output")
+        findings.extend(problems)
         if findings:
             instance["findings"] = _bounded(findings)
-            instance["check_results"] = check_report
+            instance["check_results"] = self._ordered_report(node, check_report)
             instance["quality"] = {
                 "declared": True, "mode": "rejected",
                 "validator": ({"id": validator_id, "version": validator_version}
@@ -1981,7 +2033,7 @@ class WorkflowEngine:
         if output.get("object"):
             reference = self._write_object(db, work["id"], output["object"], payload)
             instance["output"] = reference
-        instance["check_results"] = check_report
+        instance["check_results"] = self._ordered_report(node, check_report)
         instance["quality"] = {
             "declared": True, "mode": "validated",
             "validator": ({"id": validator_id, "version": validator_version}
@@ -2147,6 +2199,9 @@ class WorkflowEngine:
             instance["outcome"] = "failed"
             instance["reason"] = "WORKFLOW_RESULT_INVALID"
             instance["validator"] = {"id": validator_id, "version": validator_version}
+            instance["quality"] = {"declared": True, "mode": "rejected",
+                                   "validator": {"id": validator_id,
+                                                 "version": validator_version}}
             self._cancel_intents(db, work["id"], node_id, attempt)
             self._save_instance(db, work, instance, "WorkflowResultRejected", {
                 "validator": validator_id, "validator_version": validator_version,
@@ -2157,8 +2212,11 @@ class WorkflowEngine:
         instance["result"] = {"digest": reference["digest"], "revision": reference["revision"],
                               "name": reference["name"]}
         instance["output"] = reference
-        instance["check_results"] = check_report
+        instance["check_results"] = self._ordered_report(node, check_report)
         instance["validator"] = {"id": validator_id, "version": validator_version}
+        instance["quality"] = {"declared": True, "mode": "validated",
+                               "validator": {"id": validator_id,
+                                             "version": validator_version}}
         review = node.get("review")
         if isinstance(review, dict) and review.get("evidence_kind"):
             # The candidate is produced; the independent review is now due.
@@ -2263,9 +2321,10 @@ class WorkflowEngine:
         required = {"node", "attempt", "decision", "digest", "revision",
                     "actor", "items"}
         if (not required <= set(payload)
-                or set(payload) - required - {"event_id"}):
+                or set(payload) - required - {"event_id", "result"}):
             raise WorkflowError("record_decision requires exactly node, attempt, "
-                                "decision, digest, revision, actor and items")
+                                "decision, digest, revision, actor and items, "
+                                "and may carry an optional result")
         node_id = payload["node"]
         attempt = payload["attempt"]
         if not isinstance(node_id, str) or type(attempt) is not int:
@@ -2298,12 +2357,93 @@ class WorkflowEngine:
         if findings:
             return self.runtime._reject("WORKFLOW_CHECK_REPORT_INVALID", version,
                                         _bounded(findings))
+        output = node.get("output") or {}
+        result = payload.get("result")
+        if result is not None and not isinstance(result, dict):
+            raise WorkflowError("record_decision requires an object result")
+        if result is not None and not output:
+            return self.runtime._reject("WORKFLOW_OUTPUT_UNDECLARED", version,
+                                        [node_id])
         data = {"decision": payload["decision"], "digest": payload["digest"],
                 "revision": payload["revision"], "node": node_id, "attempt": attempt,
                 "actor": payload["actor"], "items": payload["items"]}
         event_id = payload.get("event_id") or command_id or uuid.uuid4().hex
-        return self.runtime._receive(db, actor, work,
-                                     {"event_id": event_id, "kind": kind, "data": data})
+        receipt = self.runtime._receive(db, actor, work,
+                                        {"event_id": event_id, "kind": kind,
+                                         "data": data})
+        if receipt.get("decision") != "accepted":
+            return receipt
+        if output or result is not None:
+            # The named record the decision carries is judged and written in
+            # the same compare-and-swap guarded command as the decision
+            # itself: no separate write can rebase the caller's version.
+            self._apply_decision_output(db, work, node_id, node, instance,
+                                         output, result, payload["actor"], actor)
+            receipt["state_version"] = work["state_version"]
+        return receipt
+
+    def _apply_decision_output(self, db, work, node_id, node, instance, output,
+                               result, actor, source) -> None:
+        """Judge and write the named record a human decision carries.
+
+        The decision itself is genuine and stays: it is the record of what
+        the human decided. The named output is judged on its own — against
+        the declared shape and the pinned validator — and a rejected record
+        is not written, so the previous revision of the object is never
+        overwritten by a record that failed its quality.
+        """
+        if not output:
+            # Nothing was declared: the node completes as it always did and
+            # the record says plainly that nothing was checked.
+            instance["quality"] = {"declared": False, "mode": "undeclared"}
+            self._save_instance(db, work, instance, "WorkflowNodeCompleted",
+                                {"actor": actor})
+            return
+        if result is None:
+            # The node declared a named output and the decision did not carry
+            # it. The decision stands; the node keeps waiting for the record.
+            instance["output_findings"] = _bounded([_finding(
+                "WORKFLOW_OUTPUT_MISSING",
+                "The decision carries no record for the declared output",
+                node=node_id, object=output.get("object"))])
+            instance["quality"] = {"declared": True, "mode": "missing",
+                                   "validator": None}
+            self._save_instance(db, work, instance, "WorkflowOutputMissing",
+                                {"actor": actor})
+            return
+        findings, check_report = self._validate_output_material(
+            work, node_id, node, instance, result, "decision")
+        validation = output.get("validation") or {}
+        if findings:
+            instance["output_findings"] = _bounded(findings)
+            instance["findings"] = _bounded((instance.get("findings") or []) + findings)
+            instance["quality"] = {
+                "declared": True, "mode": "rejected",
+                "validator": {"id": validation.get("validator"),
+                              "version": validation.get("validator_version")}}
+            instance["check_results"] = self._ordered_report(node, check_report)
+            self._save_instance(db, work, instance, "WorkflowOutputRejected", {
+                "actor": actor, "source": source, "outcome": "rejected",
+                "findings": instance["output_findings"]})
+            return
+        reference = self._write_object(db, work["id"], output["object"], result)
+        instance["output"] = reference
+        instance["check_results"] = self._ordered_report(node, check_report)
+        instance["quality"] = {
+            "declared": True, "mode": "validated",
+            "validator": {"id": validation.get("validator"),
+                          "version": validation.get("validator_version")}}
+        # The binding the record was made under: who decided, through which
+        # channel, for which node and attempt, against which subject and
+        # inputs, and with which digest of its own.
+        instance["output_binding"] = {
+            "actor": actor, "source": source, "node": node_id,
+            "attempt": instance["attempt"], "object": reference,
+            "subject": instance.get("subject"),
+            "inputDigest": instance.get("input_digest"),
+            "outputDigest": reference["digest"]}
+        self._save_instance(db, work, instance, "WorkflowOutputAccepted", {
+            "actor": actor, "source": source, "output": reference})
 
     def _cancel_workflow(self, work_id: str) -> None:
         """Cancel the workflow of a work that is already cancelling."""

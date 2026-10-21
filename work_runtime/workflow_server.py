@@ -533,6 +533,14 @@ class WorkflowService:
                    "items": items}
         if event_id is not None:
             payload["event_id"] = event_id
+        result = body.get("result")
+        if result is not None:
+            if not isinstance(result, dict):
+                return 400, _error("DECISION_INVALID",
+                                   "result must be an object or absent")
+            # The named record the decision carries is judged and written in
+            # the same command: the caller's compare-and-swap covers it.
+            payload["result"] = result
         receipt = self.engine.command(source, command_id, work_id, "record_decision",
                                       payload, expected_version, now=self.now())
         if receipt.get("decision") != "accepted":

@@ -157,14 +157,22 @@ class DecisionBindingTests(AuthorityTestCase):
         node = self.node("n04")
         self.assertEqual(node["state"], "completed")
         report = node["checkResults"]
-        self.assertEqual(len(report), 1)
-        entry = report[0]
-        self.assertEqual(entry["checkId"], "N04-2")
+        self.assertEqual(len(report), 2)
+        entry = [item for item in report if item["checkId"] == "N04-2"][0]
         self.assertEqual(entry["verdict"], "passed")
         self.assertEqual(entry["reason"], "the proposal covers every requirement")
         self.assertEqual(entry["evidence"], ["proposal#revision-1"])
         self.assertEqual(entry["decidedBy"], "reviewer-a")
         self.assertEqual(entry["method"], "HUMAN")
+        # The named record the decision carries has its own program record:
+        # a validator judges it, not the human.
+        judged = [item for item in report if item["checkId"] == "N04-3"][0]
+        self.assertEqual(judged["verdict"], "passed")
+        self.assertEqual(judged["method"], "PROGRAM")
+        self.assertEqual(judged["validator"], "record")
+        self.assertEqual(judged["validatorVersion"], "1")
+        self.assertIsNone(judged["decidedBy"])
+        self.assertTrue(judged["reviewedOutputDigest"])
 
 
 class InputBindingTests(AuthorityTestCase):
@@ -209,12 +217,17 @@ class CriterionTextTests(AuthorityTestCase):
     def test_the_published_definition_carries_the_criterion_text(self):
         template = scenario_template()
         checks = template["nodes"]["n04"]["checks"]
-        self.assertEqual(len(checks), 1)
-        entry = checks[0]
-        self.assertEqual(entry["id"], "N04-2")
+        self.assertEqual(len(checks), 2)
+        entry = [check for check in checks if check["id"] == "N04-2"][0]
         self.assertTrue(entry["criterion"])
         self.assertEqual(entry["validator"], "safety-review")
         self.assertEqual(entry["validator_version"], "1")
+        self.assertEqual(entry["method"], "HUMAN")
+        program = [check for check in checks if check["id"] == "N04-3"][0]
+        self.assertTrue(program["criterion"])
+        self.assertEqual(program["validator"], "record")
+        self.assertEqual(program["validator_version"], "1")
+        self.assertEqual(program["method"], "PROGRAM")
 
     def test_a_criterion_validator_must_resolve_at_publication(self):
         template = scenario_template(template_id="broken", version="v1")

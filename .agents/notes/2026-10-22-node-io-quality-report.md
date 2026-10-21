@@ -121,3 +121,70 @@ Sent to the coordinator early (message `msg_d61c906e8172`) and recorded in
 * The wait binding compares the *producing* node's current attempt. A wait
   that names an explicit attempt pins that attempt exactly. The wait's own
   attempt is recorded in the binding as well.
+
+---
+
+## Second round — the coordinator's five follow-ups
+
+The coordinator sent five follow-ups on the first slice. All five are
+implemented, tested and committed in the same branch.
+
+| follow-up | implementation | evidence |
+|---|---|---|
+| the input validator was never invoked, for any node kind | `inputs[].validation` and `subject.validation` now run the **pinned validator**, not only the shape, during activation — before any intent and before any external effect. Every judgment is reported: `input_report[{object, role, revision, digest, validator, validatorVersion, verdict}]`, and every finding carries the pinned validator id, its version and the reviewed revision and digest. `input_digest` still covers exactly the declared `inputs`; the subject is pinned separately in `subject` and a decision must cover its exact revision and digest — the two semantics are documented separately | `test_an_input_rejection_blocks_with_pinned_provenance`, `test_an_accepted_input_is_reported_with_its_pinned_judge`, `test_an_unresolvable_input_validator_fails_closed_at_publication`, `test_a_subject_with_a_declared_validation_is_a_protected_input` |
+| human nodes need an optional named output, written in the same CAS-guarded `record_decision` | a human node may declare `output`; the decision command accepts an optional `result`; the core judges it against the declared shape and the pinned validator and writes it as the named object **inside the same transaction**. The decision is never lost: a record that fails its quality is not written (the previous revision is untouched), the node does not complete and the findings say why. A node that declares an output and whose decision carries no record keeps waiting. The binding is persisted: actor, source, node, attempt, subject, input digest, output digest | `test_a_human_decision_writes_its_named_output`, `test_a_human_decision_without_its_record_keeps_the_node_waiting`, `test_a_rejected_record_is_not_written_and_does_not_route_on`, `test_a_rejected_record_never_overwrites_the_previous_revision`, `test_a_human_node_without_a_declared_output_is_not_implied_to_be_checked` |
+| a required criterion must have a judge that can run | the lint refuses an orphan judge at publication (`NODE_JUDGE_MISSING`): a required `AGENT` criterion needs a declared review path, a required `PROGRAM` criterion needs an output validator | `test_a_required_agent_criterion_without_a_review_is_refused`, `test_a_required_program_criterion_without_an_output_validator_is_refused` |
+| a revised candidate must not accept the old review | `_supersede_pinned` now pins the node's **output** as well as its inputs and subject, so a new revision of the candidate cancels the submitted node and the review of the superseded candidate cannot complete it. The same fix removes a crash: a subject that is a reference dict is no longer iterated as a list of keys | `test_a_revised_candidate_supersedes_the_reviewing_node`, `test_revising_the_subject_of_a_human_node_supersedes_it` |
+| send the precise callback/descriptor extensions | sent as `msg_6690300c187f`: the wire addition (`result` on the decision route), the read-model additions (`quality`, `effect`, `waitMatch`, `receipt`, `outputBinding`), the validator callback (`validate(work, node_ref, value)`, `node_ref = {node, attempt, checks, role, capability|object}`, `role ∈ {input, subject, output, decision}`) and the definition invariant | — |
+
+### The demonstration after the follow-ups
+
+The published scenario now carries the whole chain: N04's decision archives
+the **signed safety approval** as a named object, N05 reads that record as
+its input, N06's dispatch receipt becomes the **order**, N06W waits for the
+proof of that attempt, N07 and N08 judge the order and archive their own
+**feedback** and **verification** records, and N10's delivery receipt is
+validated the same way.
+
+### The adapted tests
+
+The published definition changed, so the tests that drive it were adapted —
+no assertion was weakened:
+
+* the review, engine, http and recovery tests now carry the named record
+  where a human node declares one (the shared `decide` helper routes
+  through the workflow command when the node declares an output, because a
+  record can only arrive with the decision);
+* the raw evidence path is still exercised where the *settlement* check is
+  the subject (the assigned-authority and role-isolation tests), and those
+  tests now say so explicitly (`raw=True`);
+* the report assertions count the program verdict of the named record
+  beside the human verdict, and the demo test asserts that a `HUMAN` entry
+  names the person and a `PROGRAM` entry names the validator.
+
+### The gates after the follow-ups
+
+```
+python3 -m unittest discover -s tests            →  1319 tests, OK (skipped=2)
+python3 -m compileall -q work_runtime tests scripts   →  clean
+python3 scripts/check_docs.py                    →  125 markdown files, 676 local links, 0 broken
+python3 scripts/check_site.py                    →  2 pages, 0 findings
+python3 -m work_runtime workflow-demo            →  the chapters, 2 external effects
+```
+
+`work_runtime/runtime.py` and `work_runtime/adapters.py` are still byte
+unchanged; the byte pin in `tests/test_publishing_compensation.py` holds.
+
+### New limitations to disclose
+
+* A human node that declares an output can only complete through the
+  `record_decision` command: the plain evidence path cannot carry the
+  record. The decision is still admitted on that path, but the node waits
+  for the record. This is deliberate — the record must travel with the
+  decision under one compare-and-swap.
+* The `input_digest` covers the declared `inputs` only. A subject is pinned
+  separately (`subject.revision`, `subject.digest`) and a decision must
+  cover it exactly; the two digests are documented separately rather than
+  merged.
+* The report of a node is ordered by the definition's declared criteria, so
+  the order of the entries does not depend on which judge produced them.

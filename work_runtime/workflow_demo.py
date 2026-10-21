@@ -210,6 +210,17 @@ REPORT_SHAPE = {
     "required": ["sections"],
 }
 
+# The shape of the record a human decision carries: the business record the
+# decision archived, with its own identifier, its kind and who made it.
+RECORD_SHAPE = {
+    "type": "object",
+    "properties": {"recordId": {"type": "string"},
+                   "kind": {"type": "string"},
+                   "actor": {"type": "string"},
+                   "items": {"type": "array", "items": {"type": "string"}}},
+    "required": ["recordId", "kind", "actor", "items"],
+}
+
 # The shape of the business record the external system returns. It is the
 # material the automatic nodes validate before the workflow routes on.
 EFFECT_SHAPE = {
@@ -261,6 +272,38 @@ def _verdicts(node_ref, reason, evidence=None):
     return [{"check": check, "verdict": "passed", "reason": reason,
              "evidence": list(evidence) if evidence else ["criterion:" + check]}
             for check in (node_ref.get("checks") or [])]
+
+
+def record(work, node_ref, result):
+    """The record a human decision carries, judged against the criterion.
+
+    It must name itself, say what kind of record it is, name who made it
+    and name what it is about.
+    """
+    findings = []
+    if not isinstance(result, dict):
+        return {"findings": [{"code": "RECORD_NOT_OBJECT",
+                              "message": "The record is not an object"}],
+                "checks": []}
+    if not isinstance(result.get("recordId"), str) or not result["recordId"]:
+        findings.append({"code": "RECORD_UNIDENTIFIED",
+                         "message": "The record does not name itself"})
+    if not isinstance(result.get("kind"), str) or not result["kind"]:
+        findings.append({"code": "RECORD_UNKINDED",
+                         "message": "The record does not say what it is"})
+    if not isinstance(result.get("actor"), str) or not result["actor"]:
+        findings.append({"code": "RECORD_UNATTRIBUTED",
+                         "message": "The record does not name who made it"})
+    if not result.get("items"):
+        findings.append({"code": "RECORD_EMPTY",
+                         "message": "The record names no item"})
+    verdict = "failed" if findings else "passed"
+    reason = ("the record names what it archived" if not findings
+              else "the record did not satisfy the criterion")
+    checks = [{"check": check, "verdict": verdict, "reason": reason,
+               "evidence": ["record:" + str(result.get("recordId"))]}
+              for check in (node_ref.get("checks") or [])]
+    return {"findings": findings, "checks": checks}
 
 
 def effect(work, node_ref, result):
@@ -362,6 +405,7 @@ def workflow_demo_validators() -> ValidatorRegistry:
     registry.register("proposal", "1", proposal)
     registry.register("report", "1", report)
     registry.register("effect", "1", effect)
+    registry.register("record", "1", record)
     for name in ("safety-review", "project-approval", "field-report",
                  "independent-review"):
         registry.register(name, "1", review_specification)
@@ -381,8 +425,9 @@ def workflow_demo_template(template_id="inspection-review-delivery",
         "policy_family": policy_family,
         "entry": "n01",
         "terminal": ["n10"],
-        "required_checks": ["N01-1", "N03-1", "N04-2", "N05-3", "N06-1",
-                            "N06W-1", "N08-3", "N09-2", "N10-1"],
+        "required_checks": ["N01-1", "N03-1", "N04-2", "N04-3", "N05-3",
+                            "N06-1", "N06W-1", "N07-2", "N08-3", "N08-4",
+                            "N09-2", "N10-1"],
         "parameters_schema": {
             "type": "object",
             "properties": {"subject": {"type": "string"},
@@ -430,15 +475,27 @@ def workflow_demo_template(template_id="inspection-review-delivery",
             "n04": {"kind": "human", "evidence_kind": "safety_review",
                     "authority": "reviewer-a", "subject": {"object": "proposal"},
                     "on_reject": "n03", "max_attempts": 3,
+                    "output": {"object": "safety_approval",
+                               "validation": {"shape": RECORD_SHAPE,
+                                              "validator": "record",
+                                              "validator_version": "1"}},
                     "checks": [{"id": "N04-2",
                                 "method": "HUMAN",
                                 "criterion": "The proposal covers every applicable "
                                             "requirement and cites its doubt.",
                                 "criterion_version": "1",
                                 "validator": "safety-review",
+                                "validator_version": "1"},
+                               {"id": "N04-3",
+                                "method": "PROGRAM",
+                                "criterion": "The approval record names the record "
+                                            "it archived.",
+                                "criterion_version": "1",
+                                "validator": "record",
                                 "validator_version": "1"}]},
             "n05": {"kind": "human", "evidence_kind": "project_approval",
                     "authority": "reviewer-b", "subject": {"object": "proposal"},
+                    "inputs": [{"object": "safety_approval"}],
                     "on_reject": "n03", "max_attempts": 3,
                     "distinct_from": ["n04"],
                     "checks": [{"id": "N05-3",
@@ -481,24 +538,46 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                     "authority": "responsible-c", "subject": {"object": "order"},
                     "inputs": [{"object": "order"}],
                     "max_attempts": 3,
+                    "output": {"object": "field_feedback",
+                               "validation": {"shape": RECORD_SHAPE,
+                                              "validator": "record",
+                                              "validator_version": "1"}},
                     "checks": [{"id": "N07-1",
                                 "method": "HUMAN",
                                 "criterion": "Every measure has a result and the "
                                             "material of this round.",
                                 "criterion_version": "1",
                                 "validator": "field-report",
+                                "validator_version": "1"},
+                               {"id": "N07-2",
+                                "method": "PROGRAM",
+                                "criterion": "The feedback record names the record "
+                                            "it archived.",
+                                "criterion_version": "1",
+                                "validator": "record",
                                 "validator_version": "1"}]},
             "n08": {"kind": "human", "evidence_kind": "independent_review",
                     "authority": "reviewer-d", "subject": {"object": "order"},
                     "inputs": [{"object": "order"}],
                     "on_reject": "n07", "max_attempts": 3,
                     "distinct_from": ["n07"],
+                    "output": {"object": "verification",
+                               "validation": {"shape": RECORD_SHAPE,
+                                              "validator": "record",
+                                              "validator_version": "1"}},
                     "checks": [{"id": "N08-3",
                                 "method": "HUMAN",
                                 "criterion": "Every applicable requirement has an "
                                             "independent conclusion.",
                                 "criterion_version": "1",
                                 "validator": "independent-review",
+                                "validator_version": "1"},
+                               {"id": "N08-4",
+                                "method": "PROGRAM",
+                                "criterion": "The verification record names the "
+                                            "record it archived.",
+                                "criterion_version": "1",
+                                "validator": "record",
                                 "validator_version": "1"}]},
             "n09": {"kind": "agent", "executor": "agent-executor", "max_attempts": 2,
                     "review": {"evidence_kind": "agent_review",
@@ -687,9 +766,10 @@ def _send(runtime, actor, work_id, kind, payload, command_id=None):
 
 def _record_decision(runtime, engine, work_id, kind, source, decision,
                      digest_value, revision, event_id=None, node=None, attempt=None,
-                     actor=None, items=None, evidence=None):
-    """Record a human decision: the node, the attempt, the actor and the
-    itemized verdict for every criterion the node declared."""
+                     actor=None, items=None, evidence=None, result=None):
+    """Record a human decision: the node, the attempt, the actor, the
+    itemized verdict for every criterion the node declared and, when the
+    node declares one, the named record the decision carries."""
     if attempt is None and node is not None:
         attempt = _attempt(engine, work_id, node)
     if items is None and node is not None:
@@ -697,6 +777,8 @@ def _record_decision(runtime, engine, work_id, kind, source, decision,
     payload = {"node": node, "attempt": attempt, "decision": decision,
                "digest": digest_value, "revision": revision,
                "actor": actor or source, "items": items or []}
+    if result is not None:
+        payload["result"] = result
     if event_id is not None:
         payload["event_id"] = event_id
     receipt = engine.command(source, event_id or uuid.uuid4().hex, work_id,
@@ -710,11 +792,18 @@ def _record_decision(runtime, engine, work_id, kind, source, decision,
 
 def _decision_items(node, verdict="passed", reason="reviewed against the criterion",
                     evidence=None):
+    """The human's verdict for every criterion the human judges.
+
+    A criterion another judge owns keeps its own identifier and its own
+    record: the program criterion of a node is judged by the validator, not
+    by the human's decision.
+    """
     template = workflow_demo_template()
     declaration = (template.get("nodes") or {}).get(node) or {}
     return [{"check": check["id"], "verdict": verdict, "reason": reason,
              "evidence": list(evidence) if evidence else ["proposal#revision-1"]}
-            for check in declaration.get("checks") or []]
+            for check in declaration.get("checks") or []
+            if check.get("method") in (None, "HUMAN")]
 
 
 def _object_reference(runtime, work_id, name):
@@ -777,14 +866,19 @@ def run_workflow_demo(directory=None):
     print(f"2. N01–N03 agent nodes accepted and validated; proposal revision "
           f"{proposal['revision']} (digest {proposal['digest'][:12]}…)", flush=True)
 
-    # -- N04: the safety reviewer approves --------------------------------
+    # -- N04: the safety reviewer approves and archives the record --------
+    approval = {"recordId": "APR-" + proposal["digest"][:8], "kind": "safety_approval",
+                "actor": "reviewer-a", "items": ["M-1"]}
     _record_decision(runtime, engine, work_id, "safety_review", "reviewer-a",
                      "approved", proposal["digest"], proposal["revision"],
-                     node="n04")
+                     node="n04", result=approval)
+    archived = _object_reference(runtime, work_id, "safety_approval")
     pending = engine.intents(kind="human_task")
     assert [entry["node"] for entry in pending] == ["n05"], pending
-    print(f"3. N04 approved → GAWR created the N05 task {pending[0]['id']} "
-          f"with no agent turn in between", flush=True)
+    print(f"3. N04 approved → GAWR archived the signed approval record "
+          f"{archived['name']} revision {archived['revision']} and created "
+          f"the N05 task {pending[0]['id']} with no agent turn in between",
+          flush=True)
 
     # -- N05: the project approver approves; the runtime dispatches -------
     _record_decision(runtime, engine, work_id, "project_approval", "reviewer-b",
@@ -831,16 +925,26 @@ def run_workflow_demo(directory=None):
           f"matched the bound proof {n06w['waitMatch']['eventId']}", flush=True)
     _record_decision(runtime, engine, work_id, "field_report", "responsible-c",
                      "approved", order["digest"], order["revision"], node="n07",
-                     evidence=["order#revision-" + str(order["revision"])])
+                     evidence=["order#revision-" + str(order["revision"])],
+                     result={"recordId": "FB-" + order["digest"][:8],
+                             "kind": "field_report", "actor": "responsible-c",
+                             "items": ["M-1"]})
     _record_decision(runtime, engine, work_id, "independent_review", "reviewer-d",
                      "approved", order["digest"], order["revision"], node="n08",
-                     evidence=["order#revision-" + str(order["revision"])])
+                     evidence=["order#revision-" + str(order["revision"])],
+                     result={"recordId": "VR-" + order["digest"][:8],
+                             "kind": "independent_review", "actor": "reviewer-d",
+                             "items": ["M-1"]})
+    feedback = _object_reference(runtime, work_id, "field_feedback")
+    verification = _object_reference(runtime, work_id, "verification")
     agent_intents = engine.intents(kind="agent_task", status="pending")
     assert len(agent_intents) == 1, agent_intents
     assert agent_intents[0]["session_id"] == session_id, agent_intents
     print(f"8. N07 and N08 judged the order itself (revision "
-          f"{order['revision']}) → the original session was queued with the "
-          f"stable request id {agent_intents[0]['id']}", flush=True)
+          f"{order['revision']}) and archived their own records "
+          f"({feedback['name']}, {verification['name']}) → the original session "
+          f"was queued with the stable request id {agent_intents[0]['id']}",
+          flush=True)
 
     # -- N09: the report, and the independent review of the report --------
     attempt = _attempt(engine, work_id, "n09")

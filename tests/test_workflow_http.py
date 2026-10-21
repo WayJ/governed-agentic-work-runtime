@@ -131,18 +131,29 @@ class HttpBridgeTestCase(unittest.TestCase):
             "expectedVersion": expected_version})
 
     def decide(self, node, attempt, decision, digest, revision, actor_id,
-               items=None, work_id="W-1", command_id=None, expected_version=None):
+               items=None, work_id="W-1", command_id=None, expected_version=None,
+               result=None):
         if items is None:
             items = [{"check": "N04-2", "verdict": "passed",
                       "reason": "the proposal covers every requirement",
                       "evidence": ["proposal#revision-1"]}]
         if expected_version is None:
             expected_version = self.view(work_id)["stateVersion"]
-        return self.call("POST", API_PREFIX + "/instances/" + work_id + "/decisions", {
-            "node": node, "attempt": attempt, "decision": decision, "digest": digest,
-            "revision": revision, "actorId": actor_id, "items": items,
-            "commandId": command_id or self.next_id("decide"),
-            "expectedVersion": expected_version})
+        body = {"node": node, "attempt": attempt, "decision": decision,
+                "digest": digest, "revision": revision, "actorId": actor_id,
+                "items": items, "commandId": command_id or self.next_id("decide"),
+                "expectedVersion": expected_version}
+        if result is None and self._declares_output(node):
+            # The node declares a named record: the decision carries it.
+            result = {"recordId": "REC-" + node, "kind": node, "actor": actor_id,
+                      "items": ["M-1"]}
+        if result is not None:
+            body["result"] = result
+        return self.call("POST", API_PREFIX + "/instances/" + work_id + "/decisions", body)
+
+    def _declares_output(self, node):
+        declaration = (scenario_template().get("nodes") or {}).get(node) or {}
+        return bool(declaration.get("output"))
 
 
 class RouteTests(HttpBridgeTestCase):

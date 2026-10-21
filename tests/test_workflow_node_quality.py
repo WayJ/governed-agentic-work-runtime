@@ -42,6 +42,7 @@ class QualityPolicy:
     goal = POLICY_GOAL
     evidence_sources = {"dispatch_receipt": "business-system",
                         "field_report": "responsible-c",
+                        "agent_review": "reviewer-v",
                         "accepted": "business-system"}
 
     def validate_document(self, document):
@@ -63,7 +64,9 @@ class QualityPolicy:
 
 def quality_grants():
     return {"coordinator": {"work.manage", "work.dispatch", "work.deliver"},
+            "agent-executor": {"workflow.execute"},
             "responsible-c": {"evidence.write"},
+            "reviewer-v": {"evidence.write"},
             "business-system": {"evidence.write"}}
 
 
@@ -106,7 +109,10 @@ def quality_validators(reject_output=False, reject_input=False, reject_node=None
 
     def business_input(work, node_ref, value):
         findings = []
-        if reject_input or not isinstance(value, dict) or value.get("ok") is not True:
+        unusable = reject_input
+        if not unusable and isinstance(value, dict) and "ok" in value:
+            unusable = value["ok"] is not True
+        if unusable:
             findings.append({"code": "INPUT_UNUSABLE",
                              "message": "The input object is not usable"})
         return {"findings": findings, "checks": []}
@@ -190,6 +196,63 @@ def binding_template():
                               "bind": {"node": "n01", "attempt": 2}}},
             "n01": {"kind": "action", "capability": "work.dispatch",
                     "subject": {"object": "proposal"}},
+        },
+        "edges": [],
+    }
+
+
+def human_output_template():
+    """A human node that declares the named record it produces."""
+    return {
+        "id": "human-output-flow",
+        "version": "test-1",
+        "policy_family": POLICY_ID,
+        "entry": "n01",
+        "terminal": ["n02"],
+        "nodes": {
+            "n01": {"kind": "human", "evidence_kind": "field_report",
+                    "authority": "responsible-c", "subject": {"object": "proposal"},
+                    "output": {"object": "feedback",
+                               "validation": {"shape": EFFECT_SHAPE,
+                                              "validator": "effect",
+                                              "validator_version": "1"}},
+                    "checks": [{"id": "N01-1",
+                                "method": "HUMAN",
+                                "criterion": "The record names the effect.",
+                                "criterion_version": "1",
+                                "validator": "review-rubric",
+                                "validator_version": "1"}]},
+            "n02": {"kind": "action", "capability": "work.deliver",
+                    "subject": {"object": "feedback"}},
+        },
+        "edges": [{"from": "n01", "to": "n02"}],
+    }
+
+
+def candidate_template():
+    """An agent node whose candidate is reviewed independently."""
+    return {
+        "id": "candidate-flow",
+        "version": "test-1",
+        "policy_family": POLICY_ID,
+        "entry": "n01",
+        "terminal": ["n01"],
+        "nodes": {
+            "n01": {"kind": "agent", "executor": "agent-executor", "max_attempts": 2,
+                    "output": {"object": "candidate",
+                               "validation": {"shape": EFFECT_SHAPE,
+                                              "validator": "effect",
+                                              "validator_version": "1"}},
+                    "checks": [{"id": "N01-1",
+                                "method": "PROGRAM",
+                                "criterion": "The candidate names the effect.",
+                                "criterion_version": "1",
+                                "validator": "effect",
+                                "validator_version": "1"}],
+                    "review": {"evidence_kind": "agent_review",
+                               "reviewer": "reviewer-v",
+                               "rubric": {"validator": "review-rubric",
+                                          "validator_version": "1"}}},
         },
         "edges": [],
     }
@@ -305,6 +368,29 @@ class QualityTestCase(unittest.TestCase):
         return {"measures": [{"issueId": "H-001", "measureId": "M-1",
                                "measure": "complete the guard"}]}
 
+    def current_attempt(self, node):
+        entry = self.node(node)
+        return entry["attempt"] if entry else 0
+
+    def decide(self, node, decision, digest_value, revision, result=None,
+               items=None, actor="responsible-c", kind="field_report",
+               source="responsible-c"):
+        """Record a human decision, optionally with the record it carries."""
+        payload = {"node": node, "attempt": self.current_attempt(node),
+                   "decision": decision, "digest": digest_value,
+                   "revision": revision, "actor": actor,
+                   "items": items if items is not None else [
+                       {"check": "N01-1", "verdict": "passed",
+                        "reason": "reviewed against the criterion",
+                        "evidence": ["proposal#revision-1"]}]}
+        if result is not None:
+            payload["result"] = result
+        receipt = self.engine.command(source, uuid.uuid4().hex, self.work_id,
+                                      "record_decision", payload, self.version())
+        self.runtime.verify_pending(self.work_id)
+        self.engine.advance(self.work_id, 1_000)
+        return receipt
+
 
 class DefinitionLanguageTests(unittest.TestCase):
     def test_an_action_node_may_declare_an_output_and_checks(self):
@@ -320,11 +406,21 @@ class DefinitionLanguageTests(unittest.TestCase):
         codes = [finding["code"] for finding in lint_template(spec)]
         self.assertTrue(codes, codes)
 
-    def test_an_output_on_a_human_node_is_refused(self):
+    def test_a_human_node_may_declare_a_named_output(self):
+        spec = human_output_template()
+        self.assertEqual(lint_template(spec), [])
+
+    def test_a_required_agent_criterion_without_a_review_is_refused(self):
         spec = quality_template()
-        spec["nodes"]["n03"]["output"] = {"object": "order"}
+        spec["nodes"]["n01"]["checks"][0]["method"] = "AGENT"
         codes = [finding["code"] for finding in lint_template(spec)]
-        self.assertIn("NODE_FIELD_UNKNOWN", codes)
+        self.assertIn("NODE_JUDGE_MISSING", codes)
+
+    def test_a_required_program_criterion_without_an_output_validator_is_refused(self):
+        spec = quality_template()
+        spec["nodes"]["n01"]["output"].pop("validation")
+        codes = [finding["code"] for finding in lint_template(spec)]
+        self.assertIn("NODE_JUDGE_MISSING", codes)
 
     def test_a_wait_match_must_declare_exactly_one_source(self):
         spec = quality_template()
@@ -684,3 +780,198 @@ class ReadModelTests(QualityTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InputValidationTests(QualityTestCase):
+    """A declared input is judged by its pinned validator, before the effect."""
+
+    def _spec(self):
+        spec = quality_template()
+        spec["nodes"]["n01"]["inputs"] = [
+            {"object": "proposal",
+             "validation": {"validator": "business-input",
+                            "validator_version": "1"}}]
+        return spec
+
+    def test_an_input_rejection_blocks_with_pinned_provenance(self):
+        self.engine = WorkflowEngine(self.runtime, quality_validators(reject_input=True))
+        self.instantiate(self._spec())
+        self.revise("proposal", self.proposal_body())
+        self.engine.advance(self.work_id, 1_000)
+        self.engine.pump(self.adapter, 1_000)
+        self.engine.advance(self.work_id, 1_000)
+
+        node = self.instance_row("n01")
+        self.assertEqual(node["state"], "blocked", node)
+        finding = [entry for entry in node["findings"]
+                   if entry["code"] == "INPUT_UNUSABLE"][0]
+        self.assertEqual(finding["validator"], "business-input")
+        self.assertEqual(finding["validator_version"], "1")
+        self.assertEqual(finding["revision"], 1)
+        self.assertTrue(finding["digest"])
+        self.assertEqual(self.operations(), [])
+        self.assertEqual(DemoBusinessSystem(self.adapter_path).effect_count(), 0)
+
+    def test_an_accepted_input_is_reported_with_its_pinned_judge(self):
+        self.instantiate(self._spec())
+        self.revise("proposal", self.proposal_body())
+        self.engine.advance(self.work_id, 1_000)
+        report = self.instance_row("n01")["input_report"]
+        self.assertEqual(len(report), 1, report)
+        self.assertEqual(report[0]["object"], "proposal")
+        self.assertEqual(report[0]["role"], "input")
+        self.assertEqual(report[0]["validator"], "business-input")
+        self.assertEqual(report[0]["validatorVersion"], "1")
+        self.assertEqual(report[0]["verdict"], "passed")
+        self.assertEqual(report[0]["revision"], 1)
+        self.assertTrue(report[0]["digest"])
+
+    def test_an_unresolvable_input_validator_fails_closed_at_publication(self):
+        self.engine = WorkflowEngine(self.runtime, ValidatorRegistry())
+        receipt = self.engine.publish_template("coordinator", self._spec())
+        self.assertEqual(receipt["decision"], "rejected", receipt)
+        self.assertEqual(receipt["code"], "WORKFLOW_VALIDATOR_UNKNOWN")
+        names = [entry["validator"] for entry in receipt["validators"]]
+        self.assertIn("business-input", names)
+
+    def test_a_subject_with_a_declared_validation_is_a_protected_input(self):
+        spec = quality_template()
+        spec["nodes"]["n01"]["subject"] = {
+            "object": "proposal",
+            "validation": {"validator": "business-input",
+                           "validator_version": "1"}}
+        self.engine = WorkflowEngine(self.runtime, quality_validators(reject_input=True))
+        self.instantiate(spec)
+        self.revise("proposal", self.proposal_body())
+        self.engine.advance(self.work_id, 1_000)
+        node = self.instance_row("n01")
+        self.assertEqual(node["state"], "blocked", node)
+        roles = [entry["role"] for entry in node["findings"]
+                 if entry["code"] == "INPUT_UNUSABLE"]
+        self.assertEqual(roles, ["subject"])
+        self.assertEqual(self.operations(), [])
+
+
+class HumanOutputTests(QualityTestCase):
+    """A human node may declare the named record its decision carries."""
+
+    def setUp(self):
+        super().setUp()
+        self.instantiate(human_output_template())
+        self.revise("proposal", self.proposal_body())
+        self.engine.advance(self.work_id, 1_000)
+
+    def _record(self, record_id="EXT-1"):
+        return {"recordId": record_id, "action": "work.dispatch", "items": ["M-1"]}
+
+    def test_a_human_decision_writes_its_named_output(self):
+        proposal = self.object_reference("proposal")
+        receipt = self.decide("n01", "approved", proposal["digest"],
+                               proposal["revision"], result=self._record())
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        row = self.object_row("feedback")
+        self.assertIsNotNone(row, "the named record was not written")
+        self.assertEqual(__import__("json").loads(row[3])["recordId"], "EXT-1")
+        node = self.instance_row("n01")
+        self.assertEqual(node["state"], "completed", node.get("findings"))
+        self.assertEqual(node["quality"]["mode"], "validated")
+        binding = node["output_binding"]
+        self.assertEqual(binding["actor"], "responsible-c")
+        self.assertEqual(binding["source"], "responsible-c")
+        self.assertEqual(binding["node"], "n01")
+        self.assertEqual(binding["attempt"], 1)
+        self.assertEqual(binding["outputDigest"], row[2])
+        self.assertEqual(binding["subject"]["digest"], proposal["digest"])
+
+    def test_a_human_decision_without_its_record_keeps_the_node_waiting(self):
+        proposal = self.object_reference("proposal")
+        receipt = self.decide("n01", "approved", proposal["digest"],
+                               proposal["revision"])
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        node = self.instance_row("n01")
+        self.assertEqual(node["state"], "running", node)
+        self.assertIsNone(self.object_row("feedback"))
+        codes = [entry["code"] for entry in node["findings"]]
+        self.assertIn("WORKFLOW_OUTPUT_MISSING", codes)
+
+    def test_a_rejected_record_is_not_written_and_does_not_route_on(self):
+        proposal = self.object_reference("proposal")
+        receipt = self.decide("n01", "approved", proposal["digest"],
+                               proposal["revision"], result={"recordId": ""})
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        node = self.instance_row("n01")
+        self.assertEqual(node["state"], "running", node)
+        self.assertIsNone(self.object_row("feedback"))
+        self.assertEqual(node["quality"]["mode"], "rejected")
+        codes = [entry["code"] for entry in node["findings"]]
+        self.assertIn("EFFECT_UNIDENTIFIED", codes)
+
+    def test_a_rejected_record_never_overwrites_the_previous_revision(self):
+        proposal = self.object_reference("proposal")
+        self.decide("n01", "approved", proposal["digest"], proposal["revision"],
+                    result=self._record("EXT-1"))
+        self.assertIsNotNone(self.object_row("feedback"))
+        # A later decision with a record that fails its quality must not
+        # replace the record that is already on the ledger.
+        self.decide("n01", "approved", proposal["digest"], proposal["revision"],
+                    result={"recordId": ""})
+        row = self.object_row("feedback")
+        self.assertEqual(__import__("json").loads(row[3])["recordId"], "EXT-1")
+        self.assertEqual(row[1], 1)
+
+
+class HumanCompatibilityTests(QualityTestCase):
+    """A human node that declared no output keeps its previous behaviour."""
+
+    def test_a_human_node_without_a_declared_output_is_not_implied_to_be_checked(self):
+        spec = human_output_template()
+        spec["nodes"]["n01"].pop("output")
+        self.instantiate(spec)
+        self.revise("proposal", self.proposal_body())
+        self.engine.advance(self.work_id, 1_000)
+        proposal = self.object_reference("proposal")
+        self.decide("n01", "approved", proposal["digest"], proposal["revision"])
+        node = self.instance_row("n01")
+        self.assertEqual(node["state"], "completed", node.get("findings"))
+        self.assertEqual(node["quality"], {"declared": False, "mode": "undeclared"})
+
+
+class SupersedeTests(QualityTestCase):
+    """A new revision of the material a node pinned supersedes the node."""
+
+    def test_a_revised_candidate_supersedes_the_reviewing_node(self):
+        self.instantiate(candidate_template())
+        node = self.node("n01")
+        attempt = node["attempt"]
+        input_digest = node["inputDigest"]
+        receipt = self.engine.command("agent-executor", uuid.uuid4().hex, self.work_id,
+                                      "submit_node_result",
+                                      {"node": "n01", "attempt": attempt,
+                                       "object": "candidate",
+                                       "result": {"recordId": "EXT-1",
+                                                  "action": "work.dispatch",
+                                                  "items": ["M-1"]},
+                                       "input_digest": input_digest},
+                                      self.version())
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        self.assertEqual(self.instance_row("n01")["state"], "submitted")
+
+        # A new revision of the candidate invalidates the node: the review of
+        # the superseded candidate must not be able to complete it.
+        self.revise("candidate", {"recordId": "EXT-2", "action": "work.dispatch",
+                                   "items": ["M-2"]})
+        instance = self.instance_row("n01", attempt)
+        self.assertEqual(instance["state"], "cancelled", instance)
+        self.assertEqual(instance["reason"], "OBJECT_SUPERSEDED")
+
+    def test_revising_the_subject_of_a_human_node_supersedes_it(self):
+        self.instantiate(human_output_template())
+        self.revise("proposal", self.proposal_body())
+        self.engine.advance(self.work_id, 1_000)
+        self.assertEqual(self.instance_row("n01")["state"], "running")
+        self.revise("proposal", {"measures": [{"issueId": "H-001",
+                                                "measureId": "M-2",
+                                                "measure": "another guard"}]})
+        instance = self.instance_row("n01")
+        self.assertEqual(instance["state"], "cancelled", instance)
+        self.assertEqual(instance["reason"], "OBJECT_SUPERSEDED")

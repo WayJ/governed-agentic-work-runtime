@@ -124,7 +124,7 @@ class RestartTests(RecoveryTestCase):
             db.close()
         self.assertEqual(sorted(rows),
                          [("analysis", 1), ("dispatch_receipt", 1), ("intake", 1),
-                          ("order", 1), ("proposal", 1)])
+                          ("order", 1), ("proposal", 1), ("safety_approval", 1)])
 
     def test_a_pending_human_task_survives_a_restart(self):
         instantiate(self.runtime, self.engine, self.work_id)

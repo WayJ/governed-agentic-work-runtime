@@ -13,12 +13,13 @@ import uuid
 
 try:
     from workflow_support import (DemoPolicy, RecordingAdapter, build, decide,
-                                  demo_grants, demo_validators, document,
-                                  instance_of, scenario_template, send, submit,
-                                  submit_valid, version_of)
+                                  decide_command, demo_grants, demo_validators,
+                                  document, instance_of, scenario_template, send,
+                                  submit, submit_valid, version_of)
 except ImportError:  # pragma: no cover - repository-root import style
     from tests.workflow_support import (DemoPolicy, RecordingAdapter, build, decide,
-                                        demo_grants, demo_validators, document,
+                                        decide_command, demo_grants, demo_validators,
+                                        document,
                                         instance_of, scenario_template, send, submit,
                                         submit_valid, version_of)
 
@@ -414,14 +415,23 @@ class RoleIsolationTests(WorkflowTestCase):
         proposal = [entry for entry in engine.instance(self.work_id)["nodes"]
                     if entry["node"] == "n03"][0]
         digest_value = proposal["outputs"][0]["digest"]
-        for kind, node in (("safety_review", "n04"), ("project_approval", "n05")):
-            send(runtime, "reviewer-a", self.work_id, "record_evidence",
-                 {"event_id": uuid.uuid4().hex, "kind": kind,
-                  "data": {"decision": "approved", "digest": digest_value,
-                           "revision": 1, "node": node, "attempt": 1,
-                           "actor": "reviewer-a",
-                           "items": [{"check": "N04-2", "verdict": "passed",
-                                      "reason": "reviewed", "evidence": ["doc-1"]}]}})
+        # N04 declares a named record, so its decision carries one and goes
+        # through the workflow command; N05 declares none and may be decided
+        # by the plain evidence path.
+        decide_command(engine, runtime, self.work_id, "safety_review", "reviewer-a",
+                       "approved", digest_value, 1, node="n04", attempt=1,
+                       actor="reviewer-a",
+                       items=[{"check": "N04-2", "verdict": "passed",
+                               "reason": "reviewed", "evidence": ["doc-1"]}],
+                       result={"recordId": "REC-1", "kind": "safety_review",
+                               "actor": "reviewer-a", "items": ["M-1"]})
+        send(runtime, "reviewer-a", self.work_id, "record_evidence",
+             {"event_id": uuid.uuid4().hex, "kind": "project_approval",
+              "data": {"decision": "approved", "digest": digest_value,
+                       "revision": 1, "node": "n05", "attempt": 1,
+                       "actor": "reviewer-a",
+                       "items": [{"check": "N05-3", "verdict": "passed",
+                                  "reason": "reviewed", "evidence": ["doc-1"]}]}})
         runtime.verify_pending(self.work_id)
         engine.advance(self.work_id, 1000)
         node = [entry for entry in engine.instance(self.work_id)["nodes"]

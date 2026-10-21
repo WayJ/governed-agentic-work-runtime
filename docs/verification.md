@@ -975,7 +975,12 @@ section records what is verified and what is not.
   object and the per-criterion report names the judge of every criterion; a
   rejected output is not a false external failure and is never produced
   again — one effect in the business system's own store across the rejection
-  and the recovery; a missing per-check verdict is a refusal; a wait binds
+  and the recovery; a missing per-check verdict is a refusal; a declared
+  input and a declared subject are judged by their pinned validator before
+  any effect; a human decision writes the named record it carries in the
+  same command, and a record that fails its quality is never written over a
+  good one; an orphan judge declaration is refused at publication; a
+  revised candidate or subject supersedes the node that pinned it; a wait binds
   the work, node, attempt, object revision and digest and event provenance
   of the proof it matched, and an old proof never satisfies a new attempt; a
   wait's output is judged before the workflow routes on; and a node that

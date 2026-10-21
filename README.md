@@ -256,16 +256,20 @@ dispatch, one delivery. An executor can never approve, a candidate is
 accepted only by the registered, version-pinned validator, and a stale
 decision never satisfies a node.
 
-Every automatic and wait node is quality controlled too: the receipt the
-external system really returned is kept with its origin, the business
+Every automatic, human and wait node is quality controlled too: the receipt
+the external system really returned is kept with its origin, the business
 payload in it is judged by the declared, version-pinned validator, and only
 then does it become a named workflow object. The dispatch receipt becomes
 the *order* the field report and the independent review judge, and a wait
 accepts only the proof of the attempt it is bound to — an old proof never
-satisfies a new attempt. The effect and the output are two facts: an output
-that fails its validator does not become a false external failure, and the
-effect is never produced a second time. A node that declared no quality
-says so plainly instead of implying it was checked. See the
+satisfies a new attempt. A human decision may carry the named record it
+produced — the signed approval, the feedback, the verification — and the
+record is judged and written in the same command as the decision, so the
+safety reviewer's own approval record is the material the project approver
+reads. The effect and the output are two facts: an output that fails its
+validator does not become a false external failure, and the effect is never
+produced a second time. A node that declared no quality says so plainly
+instead of implying it was checked. See the
 [workflow runtime](docs/workflow-runtime.md),
 [API contract](docs/workflow-api-contract.md) and
 [runtime boundaries](docs/runtime-boundaries.md).

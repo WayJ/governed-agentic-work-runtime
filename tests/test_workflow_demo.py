@@ -63,7 +63,14 @@ class WorkflowDemoTests(unittest.TestCase):
             for criterion in entry["checkResults"]:
                 self.assertTrue(criterion["verdict"])
                 self.assertTrue(criterion["reason"])
-                self.assertTrue(criterion["decidedBy"])
+                if criterion["method"] == "HUMAN":
+                    # The human's own verdict names the human who decided.
+                    self.assertTrue(criterion["decidedBy"])
+                else:
+                    # A program verdict names the validator that judged it.
+                    self.assertIsNone(criterion["decidedBy"])
+                    self.assertTrue(criterion["validator"])
+                    self.assertTrue(criterion["validatorVersion"])
 
     def test_a_human_decision_needs_the_current_version(self):
         self.engine.publish_template("coordinator", workflow_demo_template())
@@ -106,8 +113,9 @@ class WorkflowDemoTests(unittest.TestCase):
         node = [entry for entry in self.engine.instance("W-1")["nodes"]
                 if entry["node"] == "n04"][0]
         self.assertEqual(node["state"], "completed")
-        self.assertEqual(node["checkResults"][0]["checkId"], "N04-2")
-        self.assertEqual(node["checkResults"][0]["decidedBy"], "reviewer-a")
+        decided = [entry for entry in node["checkResults"]
+                   if entry["checkId"] == "N04-2"][0]
+        self.assertEqual(decided["decidedBy"], "reviewer-a")
 
 
 if __name__ == "__main__":
