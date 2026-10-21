@@ -416,9 +416,12 @@ class WorkflowService:
             return entry
 
         created = stage("create", "create_work", {"document": document})
-        receipt = self.runtime.command(actor, created["command_id"], work_id,
-                                       created["kind"], created["payload"],
-                                       created["expected_version"])
+        try:
+            receipt = self.runtime.command(actor, created["command_id"], work_id,
+                                           created["kind"], created["payload"],
+                                           created["expected_version"])
+        except CommandError as error:
+            return 400, _error("DOCUMENT_INVALID", str(error))
         if receipt.get("decision") != "accepted":
             return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
                                                 "The work was not created")

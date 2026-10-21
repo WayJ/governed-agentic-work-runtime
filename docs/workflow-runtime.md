@@ -598,6 +598,16 @@ The bridge owns the `workflow_creates` table: `work_runtime/runtime.py`
 is byte-pinned and its schema is untouched, so the bridge creates the one
 table it needs in the same store and keeps it with the runtime's data.
 
+**What the resume does not cover.** The resume covers a *crash*: a command
+that never reached a verdict is re-issued, and a command that was accepted
+is never issued again. A command that was **refused on business grounds**
+is a verdict, and the runtime remembers it under its command id like any
+other: the same body replays the same refusal (`WORKFLOW_TEMPLATE_UNKNOWN`,
+`WORKFLOW_PARAMETERS_INVALID`, …) and never a second attempt. The work
+that the earlier stages created stays on the store — the bridge never
+resets a work to hide an effect — so a corrected request needs a fresh
+work, not a fresh command id over the same one.
+
 ## 8. Recovery
 
 `engine.recover(adapter, now)` runs, in order: evidence verification, wait

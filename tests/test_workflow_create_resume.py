@@ -217,6 +217,13 @@ class CreateReplayTests(CreateResumeTestCase):
         self.assertEqual(receipt["decision"], "accepted")
 
     # -- a changed request conflicts -------------------------------------
+    def test_a_refused_command_is_answered_not_raised(self):
+        # The actor is not a principal name: the command refuses itself and
+        # the bridge answers 400 instead of raising.
+        status, body = self.create(actor=5)
+        self.assertEqual(status, 400, body)
+        self.assertEqual(body["error"]["code"], "DOCUMENT_INVALID")
+
     def test_a_changed_document_conflicts(self):
         status, body = self.create()
         self.assertEqual(status, 201, body)
