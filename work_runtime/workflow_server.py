@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .policy import digest as content_digest
+from .policy import canonical, digest as content_digest
 from .runtime import CommandError
 
 API_PREFIX = "/v1/workflows"
@@ -82,6 +82,21 @@ STATUS_BY_CODE = {
 }
 
 DEFAULT_PLAN = {"steps": [], "open_requirements": [], "replan_when": []}
+
+# The durable preparation of a multi-stage creation. The bridge owns this
+# table: it records, before a stage is issued, the exact command identity,
+# body and compare-and-swap version of that stage, so a resume re-issues
+# the recorded command instead of recomputing one against a version that
+# has moved on.
+CREATE_PREPARATIONS = """
+CREATE TABLE IF NOT EXISTS workflow_creates (
+    command_id TEXT NOT NULL,
+    work_id TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    stages TEXT NOT NULL,
+    PRIMARY KEY(command_id, work_id))
+"""
 
 
 def redact(value: Any) -> Any:
@@ -151,6 +166,51 @@ class CoordinatorLock:
             self._handle = None
 
 
+class CreatePreparations:
+    """The durable preparation of one instance creation.
+
+    The creation is four commands, not one: the work is created, the
+    contract is bound, the plan is revised and the workflow is bound. Each
+    of them is a compare-and-swap on the work's state version, so a version
+    recomputed on a later attempt makes a *different* command and the
+    runtime refuses it as a reused command id. The preparation is written
+    before the stage is issued, and the resume re-issues the recorded
+    command.
+    """
+
+    def __init__(self, runtime):
+        self.runtime = runtime
+        self._ready = False
+
+    def _ensure(self) -> None:
+        if self._ready:
+            return
+        with self.runtime._connection() as db:
+            db.execute(CREATE_PREPARATIONS)
+        self._ready = True
+
+    def load(self, command_id: str, work_id: str) -> Optional[Dict[str, Any]]:
+        """The recorded preparation of a creation, or None."""
+        self._ensure()
+        with self.runtime._connection() as db:
+            row = db.execute("SELECT actor,request_digest,stages FROM workflow_creates "
+                             "WHERE command_id=? AND work_id=?",
+                             (command_id, work_id)).fetchone()
+        if row is None:
+            return None
+        return {"actor": row[0], "request_digest": row[1],
+                "stages": json.loads(row[2])}
+
+    def save(self, command_id: str, work_id: str, actor: str,
+             request_digest: str, stages: Dict[str, Any]) -> None:
+        """Record a preparation (written ahead of the stage it prepares)."""
+        self._ensure()
+        with self.runtime._transaction() as db:
+            db.execute("INSERT OR REPLACE INTO workflow_creates VALUES (?,?,?,?,?)",
+                       (command_id, work_id, actor, request_digest,
+                        canonical(stages)))
+
+
 class WorkflowService:
     """The request-independent behaviour of the bridge.
 
@@ -163,6 +223,7 @@ class WorkflowService:
         self.runtime = runtime
         self.engine = engine
         self.adapter = adapter
+        self.preparations = CreatePreparations(runtime)
         self._now = now
         self._actor_for = actor_for or (lambda work_id: "coordinator")
 
