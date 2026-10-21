@@ -2379,7 +2379,9 @@ class WorkflowEngine:
             # itself: no separate write can rebase the caller's version.
             self._apply_decision_output(db, work, node_id, node, instance,
                                          output, result, payload["actor"], actor)
-            receipt["state_version"] = work["state_version"]
+            # The record was written in this transaction, so the receipt
+            # reports the version the work is at now.
+            receipt["result_state_version"] = work["state_version"]
         return receipt
 
     def _apply_decision_output(self, db, work, node_id, node, instance, output,

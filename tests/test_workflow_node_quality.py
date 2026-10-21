@@ -866,9 +866,16 @@ class HumanOutputTests(QualityTestCase):
 
     def test_a_human_decision_writes_its_named_output(self):
         proposal = self.object_reference("proposal")
+        before = self.version()
         receipt = self.decide("n01", "approved", proposal["digest"],
                                proposal["revision"], result=self._record())
         self.assertEqual(receipt["decision"], "accepted", receipt)
+        # The record was written in the same transaction as the decision, so
+        # the receipt reports a version the work reached through that one
+        # command.
+        self.assertGreater(receipt["result_state_version"], before)
+        self.assertLessEqual(receipt["result_state_version"],
+                             self.version())
         row = self.object_row("feedback")
         self.assertIsNotNone(row, "the named record was not written")
         self.assertEqual(__import__("json").loads(row[3])["recordId"], "EXT-1")
