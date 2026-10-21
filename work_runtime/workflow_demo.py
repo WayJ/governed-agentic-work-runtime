@@ -82,12 +82,7 @@ class WorkflowDemoPolicy:
                     and type(data["attempt"]) is int and data["attempt"] >= 1
                     and isinstance(data["actor"], str) and bool(data["actor"])
                     and isinstance(data["items"], list)
-                    and all(set(item) == {"check", "verdict", "reason", "evidence"}
-                            and isinstance(item["check"], str) and bool(item["check"])
-                            and item["verdict"] in CHECK_VERDICTS
-                            and isinstance(item["reason"], str)
-                            and isinstance(item["evidence"], list)
-                            for item in data["items"]))
+                    and all(_criterion_item_ok(item) for item in data["items"]))
         if kind == "agent_review":
             return (set(data) == {"node", "attempt", "input_digest",
                                   "output_digest", "producer", "verdict", "items"}
@@ -100,12 +95,7 @@ class WorkflowDemoPolicy:
                     and isinstance(data["producer"], str) and bool(data["producer"])
                     and data["verdict"] in ("passed", "failed")
                     and isinstance(data["items"], list)
-                    and all(set(item) == {"check", "verdict", "reason", "evidence"}
-                            and isinstance(item["check"], str) and bool(item["check"])
-                            and item["verdict"] in CHECK_VERDICTS
-                            and isinstance(item["reason"], str)
-                            and isinstance(item["evidence"], list)
-                            for item in data["items"]))
+                    and all(_criterion_item_ok(item) for item in data["items"]))
         if kind in ("accepted", "dispatch_receipt"):
             return (set(data) == {"digest", "external_id"}
                     and isinstance(data["digest"], str) and bool(data["digest"])
@@ -221,6 +211,31 @@ REPORT_SHAPE = {
 }
 
 
+def _criterion_item_ok(item) -> bool:
+    """One criterion report item.
+
+    The evidence may be absent: a shortage keeps its true reason and does
+    not invent a reference. A pass carries its evidence, and the core
+    enforces that.
+    """
+    if not isinstance(item, dict):
+        return False
+    if not {"check", "verdict", "reason"} <= set(item):
+        return False
+    if set(item) - {"check", "verdict", "reason", "evidence"}:
+        return False
+    if not isinstance(item["check"], str) or not item["check"]:
+        return False
+    if item["verdict"] not in CHECK_VERDICTS:
+        return False
+    if not isinstance(item["reason"], str):
+        return False
+    evidence = item.get("evidence")
+    if evidence is not None and not isinstance(evidence, list):
+        return False
+    return True
+
+
 def _require_entries(result, key, code):
     entries = result.get(key)
     if not isinstance(entries, list) or not entries:
@@ -334,6 +349,7 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                                               "validator": "intake",
                                               "validator_version": "1"}},
                     "checks": [{"id": "N01-1",
+                                "method": "PROGRAM",
                                 "criterion": "Every extracted record names the "
                                             "source it came from.",
                                 "criterion_version": "1",
@@ -346,6 +362,7 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                                               "validator": "analysis",
                                               "validator_version": "1"}},
                     "checks": [{"id": "N02-1",
+                                "method": "PROGRAM",
                                 "criterion": "Every finding cites a clause of "
                                             "the adopted standard.",
                                 "criterion_version": "1",
@@ -358,6 +375,7 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                                               "validator": "proposal",
                                               "validator_version": "1"}},
                     "checks": [{"id": "N03-1",
+                                "method": "PROGRAM",
                                 "criterion": "Every issue has a measure with a "
                                             "stable identifier.",
                                 "criterion_version": "1",
@@ -367,6 +385,7 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                     "authority": "reviewer-a", "subject": {"object": "proposal"},
                     "on_reject": "n03", "max_attempts": 3,
                     "checks": [{"id": "N04-2",
+                                "method": "HUMAN",
                                 "criterion": "The proposal covers every applicable "
                                             "requirement and cites its doubt.",
                                 "criterion_version": "1",
@@ -377,6 +396,7 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                     "on_reject": "n03", "max_attempts": 3,
                     "distinct_from": ["n04"],
                     "checks": [{"id": "N05-3",
+                                "method": "HUMAN",
                                 "criterion": "The arrangement names a responsible "
                                             "party, a deadline and its basis.",
                                 "criterion_version": "1",
@@ -388,6 +408,7 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                     "authority": "responsible-c", "subject": {"object": "proposal"},
                     "max_attempts": 3,
                     "checks": [{"id": "N07-1",
+                                "method": "HUMAN",
                                 "criterion": "Every measure has a result and the "
                                             "material of this round.",
                                 "criterion_version": "1",
@@ -398,6 +419,7 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                     "on_reject": "n07", "max_attempts": 3,
                     "distinct_from": ["n07"],
                     "checks": [{"id": "N08-3",
+                                "method": "HUMAN",
                                 "criterion": "Every applicable requirement has an "
                                             "independent conclusion.",
                                 "criterion_version": "1",
@@ -413,10 +435,18 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                                               "validator": "report",
                                               "validator_version": "1"}},
                     "checks": [{"id": "N09-2",
+                                "method": "PROGRAM",
                                 "criterion": "The report covers the signed record "
                                             "without changing it.",
                                 "criterion_version": "1",
                                 "validator": "report",
+                                "validator_version": "1"},
+                               {"id": "N09-2-review",
+                                "criterion": "An independent reviewer confirms "
+                                            "that the report follows the record.",
+                                "method": "AGENT",
+                                "criterion_version": "1",
+                                "validator": "review-rubric",
                                 "validator_version": "1"}]},
             "n10": {"kind": "action", "capability": "work.deliver",
                     "subject": {"object": "report"}},
@@ -711,7 +741,7 @@ def run_workflow_demo(directory=None):
                               "input_digest": node["inputDigest"],
                               "output_digest": report["digest"],
                               "producer": "reviewer-v", "verdict": "passed",
-                              "items": [{"check": "N09-2", "verdict": "passed",
+                              "items": [{"check": "N09-2-review", "verdict": "passed",
                                          "reason": "the report follows the record",
                                          "evidence": ["proposal#revision-1"]}]}}, None)
     runtime.verify_pending(work_id)

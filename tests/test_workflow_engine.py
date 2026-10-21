@@ -239,7 +239,7 @@ class RoutingTests(WorkflowTestCase):
                        "input_digest": node["inputDigest"],
                        "output_digest": reference[3], "producer": "reviewer-v",
                        "verdict": "passed",
-                       "items": [{"check": "N09-2", "verdict": "passed",
+                       "items": [{"check": "N09-2-review", "verdict": "passed",
                                   "reason": "the report follows the record",
                                   "evidence": ["proposal#revision-1"]}]}})
         self.runtime.verify_pending(self.work_id)

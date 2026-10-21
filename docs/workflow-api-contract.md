@@ -31,6 +31,9 @@ participant assignment.
  }}
 ```
 
+* `templateId` and `templateVersion` name the published definition, and
+  the optional `templateDigest` pins it: a definition with another digest
+  is `409 WORKFLOW_TEMPLATE_MISMATCH`.
 * The submitted `policy` is checked against the **registered** immutable
   policy: a mismatch is `422 WORKFLOW_POLICY_MISMATCH`. The contract that
   is bound is never silently replaced.
@@ -139,6 +142,24 @@ between GAWR and an external system.
 `200 {"templateId", "templateVersion", "digest", "spec", "publishedBy", "publishedAt"}` — the whole
 protected definition, including every criterion's text and its validator binding.
 
+### `GET /v1/workflows/commands/{commandId}?workId={workId}&actor={actor}`
+
+`200 {"commandId", "workId", "actor", "receipt": {…}}` — the stored receipt
+of one command, or `404 COMMAND_RECEIPT_UNKNOWN`.
+
+It is a **read-only** lookup: it never re-suns the command and never
+decides anything. The `workId` and `actor` scope it, so two tasks that
+share a command id stay apart. It answers "was this command accepted?"
+after a lost response or a withdrawn authority, so a platform can read
+back an accepted fact without re-sending an approval and without turning
+an executed command into a rejected one.
+
+The multi-step creation derives its command ids from the top-level one, so
+a retry finds the same receipts: `<commandId>:create`, `<commandId>:contract`,
+`<commandId>:plan` and `<commandId>:bind`. The **binding** receipt is
+`<commandId>:bind`; the create response returns it as `bindingCommandId`
+and lists the rest under `commandIds`.
+
 ### `POST /v1/workflows/instances`
 
 See [the trusted create snapshot](#the-trusted-platform-create-snapshot).
@@ -151,6 +172,7 @@ refused.
 
 ```json
 {"workId": "W-1", "status": "active", "workflowStatus": "active", "stateVersion": 7, "currentNode": "n04",
+ "terminalNode": null, "terminalOutcome": null,
  "workflow": {"templateId": "inspection-review-delivery", "templateVersion": "test-1", "digest": "…", "revision": 1, "parameters": {}},
  "nodes": [{"node": "n04", "kind": "human", "state": "running", "attempt": 1, "outcome": null,
             "inputs": [{"name": "proposal", "revision": 1, "digest": "…"}],
@@ -236,6 +258,14 @@ restarts; it is the request id a bridge uses for the original session.
 `{"actor": "coordinator"}` → `200 {"intentId", "status": "acknowledged"}`;
 `404 WORKFLOW_INTENT_UNKNOWN`; `409 WORKFLOW_INTENT_CANCELLED`.
 
+### `GET /v1/workflows/instances/{workId}/nodes/{nodeId}/attempts`
+
+`200 {"workId", "node", "attempts": [{"attempt", "state", "outcome", "reason", "actor", "inputDigest", "output", "checkResults", "createdAt"}]}`
+
+The attempt history of one node, with the judgments each attempt produced.
+A judgment belongs to the attempt that produced it: the history is what a
+reader consults, not the current state of the node.
+
 ### `GET /v1/workflows/instances/{workId}/events?after=`
 
 `200 {"events": [{"seq", "version", "type", "body"}]}`
@@ -252,22 +282,34 @@ A node's `checks` are protected declarations:
 
 ```json
 {"id": "N04-2", "criterion": "<the text the reviewer read>",
- "criterion_version": "1", "validator": "safety-review", "validator_version": "1",
+ "method": "HUMAN", "criterion_version": "1",
+ "validator": "safety-review", "validator_version": "1",
  "required": true, "allow_not_applicable": false}
 ```
+
+`method` names the judge the definition expects — `PROGRAM`, `AGENT` or
+`HUMAN` — so a reader can show who checks a criterion *before* any report
+exists; the node's kind is never used to guess it. A criterion that is
+first checked by a program and then reviewed by a model keeps **two**
+declarations with two identifiers (`N09-2` with `PROGRAM` and `N09-2-review`
+with `AGENT`) and therefore two independent records; a node may not
+declare the same identifier twice.
 
 A decision's `items` are refused at admission (`422
 WORKFLOW_CHECK_REPORT_INVALID`) when an item names an undeclared criterion,
 repeats one, carries a blank reason, carries empty evidence, or a verdict
 outside `{passed, failed, insufficient, conflict, not_applicable}`.
 
-At settlement every **required** criterion must be passed; a
+At settlement every **required** criterion of that judge must be passed; a
 `not_applicable` verdict counts only when the protected declaration sets
 `allow_not_applicable`. A required criterion that is failed, insufficient or
 in conflict is a genuine shortfall: an `approved` decision does **not**
 complete the node, the shortage is persisted with its real verdict, and the
 node keeps waiting. A `rejected` or `request_material` decision keeps the
 shortages in the report — nothing is turned into a pass.
+
+The evidence of a **pass** is required; a shortage may carry none, because
+its reason *is* the missing fact and inventing a reference would be a lie.
 
 Every persisted report entry carries, at judgment time:
 
@@ -283,6 +325,12 @@ Every persisted report entry carries, at judgment time:
 review) or `HUMAN` (a decision). The report is returned in the read model
 under `nodes[].checkResults`, so a historical judgment is reconstructible
 from the stored record and not from the current state of the node.
+
+`workflowStatus: "finished"` says that the **routing** stopped, never that
+the work was delivered. The read model therefore also carries
+`terminalNode` and `terminalOutcome` — the last node and what it decided
+(`approved`, `rejected`, `failed`, `expired`) — so a caller never reads
+"finished" as a successful delivery.
 
 ## The asynchronous review
 

@@ -308,6 +308,31 @@ class CriterionQualityTests(ParticipantTestCase):
         self.assertEqual(node["checkResults"][0]["reason"],
                          "the guard is not covered")
 
+    def test_a_shortage_may_carry_no_evidence(self):
+        """A missing fact is reported as missing, not filled in."""
+        self.build()
+        self.instantiate()
+        self.drive_agents()
+        receipt = self.decide_with_items(
+            [{"check": "N04-2", "verdict": "insufficient",
+              "reason": "the standard text is not available to this reviewer"}],
+            decision="request_material")
+        self.assertEqual(receipt["decision"], "accepted")
+        node = self.node("n04")
+        self.assertEqual(node["state"], "running")
+        self.assertEqual(node["checkResults"][0]["verdict"], "insufficient")
+        self.assertEqual(node["checkResults"][0]["reason"],
+                         "the standard text is not available to this reviewer")
+
+    def test_a_pass_always_needs_its_evidence(self):
+        self.build()
+        self.instantiate()
+        self.drive_agents()
+        receipt = self.decide_with_items([{"check": "N04-2", "verdict": "passed",
+                                           "reason": "checked", "evidence": []}])
+        self.assertEqual(receipt["decision"], "rejected")
+        self.assertEqual(receipt["code"], "WORKFLOW_CHECK_REPORT_INVALID")
+
     def test_the_report_records_the_judgment_context(self):
         self.build()
         self.instantiate()

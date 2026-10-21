@@ -346,6 +346,30 @@ class CreateContractTests(HttpBridgeTestCase):
                          {"n04": "member-123", "n05": "member-456"})
         self.assertEqual(body["workflow"]["parameters"], {"subject": "east parapet"})
 
+    def test_the_snapshot_may_name_the_instance_it_creates(self):
+        self.publish()
+        status, body = self.call("POST", API_PREFIX + "/instances", {
+            "workId": "W-1", "document": {"id": "H-001", "subject": "east"},
+            "templateId": scenario_template()["id"],
+            "templateVersion": scenario_template()["version"],
+            "commandId": "create-1",
+            "instance": {"id": "W-1", "workspaceId": "ws-1", "taskId": "task-1",
+                         "ownerUserId": "user-1", "sessionId": "sess-1",
+                         "parameters": {"subject": "east parapet"},
+                         "participants": {"n04": "member-123"}}})
+        self.assertEqual(status, 201, body)
+        status, body = self.call("POST", API_PREFIX + "/instances", {
+            "workId": "W-2", "document": {"id": "H-001", "subject": "east"},
+            "templateId": scenario_template()["id"],
+            "templateVersion": scenario_template()["version"],
+            "commandId": "create-2",
+            "instance": {"id": "W-1", "workspaceId": "ws-1", "taskId": "task-1",
+                         "ownerUserId": "user-1", "sessionId": "sess-1",
+                         "parameters": {"subject": "east parapet"},
+                         "participants": {}}})
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "INSTANCE_INVALID")
+
     def test_a_participant_must_name_a_declared_node(self):
         self.publish()
         status, body = self.call("POST", API_PREFIX + "/instances", {
@@ -493,6 +517,14 @@ class InstanceTests(HttpBridgeTestCase):
         self.assertEqual(body["currentNode"], "n04")
         self.assertEqual(self.node("W-1", "n04")["state"], "running")
 
+    def test_the_attempt_history_of_a_node_is_readable(self):
+        self.publish()
+        self.create()
+        status, body = self.call("GET", API_PREFIX + "/instances/W-1/nodes/n01/attempts")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["node"], "n01")
+        self.assertTrue(body["attempts"])
+
     def test_durable_intents_are_listed_and_acknowledged(self):
         self.publish()
         self.create()
@@ -574,3 +606,66 @@ class ProgressTests(HttpBridgeTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReceiptAndTerminalTests(HttpBridgeTestCase):
+    def test_a_stored_command_receipt_is_readable_without_resending(self):
+        self.publish()
+        created = self.create(command_id="create-1")
+        self.assertEqual(created["bindingCommandId"], "create-1:bind")
+        status, body = self.call("GET", API_PREFIX + "/commands/create-1:bind"
+                                  "?workId=W-1&actor=coordinator")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["receipt"]["decision"], "accepted")
+        self.assertEqual(body["workId"], "W-1")
+        # The lookup is read-only: it does not create anything.
+        before = self.runtime.get_work("W-1")["state_version"]
+        self.call("GET", API_PREFIX + "/commands/create-1:bind?workId=W-1&actor=coordinator")
+        self.assertEqual(self.runtime.get_work("W-1")["state_version"], before)
+
+    def test_a_receipt_of_another_work_or_actor_is_not_found(self):
+        self.publish()
+        self.create(command_id="create-1")
+        status, body = self.call("GET", API_PREFIX + "/commands/create-1:bind"
+                                  "?workId=W-2&actor=coordinator")
+        self.assertEqual(status, 404)
+        status, body = self.call("GET", API_PREFIX + "/commands/create-1:bind"
+                                  "?workId=W-1&actor=someone-else")
+        self.assertEqual(status, 404)
+
+    def test_a_receipt_lookup_needs_its_scope(self):
+        status, body = self.call("GET", API_PREFIX + "/commands/create-1")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "COMMAND_SCOPE_REQUIRED")
+
+    def test_a_pinned_template_digest_is_checked(self):
+        self.publish()
+        published = self.engine.list_templates()[0]
+        status, body = self.call("POST", API_PREFIX + "/instances", {
+            "workId": "W-1", "document": {"id": "H-001", "subject": "east"},
+            "templateId": scenario_template()["id"],
+            "templateVersion": scenario_template()["version"],
+            "templateDigest": published["digest"],
+            "parameters": {"subject": "east parapet"},
+            "commandId": "create-1"})
+        self.assertEqual(status, 201, body)
+        status, body = self.call("POST", API_PREFIX + "/instances", {
+            "workId": "W-2", "document": {"id": "H-001", "subject": "east"},
+            "templateId": scenario_template()["id"],
+            "templateVersion": scenario_template()["version"],
+            "templateDigest": "0" * 64,
+            "parameters": {"subject": "east parapet"},
+            "commandId": "create-2"})
+        self.assertEqual(status, 409)
+        self.assertEqual(body["error"]["code"], "WORKFLOW_TEMPLATE_MISMATCH")
+
+    def test_a_finished_work_reports_its_terminal_node_and_outcome(self):
+        self.publish()
+        self.create()
+        self.drive_agents()
+        subject = self.node("W-1", "n04")["subject"]
+        status, body = self.decide("n04", 1, "approved", subject["digest"],
+                                   subject["revision"], "reviewer-a")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["workflowStatus"], "active")
+        self.assertIsNone(body["terminalNode"])

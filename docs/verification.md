@@ -897,6 +897,11 @@ section records what is verified and what is not.
 | W32 | A review node creates a durable review intent | covered | `test_a_review_node_creates_a_durable_review_intent` — the rubric, the criteria, the candidate and the input digest are pinned |
 | W33 | A review binds the exact instance | covered | `test_a_review_of_another_attempt_does_not_satisfy`, `test_a_review_of_another_input_does_not_satisfy`, `test_a_review_of_another_candidate_does_not_satisfy`, `test_a_same_digest_review_of_an_earlier_attempt_does_not_satisfy` |
 | W34 | The executor may not review its own candidate | covered | `test_the_executor_may_not_review_its_own_candidate`, `test_only_the_declared_reviewer_may_review` |
+| W37 | A stored command receipt is readable without resending | covered | `test_a_stored_command_receipt_is_readable_without_resending`, `test_a_receipt_of_another_work_or_actor_is_not_found`, `test_a_receipt_lookup_needs_its_scope` — the lookup is read-only and work-scoped |
+| W38 | The published template can be pinned by digest | covered | `test_a_pinned_template_digest_is_checked` — `WORKFLOW_TEMPLATE_MISMATCH` |
+| W39 | A shortage may carry no evidence; a pass may not | covered | `test_a_shortage_may_carry_no_evidence`, `test_a_pass_always_needs_its_evidence` |
+| W40 | A criterion names its judge, and the stages keep their own records | covered | `test_a_complete_review_completes_the_node` — the program check and the review keep different identifiers and both records |
+| W36 | The judgment history is readable per attempt | covered | `test_the_judgment_history_is_readable_per_attempt`, `test_the_attempt_history_of_a_node_is_readable` — a judgment belongs to the attempt that produced it |
 | W35 | The create validates the contract, the plan and the snapshot | covered | `test_a_policy_that_is_not_the_registered_one_is_refused`, `test_the_registered_policy_is_accepted`, `test_the_submitted_plan_is_used`, `test_a_malformed_plan_is_refused`, `test_the_trusted_snapshot_carries_the_session_and_the_participants`, `test_a_participant_must_name_a_declared_node` — `WORKFLOW_POLICY_MISMATCH`, `PLAN_INVALID`, `WORKFLOW_PARTICIPANT_UNKNOWN` |
 
 ### Bridge, recovery and demonstration

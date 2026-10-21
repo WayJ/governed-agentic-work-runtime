@@ -71,6 +71,7 @@ STATUS_BY_CODE = {
     "WORKFLOW_AUTHORITY_MISMATCH": 422,
     "WORKFLOW_NOT_BOUND": 422,
     "WORKFLOW_ENGINE_UNAVAILABLE": 503,
+    "WORKFLOW_TEMPLATE_MISMATCH": 409,
     "WORKFLOW_POLICY_MISMATCH": 422,
     "WORKFLOW_PARTICIPANT_UNKNOWN": 422,
     "WORKFLOW_CHECK_REPORT_INVALID": 422,
@@ -305,6 +306,18 @@ class WorkflowService:
             payload["session_id"] = session_id
         if participants is not None:
             payload["participants"] = participants
+        expected_digest = body.get("templateDigest")
+        if expected_digest is not None:
+            if not isinstance(expected_digest, str) or not expected_digest:
+                return 400, _error("TEMPLATE_DIGEST_INVALID",
+                                   "templateDigest must be a nonempty string")
+            published = self.engine.template(template_id, template_version)
+            if published is None:
+                return 404, _error("WORKFLOW_TEMPLATE_UNKNOWN",
+                                   "No such published template")
+            if published["digest"] != expected_digest:
+                return 409, _error("WORKFLOW_TEMPLATE_MISMATCH",
+                                   "The published template has another digest")
         receipt = self.engine.command(actor, command_id + ":bind", work_id,
                                       "bind_workflow", payload,
                                       self.runtime.get_work(work_id)["state_version"],
@@ -314,7 +327,14 @@ class WorkflowService:
                                                 "The workflow was not bound",
                                                 receipt.get("blockers"))
         self._settle(work_id)
-        return 201, self.instance(work_id)[1]
+        status, view = self.instance(work_id)
+        view["commandId"] = command_id
+        view["commandIds"] = {"create": command_id + ":create",
+                              "contract": command_id + ":contract",
+                              "plan": command_id + ":plan",
+                              "bind": command_id + ":bind"}
+        view["bindingCommandId"] = command_id + ":bind"
+        return 201, redact(view)
 
     def _trusted_snapshot(self, body, snapshot):
         """The trusted platform create snapshot.
@@ -340,6 +360,9 @@ class WorkflowService:
         required = {"workspaceId", "taskId", "ownerUserId", "sessionId",
                     "parameters", "participants"}
         if not required <= set(snapshot):
+            return None, None, None
+        if "id" in snapshot and snapshot["id"] != body.get("workId"):
+            # The snapshot names the instance it creates.
             return None, None, None
         for name in ("workspaceId", "taskId", "ownerUserId", "sessionId"):
             if not isinstance(snapshot[name], str) or not snapshot[name]:
@@ -612,6 +635,34 @@ class WorkflowService:
                                                 "The intent was not acknowledged")
         return 200, {"intentId": result["intent_id"], "status": result["status"]}
 
+    def command_receipt(self, command_id: str, query: Dict[str, List[str]]
+                        ) -> Tuple[int, Dict[str, Any]]:
+        """The stored receipt of one command, read-only.
+
+        It answers "was this command accepted?" after a lost response or a
+        withdrawn authority, without re-sending the command and without
+        turning an executed command into a rejected one.
+        """
+        work_id = _first(query, "workId")
+        actor = _first(query, "actor")
+        if not work_id or not actor:
+            return 400, _error("COMMAND_SCOPE_REQUIRED",
+                               "workId and actor are required to scope a receipt")
+        receipt = self.runtime.get_command_receipt(actor, command_id, work_id)
+        if receipt is None:
+            return 404, _error("COMMAND_RECEIPT_UNKNOWN",
+                               "No such command receipt for this work and actor")
+        return 200, {"commandId": command_id, "workId": work_id, "actor": actor,
+                     "receipt": redact(receipt)}
+
+    def node_attempts(self, work_id: str, node_id: str) -> Tuple[int, Dict[str, Any]]:
+        """The attempt history of one node, with its stored judgments."""
+        try:
+            history = self.engine.attempts(work_id, node_id)
+        except Exception:
+            return 404, _error("WORKFLOW_NODE_UNKNOWN", "No such node")
+        return 200, {"workId": work_id, "node": node_id, "attempts": redact(history)}
+
     def events(self, work_id: str, query: Dict[str, List[str]]) -> Tuple[int, Dict[str, Any]]:
         after = _first(query, "after")
         try:
@@ -792,6 +843,10 @@ class WorkflowRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and len(parts) == 3:
                 return service.get_template(parts[1], parts[2])
             return 405, _error("METHOD_NOT_ALLOWED", "Method not allowed here")
+        if head == "commands":
+            if method == "GET" and len(parts) == 2:
+                return service.command_receipt(parts[1], query)
+            return 405, _error("METHOD_NOT_ALLOWED", "Method not allowed here")
         if head == "intents":
             if method == "GET" and len(parts) == 1:
                 return service.list_intents(None, query)
@@ -811,6 +866,9 @@ class WorkflowRequestHandler(BaseHTTPRequestHandler):
                 return service.list_intents(work_id, query)
             if method == "GET" and tail == ["events"]:
                 return service.events(work_id, query)
+            if (method == "GET" and len(tail) == 3 and tail[0] == "nodes"
+                    and tail[2] == "attempts"):
+                return service.node_attempts(work_id, tail[1])
             if method == "POST" and tail == ["results"]:
                 return service.submit_result(work_id, body)
             if method == "POST" and tail == ["decisions"]:

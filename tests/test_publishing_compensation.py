@@ -1290,7 +1290,7 @@ class BoundaryPins(unittest.TestCase):
 
     PINNED = {
         "work_runtime/runtime.py":
-            "49a8864b49d4b91ceeb456e1d4d5567c0a15b6d66815c576daf31dc700df1247",
+            "19555fcfe1e602ae6598d5ef7392536c3bc19171129686516c53fcda63d8c7ac",
         "work_runtime/adapters.py":
             "ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e",
         "work_runtime/file_adapter.py":

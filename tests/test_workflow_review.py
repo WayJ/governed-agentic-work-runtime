@@ -66,7 +66,7 @@ class ReviewTestCase(unittest.TestCase):
                 "input_digest": input_digest or node["inputDigest"],
                 "output_digest": output_digest or node["outputs"][0]["digest"],
                 "producer": producer, "verdict": verdict,
-                "items": [{"check": "N09-2", "verdict": verdict,
+                "items": [{"check": "N09-2-review", "verdict": verdict,
                            "reason": "the report follows the signed record",
                            "evidence": ["proposal#revision-1"]}]}
         receipt = send(self.runtime, "reviewer-v", self.work_id, "record_evidence",
@@ -107,8 +107,12 @@ class ReviewEvidenceTests(ReviewTestCase):
         report = [entry for entry in node["checkResults"]
                   if entry["method"] == "AGENT"]
         self.assertEqual(len(report), 1)
-        self.assertEqual(report[0]["checkId"], "N09-2")
+        self.assertEqual(report[0]["checkId"], "N09-2-review")
         self.assertEqual(report[0]["decidedBy"], "reviewer-v")
+        # The program check of the same requirement keeps its own record.
+        program = [entry for entry in node["checkResults"]
+                   if entry["method"] == "PROGRAM"]
+        self.assertEqual([entry["checkId"] for entry in program], ["N09-2"])
         self.assertEqual(report[0]["reviewedInputDigest"], node["inputDigest"])
         self.assertEqual(report[0]["reviewedOutputDigest"],
                          node["outputs"][0]["digest"])
@@ -155,3 +159,18 @@ class ReviewEvidenceTests(ReviewTestCase):
         # when the candidate is identical.
         self.review_proof(node, attempt=1)
         self.assertNotEqual(self.node("n09")["state"], "completed")
+
+
+class AttemptHistoryTests(ReviewTestCase):
+    def test_the_judgment_history_is_readable_per_attempt(self):
+        self.drive_to_review()
+        node = self.submit_report()
+        self.review_proof(node, attempt=1, verdict="failed")
+        history = self.engine.attempts(self.work_id, "n09")
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["attempt"], 1)
+        self.assertEqual(history[0]["state"], "failed")
+        self.assertEqual(history[1]["attempt"], 2)
+        # The judgment of the first attempt is still on the record.
+        reports = history[0]["checkResults"]
+        self.assertTrue(any(entry["method"] == "AGENT" for entry in reports))

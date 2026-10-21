@@ -104,7 +104,7 @@ Phase 8 (the read-only GUI wave) is **not** part of this slice.
 
 | file | SHA-256 before | SHA-256 after |
 |---|---|---|
-| `work_runtime/runtime.py` | `80bf721b3369a6fb865fd6aba0e57804a69eb8587431f8fa6edf1183fc53f4b3` | `49a8864b49d4b91ceeb456e1d4d5567c0a15b6d66815c576daf31dc700df1247` |
+| `work_runtime/runtime.py` | `80bf721b3369a6fb865fd6aba0e57804a69eb8587431f8fa6edf1183fc53f4b3` | `19555fcfe1e602ae6598d5ef7392536c3bc19171129686516c53fcda63d8c7ac` |
 | `work_runtime/adapters.py` | `ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e` | unchanged |
 
 The five edits: four workflow tables under the existing schema version; the
@@ -208,6 +208,16 @@ committed source. They are implemented here; the RED evidence is in
 
 The exact wire contract of this round is
 [docs/workflow-api-contract.md](../../workflow-api-contract.md).
+
+## Fourth round — the read-wiring and receipt requests
+
+| request | implementation | evidence |
+|---|---|---|
+| a criterion declaration must name its judge, so a reader need not guess it from the node kind, and the stages of one criterion must keep their own records | the declaration carries `method` (`PROGRAM`, `AGENT`, `HUMAN`); a node may not declare the same identifier twice; the coverage and the shortfalls are method-scoped, so the program check and the model review of one requirement are two records under two identifiers | `test_a_complete_review_completes_the_node` |
+| "finished" only says the routing stopped | the read model carries `terminalNode` and `terminalOutcome`; the workflow status stays separate from the outcome | `test_a_finished_work_reports_its_terminal_node_and_outcome` |
+| a shortage may carry no evidence, a pass may not | the evidence is required for a `passed` verdict; a `failed`, `insufficient` or `not_applicable` item keeps its true reason without inventing a reference | `test_a_shortage_may_carry_no_evidence`, `test_a_pass_always_needs_its_evidence` |
+| the create wire must state the template fields | the request carries `templateId`, `templateVersion` and the optional `templateDigest`, which is checked against the published digest | `test_a_pinned_template_digest_is_checked` |
+| a read-only command receipt lookup, scoped by work, actor and id | `GET /v1/workflows/commands/{commandId}?workId=&actor=` reads the stored receipt; it never re-runs the command. The multi-step create derives stable ids (`<commandId>:create|contract|plan|bind`) and returns the binding id | `test_a_stored_command_receipt_is_readable_without_resending`, `test_a_receipt_of_another_work_or_actor_is_not_found` |
 
 ## Deviations from the plan, and the open items
 

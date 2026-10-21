@@ -265,6 +265,20 @@ class Runtime:
                              (actor, command_id)).fetchone()
             return json.loads(row[0]) if row else None
 
+    def get_command_receipt(self, actor: str, command_id: str,
+                            work_id: str) -> Optional[dict]:
+        """The stored receipt of one command, scoped to its work.
+
+        A read-only lookup: it never re-runs the command and never decides
+        anything. The work scope keeps two tasks that share a command id
+        apart.
+        """
+        with self._connection() as db:
+            row = db.execute("SELECT receipt FROM commands "
+                             "WHERE actor=? AND id=? AND work_id=?",
+                             (actor, command_id, work_id)).fetchone()
+            return json.loads(row[0]) if row else None
+
     def events(self, work_id: str, after: int = 0) -> list:
         with self._connection() as db:
             return [dict(row) for row in db.execute(

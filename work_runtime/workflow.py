@@ -782,6 +782,9 @@ class WorkflowEngine:
                 work["workflow_current"] = None
                 work["workflow_status"] = ("needs_attention" if work.get("cancellation")
                                           else "finished")
+                work["workflow_terminal"] = {"node": current,
+                                              "outcome": instance.get("outcome"),
+                                              "reason": instance.get("reason")}
                 self._persist(db, work, "WorkflowFinished",
                               {"node": current, "outcome": instance.get("outcome")})
                 return True, True
@@ -1086,7 +1089,7 @@ class WorkflowEngine:
             node, data.get("items") or [], actor,
             instance.get("input_digest"),
             (subject or {}).get("digest"), now)
-        missing = self._missing_check_results(node, report)
+        missing = self._missing_check_results(node, report, "HUMAN")
         if missing:
             return self._block_with_finding(
                 db, work, instance,
@@ -1094,7 +1097,7 @@ class WorkflowEngine:
                          "A declared criterion has no verdict in the decision",
                          checks=missing),
                 "WorkflowNodeCheckResultsMissing")
-        shortfalls = self._criterion_shortfalls(node, data.get("items") or [])
+        shortfalls = self._criterion_shortfalls(node, report, "HUMAN")
         if verdict == "approved" and shortfalls:
             # An approval that carries a failing required criterion does not
             # complete the node. The shortage is kept, exactly as reported.
@@ -1169,41 +1172,60 @@ class WorkflowEngine:
                 findings.append(_finding("WORKFLOW_CHECK_REPORT_INVALID",
                                          "The verdict needs a reason", location=where))
             evidence = item.get("evidence")
-            if (not isinstance(evidence, list) or not evidence
-                    or not all(isinstance(entry, str) and entry.strip()
-                               for entry in evidence)):
+            if evidence is not None and (not isinstance(evidence, list)
+                                         or not all(isinstance(entry, str)
+                                                    and entry.strip()
+                                                    for entry in evidence)):
                 findings.append(_finding("WORKFLOW_CHECK_REPORT_INVALID",
-                                         "The verdict needs its evidence",
+                                         "The evidence must be a list of references",
+                                         location=where))
+            if item.get("verdict") == "passed" and not evidence:
+                # A pass must point at what it was made on. A shortage may
+                # carry no evidence at all: its reason is the missing fact.
+                findings.append(_finding("WORKFLOW_CHECK_REPORT_INVALID",
+                                         "A passed criterion needs its evidence",
                                          location=where))
         return findings
 
-    def _criterion_shortfalls(self, node, items) -> List[Dict[str, Any]]:
-        """The required criteria that the report does not satisfy.
+    def _criterion_shortfalls(self, node, report, method) -> List[Dict[str, Any]]:
+        """The required criteria of that judge that the report does not satisfy.
 
         A required criterion needs a verdict; a not-applicable verdict
-        counts only when the protected declaration allows it.
+        counts only when the protected declaration allows it. A criterion
+        declared for another judge is not this judge's business: the
+        stages of one criterion keep their own identifiers and their own
+        records.
         """
-        reported = {}
-        for item in items or []:
-            if isinstance(item, dict) and isinstance(item.get("check"), str):
-                reported[item["check"]] = item
+        judged = {entry.get("checkId"): entry for entry in report
+                  if entry.get("method") == method}
         shortfalls = []
         for declaration in self._check_declarations(node):
             if declaration.get("required") is False:
                 continue
-            item = reported.get(declaration["id"])
-            if item is None:
+            if declaration.get("method") not in (None, method):
+                continue
+            entry = judged.get(declaration["id"])
+            if entry is None:
                 shortfalls.append({"checkId": declaration["id"], "verdict": None,
                                    "reason": "NO_VERDICT"})
                 continue
-            verdict = item.get("verdict")
+            verdict = entry.get("verdict")
             if verdict == "passed":
                 continue
             if verdict == "not_applicable" and declaration.get("allow_not_applicable"):
                 continue
             shortfalls.append({"checkId": declaration["id"], "verdict": verdict,
-                               "reason": item.get("reason")})
+                               "reason": entry.get("reason")})
         return shortfalls
+
+    def _missing_check_results(self, node, report, method) -> List[str]:
+        """The required criteria of that judge that no report covers."""
+        judged = {entry.get("checkId") for entry in report
+                  if entry.get("method") == method}
+        return sorted(declaration["id"] for declaration in self._check_declarations(node)
+                      if declaration.get("required") is not False
+                      and declaration.get("method") in (None, method)
+                      and declaration["id"] not in judged)
 
     def _check_report_from_items(self, node, items, actor, input_digest=None,
                                  output_digest=None, at=None, method="HUMAN",
@@ -1240,12 +1262,6 @@ class WorkflowEngine:
                 "at": at,
             })
         return report
-
-    def _missing_check_results(self, node, report) -> List[str]:
-        """The declared criteria that no verdict covers."""
-        reported = {entry.get("checkId") for entry in report}
-        return sorted(check for check in self._check_ids(node)
-                      if check not in reported)
 
     def _block_with_finding(self, db, work, instance, finding, event) -> bool:
         """Record a bounded finding on a node and keep it waiting."""
@@ -1362,13 +1378,13 @@ class WorkflowEngine:
                                      "detail": "The review report is malformed"}]
             self._save_instance(db, work, instance, "WorkflowReviewReportInvalid")
             return False
-        shortfalls = self._criterion_shortfalls(node, items)
         report = self._check_report_from_items(
             node, items, producer, instance.get("input_digest"),
             result["digest"], now, method="AGENT",
             validator_id=(review.get("rubric") or {}).get("validator"),
             validator_version=(review.get("rubric") or {}).get("validator_version"))
         instance["check_results"] = (instance.get("check_results") or []) + report
+        shortfalls = self._criterion_shortfalls(node, report, "AGENT")
         if data.get("verdict") != "passed" or shortfalls:
             instance["state"] = "failed"
             instance["outcome"] = "failed"
@@ -1555,7 +1571,12 @@ class WorkflowEngine:
                 return self.runtime._reject("WORKFLOW_VALIDATOR_UNKNOWN", version,
                                             [{"validator": str(validator_id),
                                               "validator_version": str(validator_version)}])
-            check_ids = self._check_ids(node)
+            # The output validator judges the criteria that are declared
+            # for a program check. A criterion another judge owns keeps its
+            # own identifier and its own record.
+            check_ids = [declaration["id"]
+                         for declaration in self._check_declarations(node)
+                         if declaration.get("method") in (None, "PROGRAM")]
             reported = validator(work, {"node": node_id, "attempt": attempt,
                                         "checks": check_ids}, result)
             raw_findings, raw_checks = self._split_validator_report(reported)
@@ -1565,8 +1586,8 @@ class WorkflowEngine:
                                          location=problem.get("location", "")))
             check_report = self._check_report_from_validator(
                 node, raw_checks, validator_id, validator_version,
-                instance.get("input_digest"), None, int(time.time()))
-            missing = self._missing_check_results(node, check_report)
+                instance.get("input_digest"), digest(result), int(time.time()))
+            missing = self._missing_check_results(node, check_report, "PROGRAM")
             if missing:
                 findings.append(_finding("WORKFLOW_CHECK_RESULT_MISSING",
                                          "A declared criterion has no verdict from the validator",
@@ -1839,6 +1860,35 @@ class WorkflowEngine:
     # Read model
     # ------------------------------------------------------------------
 
+    def attempts(self, work_id: str, node_id: str) -> List[Dict[str, Any]]:
+        """The attempt history of one node, with its stored judgments.
+
+        A judgment belongs to the attempt that produced it: the history is
+        what a reader consults, not the current state of the node.
+        """
+        with self.runtime._connection() as db:
+            work = self.runtime._work(db, work_id)
+            spec = self._spec_in(db, work)
+            if spec is None:
+                raise WorkflowError("Work has no workflow bound: " + work_id)
+            history = []
+            for instance in self._instances(db, work_id):
+                if instance["node"] != node_id:
+                    continue
+                history.append({
+                    "node": node_id,
+                    "attempt": instance["attempt"],
+                    "state": instance["state"],
+                    "outcome": instance.get("outcome"),
+                    "reason": instance.get("reason"),
+                    "actor": instance.get("actor"),
+                    "inputDigest": instance.get("input_digest"),
+                    "output": instance.get("output"),
+                    "checkResults": (instance.get("check_results") or [])[:MAX_VIEW_FINDINGS],
+                    "createdAt": instance.get("created_at"),
+                })
+        return history
+
     def instance(self, work_id: str) -> Dict[str, Any]:
         """A bounded read model of one workflow instance."""
         with self.runtime._connection() as db:
@@ -1912,6 +1962,8 @@ class WorkflowEngine:
                 "workflowStatus": work.get("workflow_status"),
                 "stateVersion": work["state_version"],
                 "currentNode": current,
+                "terminalNode": (work.get("workflow_terminal") or {}).get("node"),
+                "terminalOutcome": (work.get("workflow_terminal") or {}).get("outcome"),
                 "workflow": {"templateId": binding["template_id"],
                              "templateVersion": binding["template_version"],
                              "digest": binding["digest"],

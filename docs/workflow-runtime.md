@@ -146,8 +146,16 @@ A node's `checks` are **declarations**, not identifiers:
 ```json
 {"id": "N04-2",
  "criterion": "The proposal covers every applicable requirement.",
- "validator": "safety-review", "validator_version": "1"}
+ "method": "HUMAN", "criterion_version": "1",
+ "validator": "safety-review", "validator_version": "1",
+ "required": true, "allow_not_applicable": false}
 ```
+
+The `method` names the judge the definition expects (`PROGRAM`, `AGENT` or
+`HUMAN`), so a reader can show who checks a criterion before any report
+exists. A criterion that is first checked by a program and then reviewed
+by a model keeps two declarations with two identifiers and therefore two
+independent records; a node may not declare the same identifier twice.
 
 The criterion text is part of the protected definition: a binding pins the
 digest, so the text a reviewer read is the text that is enforced. The
@@ -280,7 +288,7 @@ version bump, no event.
 | operation confirmed failed | the node fails; `on_failure` is taken |
 | operation cancelled | the node fails with `OPERATION_CANCELLED`; `on_failure` is taken |
 | predicate unknown | the edge is blocked; the work reports `needs_attention` |
-| last node terminal | the workflow is `finished` — a **precondition**, never an automatic close; `request_completion` and its full gate remain the only success path |
+| last node terminal | the workflow is `finished` — a **precondition**, never an automatic close; `request_completion` and its full gate remain the only success path. "Finished" says the routing stopped: the read model also carries `terminalNode` and `terminalOutcome`, so a caller never reads it as a delivery |
 
 Rework increments the attempt, keeps the old attempt and its evidence on the
 record, and invalidates the affected approval by exact version. A callback
@@ -345,6 +353,8 @@ The exact wire contract, with the request and response fixtures, is
 | `GET` | `/v1/workflows/instances/{workId}/objects/{name}/revisions/{revision}` | read one exact object revision |
 | `GET` | `/v1/workflows/instances/{workId}/intents` | the durable intents |
 | `GET` | `/v1/workflows/instances/{workId}/events` | the event history |
+| `GET` | `/v1/workflows/instances/{workId}/nodes/{nodeId}/attempts` | the attempt history of one node, with its stored judgments |
+| `GET` | `/v1/workflows/commands/{commandId}?workId=&actor=` | the stored receipt of one command, read-only |
 | `POST` | `/v1/workflows/intents/{intentId}/ack` | acknowledge an intent |
 | `POST` | `/v1/workflows/instances/{workId}/advance` | settle on demand |
 
@@ -373,6 +383,12 @@ Two properties matter to a client:
   recovers the store on its own schedule. The bridge logs the method and the
   path only: a credential in a body never reaches the log, and fields that
   look like credentials are stripped from every response.
+* **a receipt can be read back without re-sending anything.**
+  `GET /v1/workflows/commands/{commandId}?workId=&actor=` returns the
+  stored receipt of one command, scoped to its work and actor. It is
+  read-only: it never re-runs the command, so a platform can recover an
+  accepted fact after a lost response or a withdrawn authority without
+  turning an executed command into a rejected one.
 
 The bridge is **single-coordinator**: `CoordinatorLock` takes an operating
 system file lock over the store, so a second coordinator fails fast instead

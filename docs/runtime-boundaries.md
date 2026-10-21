@@ -52,7 +52,7 @@ the language, the engine and the bridge lives in
 
 | file | SHA-256 before | SHA-256 after |
 |---|---|---|
-| `work_runtime/runtime.py` | `80bf721b3369a6fb865fd6aba0e57804a69eb8587431f8fa6edf1183fc53f4b3` | `49a8864b49d4b91ceeb456e1d4d5567c0a15b6d66815c576daf31dc700df1247` |
+| `work_runtime/runtime.py` | `80bf721b3369a6fb865fd6aba0e57804a69eb8587431f8fa6edf1183fc53f4b3` | `19555fcfe1e602ae6598d5ef7392536c3bc19171129686516c53fcda63d8c7ac` |
 | `work_runtime/adapters.py` | `ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e` | unchanged |
 
 The runtime edits are: four workflow tables under the existing schema

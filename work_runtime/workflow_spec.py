@@ -523,8 +523,15 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
             findings.append(_finding("SPEC_FIELD_TYPE", path + ".checks",
                                      "checks must be a list of check declarations"))
         else:
+            seen = set()
             for index, entry in enumerate(entries):
                 _lint_check(entry, path + ".checks[" + str(index) + "]", findings)
+                if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+                    if entry["id"] in seen:
+                        findings.append(_finding("SPEC_FIELD_TYPE",
+                                                 path + ".checks[" + str(index) + "].id",
+                                                 "A node may not declare a criterion twice"))
+                    seen.add(entry["id"])
     if kind == "wait" and "match" in node:
         match = node["match"]
         if not isinstance(match, dict):
@@ -578,7 +585,7 @@ def _lint_check(entry: Any, path: str, findings: List[Dict[str, str]]) -> None:
         findings.append(_finding("SPEC_FIELD_TYPE", path,
                                  "A check declaration must be an object"))
         return
-    allowed = {"id", "criterion", "criterion_version", "validator",
+    allowed = {"id", "criterion", "method", "criterion_version", "validator",
                "validator_version", "required", "allow_not_applicable"}
     for name in entry:
         if name not in allowed:
@@ -596,6 +603,13 @@ def _lint_check(entry: Any, path: str, findings: List[Dict[str, str]]) -> None:
     elif not _is_text(entry["criterion"]):
         findings.append(_finding("SPEC_FIELD_TYPE", path + ".criterion",
                                  "A criterion must be a nonempty string"))
+    if "method" not in entry:
+        findings.append(_finding("SPEC_FIELD_MISSING", path + ".method",
+                                 "A criterion declaration names the judge that "
+                                 "checks it"))
+    elif entry["method"] not in ("PROGRAM", "AGENT", "HUMAN"):
+        findings.append(_finding("SPEC_FIELD_TYPE", path + ".method",
+                                 "A criterion method must be PROGRAM, AGENT or HUMAN"))
     if "criterion_version" in entry and not _is_text(entry["criterion_version"]):
         findings.append(_finding("SPEC_FIELD_TYPE", path + ".criterion_version",
                                  "A criterion version must be a nonempty string"))
