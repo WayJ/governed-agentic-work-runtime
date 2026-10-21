@@ -19,7 +19,6 @@ published template and by host configuration.
 
 import json
 import time
-import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from .policy import canonical, digest

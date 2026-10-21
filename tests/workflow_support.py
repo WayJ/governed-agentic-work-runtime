@@ -6,8 +6,6 @@ exercise exactly the same definition, policy and validators. This module
 only holds the test-side helpers.
 """
 
-import json
-import sqlite3
 import uuid
 
 from work_runtime.policy import digest
@@ -17,7 +15,6 @@ from work_runtime.workflow_demo import (DemoBusinessSystem, WorkflowDemoPolicy,
                                          workflow_demo_grants,
                                          workflow_demo_template,
                                          workflow_demo_validators)
-from work_runtime.workflow_spec import ValidatorRegistry
 
 POLICY_ID = "workflow-demo"
 POLICY_VERSION = "demo-1"

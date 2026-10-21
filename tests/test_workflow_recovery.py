@@ -10,7 +10,6 @@ import os
 import sqlite3
 import tempfile
 import unittest
-import uuid
 
 try:
     from workflow_support import (RecordingAdapter, build, decide, instantiate,

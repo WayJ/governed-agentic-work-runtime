@@ -11,8 +11,6 @@ import tempfile
 import unittest
 import uuid
 
-from work_runtime.runtime import CommandError
-
 try:
     from workflow_support import (DemoPolicy, RecordingAdapter, build, decide,
                                   demo_grants, demo_validators, document,
