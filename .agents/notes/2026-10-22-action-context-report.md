@@ -3,14 +3,21 @@
 Task: `task_694a38d13eed`, dispatch `ctx_c3a9ee4ad9cf`.
 Branch: `WayJ/gawr-mixed-node-design`, baseline `345706e`.
 Plan: [2026-10-22-action-context-plan.md](2026-10-22-action-context-plan.md).
-Commit: **`87de33d`** — `feat: the native action context of an automatic action`.
+
+Commits (development branch only — nothing was merged or pushed):
+
+| commit | what |
+|---|---|
+| `87de33d` | `feat: the native action context of an automatic action` — the API and its tests |
+| `1e8b9c4` | `docs: the worker report of the native action context` |
+| `4f89df5` | `fix: the action context is named, historical and self-consistent` — the three items of the coordinator's review |
 
 ## What was built
 
 A small public, **local**, **read-only** API on the engine:
 
 ```python
-WorkflowEngine.suggest_action_context(business_key: str) -> dict
+WorkflowEngine.action_context(business_key: str) -> dict
 ```
 
 It resolves `operations.business_key` → the operation uuid → **exactly one**
@@ -26,25 +33,40 @@ Nothing else changed: `work_runtime/runtime.py` keeps its S16 digest
 adapter `execute` ABI is untouched: the adapter still receives exactly the
 native business key.
 
+## The coordinator's review, and what it changed
+
+| review item | answer |
+|---|---|
+| **the name**: `action_context` / `read_action_context`, not `suggest_action_context` — the read resolves a *real persisted relation*, it does not suggest a context that may or may not be there | `WorkflowEngine.action_context(business_key)`. The old name is gone from the code, the tests and the docs. |
+| **the contract after a migration**: the equality of `work.contract.revision` and the historical `op.contract_revision` refused the lookup of every effect produced before a `migrate_policy`. The historical context must survive; the current difference belongs to the observation; an unrecoverable snapshot must be an explicit boundary and never an invention. | The stable `context.contract` is the **historical** contract, recovered from the event ledger (`ContractBound`, and every `PolicyMigrated` records the contract it replaced). `context.contract.source` says where it came from: `current` (the work's contract *is* the action's), `ledger` (recovered from the ledger) or `unknown` (the ledger does not hold that revision — the revision is reported, the identity is `null`, nothing is invented). The contract in force now is an observation under `current.contract` / `current.contractRevision`. A migration test proves the historical lookup. |
+| **the redundant consistency**: `operations` row `work_id == body.work_id`, `workflow_nodes` row `node`/`state == body.node`/`body.state` | Both are checked and a row that disagrees with its body is **refused**: `OPERATION_ROW_INCONSISTENT`, `NODE_ROW_INCONSISTENT`. The answer can never carry a self-contradictory relation. |
+| **`current` may carry `planRevision` / `contractRevision`** | `current` carries `contract`, `contractRevision` and `planRevision` (the work's now) next to the stable `contractRevision` / `planRevision` (the operation's). |
+| **the no-execution boundary in the returned status**, not only in prose | Every answer — absence, refusal and context — carries **`authorizesExecution: false`**. |
+| **the original CAS**: the native operation does not store the proposal `expectedVersion`; do not synthesize the original CAS; `Runtime.dispatch`/`_resolve` carry the concurrency check themselves | No original CAS is synthesized anywhere. The *current* state version is reported under `current` and is never presented as the proposal's CAS. `runtime.py` was not touched. |
+| **the platform** keeps the first request bytes and the native identity itself | Nothing was required on this side; the read is a description and never a substitute for that record. |
+| **the scope stays narrow** | No new workflow framework, no adapter ABI change, no HTTP surface, no `dsh-saas`. |
+
 ## The exact API shape
 
 Three answers, always the same outer keys:
 
 ```python
 # 1. absence — no operation carries that key
-{"present": False, "businessKey": "…", "code": "ACTION_CONTEXT_ABSENT"}
+{"present": False, "businessKey": "…", "code": "ACTION_CONTEXT_ABSENT",
+ "authorizesExecution": False}
 
 # 2. refusal — the operation exists, the linkage does not hold
 {"present": False, "businessKey": "…", "code": "ACTION_CONTEXT_REFUSED",
- "reason": "OPERATION_LINK_AMBIGUOUS", "detail": "…"}
+ "reason": "OPERATION_LINK_AMBIGUOUS", "detail": "…", "authorizesExecution": False}
 
 # 3. context
-{"present": True, "businessKey": "…",
+{"present": True, "businessKey": "…", "authorizesExecution": False,
  "context": {
    "businessKey": "…", "operationId": "…", "workId": "…",
    "node": "n06", "attempt": 1,
    "actor": "coordinator", "capability": "work.dispatch",
-   "contract": {"policyId": "…", "policyVersion": "…", "goal": "…", "revision": 1},
+   "contract": {"policyId": "workflow-demo", "policyVersion": "demo-1",
+                "goal": "workflow.completed", "revision": 1, "source": "current"},
    "contractRevision": 1, "planRevision": 1,
    "inputDigest": "…",
    "template": {"id": "…", "version": "…", "digest": "…"},
@@ -55,6 +77,9 @@ Three answers, always the same outer keys:
    "operationStatus": "confirmed_succeeded", "dispatchState": "…", "externalId": "…",
    "nodeState": "completed", "nodeOutcome": "completed", "nodeReason": None,
    "workStatus": "active", "workflowStatus": "active", "stateVersion": 17,
+   "contract": {"policyId": "workflow-demo", "policyVersion": "demo-2",
+                "goal": "workflow.completed", "revision": 2},
+   "contractRevision": 2, "planRevision": 1,
    "cancelled": False, "cancellation": None,
    "task": {"document": {…}, "documentDigest": "…", "documentRevision": 1}}}
 ```
@@ -69,26 +94,26 @@ an adapter that asks inside `execute` must not turn a refusal into a runtime
 `OPERATION_NOT_WORKFLOW_BOUND` (no node proposed it — a manual
 `propose_action` operation), `OPERATION_LINK_AMBIGUOUS` (several node
 instances reference it), `OPERATION_LINK_WORK_MISMATCH`,
-`OPERATION_LINK_WRONG_KIND`, `OPERATION_LINK_ATTEMPT_MISMATCH`,
-`OPERATION_IDENTITY_MISMATCH`, `OPERATION_BODY_INVALID`,
-`OPERATION_WORK_UNKNOWN`, `OPERATION_WORK_INVALID`,
+`OPERATION_LINK_WRONG_KIND`, `OPERATION_IDENTITY_MISMATCH`,
+`OPERATION_ROW_INCONSISTENT`, `NODE_ROW_INCONSISTENT`,
+`OPERATION_BODY_INVALID`, `OPERATION_WORK_UNKNOWN`, `OPERATION_WORK_INVALID`,
 `OPERATION_WORK_NOT_BOUND`, `OPERATION_NODE_UNKNOWN`,
 `OPERATION_CAPABILITY_MISMATCH`, `OPERATION_TEMPLATE_UNKNOWN`,
-`OPERATION_TEMPLATE_MISMATCH`, `OPERATION_CONTRACT_MISMATCH`,
-`OPERATION_SUBJECT_MISSING`, `OPERATION_SUBJECT_MISMATCH`,
-`OPERATION_OBJECT_UNAVAILABLE`, `OPERATION_OBJECT_DIGEST_MISMATCH`,
-`OPERATION_OBJECT_BODY_INVALID`, `OPERATION_OBJECT_BODY_MISMATCH`,
-`OPERATION_DOCUMENT_MISMATCH`, `OPERATION_INPUT_DIGEST_MISSING`.
+`OPERATION_TEMPLATE_MISMATCH`, `OPERATION_SUBJECT_MISSING`,
+`OPERATION_SUBJECT_MISMATCH`, `OPERATION_OBJECT_UNAVAILABLE`,
+`OPERATION_OBJECT_DIGEST_MISMATCH`, `OPERATION_OBJECT_BODY_INVALID`,
+`OPERATION_OBJECT_BODY_MISMATCH`, `OPERATION_DOCUMENT_MISMATCH`,
+`OPERATION_INPUT_DIGEST_MISSING`.
 
 ## RED/GREEN evidence
 
 | step | RED | GREEN |
 |---|---|---|
-| the whole slice | `PYTHONPATH=.:tests python3 -m unittest test_workflow_action_context` against the baseline engine → **16 tests, 2 failures + 13 errors** (every one of them: `'WorkflowEngine' object has no attribute 'suggest_action_context'`) | same command → **16 tests, OK** |
+| the whole slice | `PYTHONPATH=.:tests python3 -m unittest test_workflow_action_context` against the baseline engine → **19 tests, 3 failures + 15 errors** (every one of them: `'WorkflowEngine' object has no attribute 'action_context'`) | same command → **19 tests, OK** |
 
 The RED was reproduced against the committed baseline: `git checkout 345706e
 -- work_runtime/workflow.py`, run, restore (`shasum -a 256
-work_runtime/workflow.py` → `224bb58d…`, identical to the committed file).
+work_runtime/workflow.py` → `b0f2770b…`, identical to the committed file).
 
 Every test drives the **real** engine: the operations are created by the
 real proposal path, the effects by the real adapter, the routing by the real
@@ -111,14 +136,17 @@ store is what they are about.
 | `test_a_subject_that_does_not_match_the_operation_is_refused` | `OPERATION_SUBJECT_MISMATCH` |
 | `test_an_object_with_a_broken_digest_is_refused` | `OPERATION_OBJECT_DIGEST_MISMATCH` |
 | `test_a_capability_that_does_not_match_the_node_is_refused` | `OPERATION_CAPABILITY_MISMATCH` |
+| `test_an_operation_row_that_disagrees_with_its_body_is_refused` | `OPERATION_ROW_INCONSISTENT` |
+| `test_a_node_row_that_disagrees_with_its_body_is_refused` | `NODE_ROW_INCONSISTENT` |
 | `test_two_nodes_of_the_same_capability_map_to_their_own_action` | two action nodes of **one** capability on two subjects: each operation maps to its own node and subject |
 | `test_a_historical_attempt_keeps_its_own_action` | a superseded attempt keeps its operation, its subject revision (1) and its attempt (1); the live attempt (2) has its own operation and revision (2) |
+| `test_a_migrated_contract_keeps_the_historical_action_readable` | after a real `migrate_policy` the action still resolves with the contract it was proposed under (`source` is `ledger`), and the contract in force now is an observation under `current` |
 
 ## The gates
 
 | gate | command | result |
 |---|---|---|
-| full suite | `python3 -m unittest discover -s tests` | **1365 tests, OK (skipped=2)** — the 16 new tests included, no regression |
+| full suite | `python3 -m unittest discover -s tests` | **1368 tests, OK (skipped=2)** — the 19 new tests included, no regression |
 | contracts (docs) | `python3 scripts/check_docs.py` | 126 markdown files, 680 local links, **0 broken** |
 | syntax | `python3 -m compileall -q work_runtime tests scripts` | clean |
 | demo | `python3 -m work_runtime demo` | exit 0 |
@@ -128,10 +156,10 @@ store is what they are about.
 
 | file | change |
 |---|---|
-| `work_runtime/workflow.py` | +257: `suggest_action_context`, its helpers, the two codes |
-| `tests/test_workflow_action_context.py` | new: 16 tests |
+| `work_runtime/workflow.py` | `action_context`, its helpers, the two codes |
+| `tests/test_workflow_action_context.py` | new: 19 tests |
 | `docs/workflow-runtime.md` | new §11 *The native action context* (§12 is the old §11) and a pointer in §6 |
-| `docs/verification.md` | W59–W66; the stale matrix header `(W01–W16)` corrected to `(W01–W66)` |
+| `docs/verification.md` | W59–W68; the stale matrix header `(W01–W16)` corrected to `(W01–W68)` |
 | `.agents/notes/2026-10-22-action-context-plan.md` | the scoped plan |
 
 ## Disclosed decisions and remaining risks
@@ -149,18 +177,25 @@ store is what they are about.
 2. **No original compare-and-swap and no original task document.** Neither
    is persisted, so neither is reported. The *current* state version is
    reported under `current`, and the Work's document (mutable through
-   `revise_document`) is reported under `current.task`.
-3. **The name clash is real.** `AdapterContract.supports_action_context` is
+   `revise_document`) is reported under `current.task`. The concurrency
+   control stays where the runtime already has it: `Runtime.dispatch` and
+   `Runtime._resolve`.
+3. **The historical contract is recovered, not reconstructed.** It comes
+   from the event ledger. A revision the ledger does not hold keeps a null
+   identity with `source: "unknown"` — the boundary is explicit, nothing is
+   invented.
+4. **The name clash is real.** `AdapterContract.supports_action_context` is
    an older, unrelated opt-in (the adapter receives the explicit `action=`
    and `compensates=` execution context). The new API is the *workflow*
    action context. The docs say so explicitly.
-4. **The link scan is O(node instances).** `_operation_links` reads every
+5. **The link scan is O(node instances).** `_operation_links` reads every
    `workflow_nodes` row and parses its body, so a cross-work link is
    detected (a corrupt store is refused, not half-answered). The store is
    local and small; a very large store would want an index on the
    operation id.
-5. **The HTTP bridge does not expose it.** The brief asked for a *local*
+6. **The HTTP bridge does not expose it.** The brief asked for a *local*
    API; `work_runtime/workflow_server.py` is untouched.
-6. **The refusal is a value, not an exception.** A caller that ignores
+7. **The refusal is a value, not an exception.** A caller that ignores
    `present` cannot mistake a refusal for a context: the `context` and
-   `current` keys exist only when `present` is true.
+   `current` keys exist only when `present` is true, and every answer says
+   `authorizesExecution: false`.
