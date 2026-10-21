@@ -61,12 +61,12 @@ class ContextReadingAdapter(DemoBusinessSystem):
 
     def execute(self, key, document, content_digest, *, action=None,
                 compensates=None):
-        self.contexts.append((key, self.engine.suggest_action_context(key)))
+        self.contexts.append((key, self.engine.action_context(key)))
         return super().execute(key, document, content_digest, action=action,
                                compensates=compensates)
 
     def lookup(self, key):
-        self.contexts.append((key, self.engine.suggest_action_context(key)))
+        self.contexts.append((key, self.engine.action_context(key)))
         return super().lookup(key)
 
 
@@ -77,7 +77,7 @@ class DemoFamilyTestCase(unittest.TestCase):
         self.folder = tempfile.mkdtemp(prefix="gawr-action-context-")
         self.path = os.path.join(self.folder, "runtime.sqlite")
         self.adapter_path = os.path.join(self.folder, "effects.sqlite")
-        self.runtime = Runtime(self.path, DemoPolicy(), demo_grants())
+        self.runtime = self.build_runtime()
         self.engine = WorkflowEngine(self.runtime, demo_validators(),
                                      runner="workflow-runner")
         self.adapter = ContextReadingAdapter(self.adapter_path, self.engine)
@@ -87,6 +87,9 @@ class DemoFamilyTestCase(unittest.TestCase):
         self.work_id = "W-1"
 
     # -- helpers ---------------------------------------------------------
+
+    def build_runtime(self):
+        return Runtime(self.path, DemoPolicy(), demo_grants())
 
     def rows(self, table, where="1=1", arguments=()):
         db = sqlite3.connect(self.path)
@@ -183,6 +186,11 @@ class ActionContextReadTests(DemoFamilyTestCase):
         self.assertEqual(stable["capability"], "work.dispatch")
         self.assertEqual(stable["contractRevision"], 1)
         self.assertEqual(stable["planRevision"], 1)
+        self.assertEqual(stable["contract"]["policyId"], POLICY_ID)
+        self.assertEqual(stable["contract"]["policyVersion"], POLICY_VERSION)
+        self.assertEqual(stable["contract"]["revision"], 1)
+        self.assertEqual(stable["contract"]["source"], "current")
+        self.assertIs(context["authorizesExecution"], False)
         instance = self.node_instance("n06")
         self.assertEqual(stable["inputDigest"], instance["input_digest"])
         self.assertEqual(stable["template"]["id"], self.template["id"])
@@ -202,7 +210,9 @@ class ActionContextReadTests(DemoFamilyTestCase):
         # mutable part says so, the stable part does not change.
         self.assertEqual(context["current"]["nodeState"], "running")
         self.assertEqual(context["current"]["operationStatus"], "dispatched")
-        settled = self.engine.suggest_action_context(operation["business_key"])
+        self.assertEqual(context["current"]["contractRevision"], 1)
+        self.assertEqual(context["current"]["planRevision"], 1)
+        settled = self.engine.action_context(operation["business_key"])
         self.assertEqual(settled["context"], stable)
         self.assertEqual(settled["current"]["nodeState"], "completed")
         self.assertEqual(settled["current"]["operationStatus"],
@@ -222,7 +232,7 @@ class ActionContextReadTests(DemoFamilyTestCase):
             "runtime = Runtime(sys.argv[1], WorkflowDemoPolicy(),\n"
             "                   workflow_demo_grants())\n"
             "engine = WorkflowEngine(runtime, workflow_demo_validators())\n"
-            "print(json.dumps(engine.suggest_action_context(sys.argv[2])))\n")
+            "print(json.dumps(engine.action_context(sys.argv[2])))\n")
         environment = dict(os.environ)
         environment["PYTHONPATH"] = REPO_ROOT + os.pathsep + environment.get(
             "PYTHONPATH", "")
@@ -252,7 +262,7 @@ class ActionContextReadTests(DemoFamilyTestCase):
         self.assertEqual(read["context"]["node"], "n06")
 
     def test_an_unknown_key_is_a_documented_absence(self):
-        context = self.engine.suggest_action_context("no-such-business-key")
+        context = self.engine.action_context("no-such-business-key")
         self.assertFalse(context["present"])
         self.assertEqual(context["code"], "ACTION_CONTEXT_ABSENT")
         self.assertEqual(context["businessKey"], "no-such-business-key")
@@ -261,7 +271,7 @@ class ActionContextReadTests(DemoFamilyTestCase):
     def test_a_malformed_key_is_refused(self):
         for value in ("", None, 7):
             with self.assertRaises(Exception):
-                self.engine.suggest_action_context(value)
+                self.engine.action_context(value)
 
     def test_a_manual_operation_is_refused(self):
         """An operation no workflow node proposed is not an action context."""
@@ -289,7 +299,7 @@ class ActionContextReadTests(DemoFamilyTestCase):
             version_of(self.runtime, work_id))
         self.assertEqual(receipt["decision"], "accepted", receipt)
         operation = self.operation(work_id)
-        context = self.engine.suggest_action_context(operation["business_key"])
+        context = self.engine.action_context(operation["business_key"])
         self.assertFalse(context["present"])
         self.assertEqual(context["code"], "ACTION_CONTEXT_REFUSED")
         self.assertEqual(context["reason"], "OPERATION_NOT_WORKFLOW_BOUND")
@@ -299,7 +309,7 @@ class ActionContextReadTests(DemoFamilyTestCase):
         self.drive_to_dispatch()
         operation = self.operation()
         before = self.rows("operations")
-        context = self.engine.suggest_action_context(operation["business_key"])
+        context = self.engine.action_context(operation["business_key"])
         stable = context["context"]
         stable["subject"]["body"]["measures"] = []
         stable["subject"]["digest"] = "tampered"
@@ -307,7 +317,7 @@ class ActionContextReadTests(DemoFamilyTestCase):
         stable["actor"] = "tampered"
         context["current"]["stateVersion"] = -1
         context["current"]["cancelled"] = True
-        again = self.engine.suggest_action_context(operation["business_key"])
+        again = self.engine.action_context(operation["business_key"])
         self.assertEqual(again["context"]["node"], "n06")
         self.assertEqual(again["context"]["actor"], "coordinator")
         self.assertEqual(again["context"]["subject"]["digest"],
@@ -324,7 +334,7 @@ class ActionContextReadTests(DemoFamilyTestCase):
         events = self.runtime.events(self.work_id)
         nodes = self.rows("workflow_nodes")
         for _ in range(3):
-            context = self.engine.suggest_action_context(operation["business_key"])
+            context = self.engine.action_context(operation["business_key"])
             self.assertTrue(context["present"], context)
         self.assertEqual(version_of(self.runtime, self.work_id), version)
         self.assertEqual(self.runtime.events(self.work_id), events)
@@ -338,7 +348,7 @@ class ActionContextReadTests(DemoFamilyTestCase):
             "coordinator", uuid.uuid4().hex, self.work_id, "request_cancel",
             {"reason": "the work is not needed"}, version_of(self.runtime, self.work_id))
         self.assertEqual(receipt["decision"], "accepted", receipt)
-        context = self.engine.suggest_action_context(operation["business_key"])
+        context = self.engine.action_context(operation["business_key"])
         self.assertTrue(context["present"], context)
         self.assertEqual(context["context"]["node"], "n06")
         self.assertEqual(context["context"]["subject"]["digest"],
@@ -365,7 +375,7 @@ class CorruptLinkageTests(DemoFamilyTestCase):
         self.execute_on_db(
             "INSERT INTO workflow_nodes VALUES (?,?,?,?,?)",
             (self.work_id, "n07", 1, "running", canonical(twin)))
-        context = self.engine.suggest_action_context(operation["business_key"])
+        context = self.engine.action_context(operation["business_key"])
         self.assertFalse(context["present"])
         self.assertEqual(context["code"], "ACTION_CONTEXT_REFUSED")
         self.assertEqual(context["reason"], "OPERATION_LINK_AMBIGUOUS")
@@ -378,7 +388,7 @@ class CorruptLinkageTests(DemoFamilyTestCase):
         self.execute_on_db(
             "UPDATE workflow_nodes SET body=? WHERE work_id=? AND node=? AND attempt=?",
             (canonical(instance), self.work_id, "n06", 1))
-        context = self.engine.suggest_action_context(operation["business_key"])
+        context = self.engine.action_context(operation["business_key"])
         self.assertFalse(context["present"])
         self.assertEqual(context["code"], "ACTION_CONTEXT_REFUSED")
         self.assertEqual(context["reason"], "OPERATION_LINK_WRONG_KIND")
@@ -391,7 +401,7 @@ class CorruptLinkageTests(DemoFamilyTestCase):
         self.execute_on_db(
             "UPDATE operations SET body=? WHERE business_key=?",
             (canonical(operation), operation["business_key"]))
-        context = self.engine.suggest_action_context(operation["business_key"])
+        context = self.engine.action_context(operation["business_key"])
         self.assertFalse(context["present"])
         self.assertEqual(context["code"], "ACTION_CONTEXT_REFUSED")
         self.assertEqual(context["reason"], "OPERATION_SUBJECT_MISMATCH")
@@ -402,10 +412,32 @@ class CorruptLinkageTests(DemoFamilyTestCase):
         self.execute_on_db(
             "UPDATE workflow_objects SET digest=? WHERE work_id=? AND name=?",
             ("0" * 64, self.work_id, "proposal"))
-        context = self.engine.suggest_action_context(operation["business_key"])
+        context = self.engine.action_context(operation["business_key"])
         self.assertFalse(context["present"])
         self.assertEqual(context["code"], "ACTION_CONTEXT_REFUSED")
         self.assertEqual(context["reason"], "OPERATION_OBJECT_DIGEST_MISMATCH")
+
+    def test_an_operation_row_that_disagrees_with_its_body_is_refused(self):
+        self.drive_to_dispatch()
+        operation = self.operation()
+        self.execute_on_db(
+            "UPDATE operations SET work_id=? WHERE business_key=?",
+            ("W-other", operation["business_key"]))
+        context = self.engine.action_context(operation["business_key"])
+        self.assertFalse(context["present"])
+        self.assertEqual(context["code"], "ACTION_CONTEXT_REFUSED")
+        self.assertEqual(context["reason"], "OPERATION_ROW_INCONSISTENT")
+
+    def test_a_node_row_that_disagrees_with_its_body_is_refused(self):
+        self.drive_to_dispatch()
+        operation = self.operation()
+        self.execute_on_db(
+            "UPDATE workflow_nodes SET node=? WHERE work_id=? AND node=? AND attempt=?",
+            ("n09", self.work_id, "n06", 1))
+        context = self.engine.action_context(operation["business_key"])
+        self.assertFalse(context["present"])
+        self.assertEqual(context["code"], "ACTION_CONTEXT_REFUSED")
+        self.assertEqual(context["reason"], "NODE_ROW_INCONSISTENT")
 
     def test_a_capability_that_does_not_match_the_node_is_refused(self):
         self.drive_to_dispatch()
@@ -414,10 +446,56 @@ class CorruptLinkageTests(DemoFamilyTestCase):
         self.execute_on_db(
             "UPDATE operations SET body=? WHERE business_key=?",
             (canonical(operation), operation["business_key"]))
-        context = self.engine.suggest_action_context(operation["business_key"])
+        context = self.engine.action_context(operation["business_key"])
         self.assertFalse(context["present"])
         self.assertEqual(context["code"], "ACTION_CONTEXT_REFUSED")
         self.assertEqual(context["reason"], "OPERATION_CAPABILITY_MISMATCH")
+
+
+class MigratedPolicy(DemoPolicy):
+    """The second version of the demonstration family."""
+
+    version = "demo-2"
+
+
+class ContractMigrationTests(DemoFamilyTestCase):
+    """A migrated contract moves the work; it never erases the action."""
+
+    def build_runtime(self):
+        grants = demo_grants()
+        grants["platform-admin"] = {"work.intervene"}
+        return Runtime(self.path, DemoPolicy(), grants,
+                       policies={"demo-2": MigratedPolicy()})
+
+    def test_a_migrated_contract_keeps_the_historical_action_readable(self):
+        self.drive_to_dispatch()
+        operation = self.operation()
+        self.engine.pump(self.adapter, 1000)
+        self.assertEqual(self.operation()["status"], "confirmed_succeeded")
+        receipt = self.runtime.command(
+            "platform-admin", uuid.uuid4().hex, self.work_id, "migrate_policy",
+            {"policy_id": POLICY_ID, "policy_version": "demo-2",
+             "reason": "the family published a new policy version"},
+            version_of(self.runtime, self.work_id))
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        self.assertEqual(receipt["contract_revision"], 2)
+        # The action was proposed under the first contract; the work now
+        # runs under the second one.
+        context = self.engine.action_context(operation["business_key"])
+        self.assertTrue(context["present"], context)
+        stable = context["context"]
+        self.assertEqual(stable["contractRevision"], 1)
+        self.assertEqual(stable["contract"]["revision"], 1)
+        self.assertEqual(stable["contract"]["policyId"], POLICY_ID)
+        self.assertEqual(stable["contract"]["policyVersion"], POLICY_VERSION)
+        self.assertEqual(stable["contract"]["source"], "ledger")
+        self.assertEqual(stable["node"], "n06")
+        self.assertEqual(stable["subject"]["digest"],
+                         self.proposal_reference()["digest"])
+        # The difference is an observation, never a rewritten history.
+        self.assertEqual(context["current"]["contractRevision"], 2)
+        self.assertEqual(context["current"]["contract"]["policyVersion"], "demo-2")
+        self.assertEqual(context["current"]["contract"]["revision"], 2)
 
 
 # --------------------------------------------------------------------------
@@ -537,7 +615,7 @@ class SameCapabilityTests(unittest.TestCase):
         self.assertEqual(len(operations), 2)
         contexts = {}
         for operation in operations:
-            context = self.engine.suggest_action_context(operation["business_key"])
+            context = self.engine.action_context(operation["business_key"])
             self.assertTrue(context["present"], context)
             contexts[operation["business_key"]] = context["context"]
         self.assertEqual(len(contexts), 2)
@@ -566,7 +644,7 @@ class SameCapabilityTests(unittest.TestCase):
         self.engine.advance(self.work_id, 2000)
         operations = self.operations()
         self.assertEqual(len(operations), 2)
-        historical = self.engine.suggest_action_context(first[0]["business_key"])
+        historical = self.engine.action_context(first[0]["business_key"])
         self.assertTrue(historical["present"], historical)
         self.assertEqual(historical["context"]["node"], "n01")
         self.assertEqual(historical["context"]["attempt"], 1)
@@ -574,7 +652,7 @@ class SameCapabilityTests(unittest.TestCase):
         self.assertEqual(historical["context"]["subject"]["body"]["measures"],
                          [{"id": "L-1"}])
         self.assertEqual(historical["current"]["nodeState"], "cancelled")
-        live = self.engine.suggest_action_context(operations[1]["business_key"])
+        live = self.engine.action_context(operations[1]["business_key"])
         self.assertTrue(live["present"], live)
         self.assertEqual(live["context"]["node"], "n01")
         self.assertEqual(live["context"]["attempt"], 2)

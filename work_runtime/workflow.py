@@ -2750,7 +2750,7 @@ class WorkflowEngine:
     # The native action context
     # ------------------------------------------------------------------
 
-    def suggest_action_context(self, business_key: str) -> Dict[str, Any]:
+    def action_context(self, business_key: str) -> Dict[str, Any]:
         """The native context of the automatic action behind a business key.
 
         A platform adapter receives the native business key and nothing
@@ -2763,7 +2763,8 @@ class WorkflowEngine:
         read inside one deferred transaction, so the answer always describes
         one committed state. It describes stored facts and nothing else: it
         routes nothing, writes nothing, grants no capability and calls no
-        external system. A context is never an authority to execute.
+        external system. Every answer carries ``authorizesExecution:
+        False``: a context is never an authority to execute.
 
         Three answers are possible:
 
@@ -2792,14 +2793,14 @@ class WorkflowEngine:
     @staticmethod
     def _action_context_absence(business_key: str) -> Dict[str, Any]:
         return {"present": False, "businessKey": business_key,
-                "code": ACTION_CONTEXT_ABSENT}
+                "code": ACTION_CONTEXT_ABSENT, "authorizesExecution": False}
 
     @staticmethod
     def _action_context_refusal(business_key: str, reason: str,
                                 detail: str) -> Dict[str, Any]:
         return {"present": False, "businessKey": business_key,
                 "code": ACTION_CONTEXT_REFUSED, "reason": reason,
-                "detail": detail}
+                "detail": detail, "authorizesExecution": False}
 
     @staticmethod
     def _operation_links(db, operation_id: str) -> List[Tuple[str, str, int,
@@ -2811,7 +2812,7 @@ class WorkflowEngine:
         the work's cursor or from the latest instance of a node.
         """
         links = []
-        rows = db.execute("SELECT work_id,node,attempt,body FROM workflow_nodes")
+        rows = db.execute("SELECT work_id,node,attempt,state,body FROM workflow_nodes")
         for row in rows.fetchall():
             try:
                 body = json.loads(row["body"])
@@ -2820,8 +2821,42 @@ class WorkflowEngine:
                 # the engine skips a corrupt work when it lists workflows.
                 continue
             if isinstance(body, dict) and body.get("operation_id") == operation_id:
-                links.append((row["work_id"], row["node"], row["attempt"], body))
+                links.append((row["work_id"], row["node"], row["attempt"],
+                              row["state"], body))
         return links
+
+    @staticmethod
+    def _contract_history(db, work_id: str) -> List[Dict[str, Any]]:
+        """Every contract the work was bound to, with its revision.
+
+        The work keeps only the contract that is in force now. The history
+        of the contract is in the event ledger: the binding and every
+        migration record the contract they replaced. This is a recovery of
+        a stored fact, never a reconstruction: what the ledger does not
+        hold stays unknown.
+        """
+        history: List[Dict[str, Any]] = []
+        rows = db.execute("SELECT type,body FROM events WHERE work_id=? ORDER BY seq",
+                          (work_id,))
+        for row in rows.fetchall():
+            try:
+                body = json.loads(row["body"])
+            except ValueError:
+                continue
+            if not isinstance(body, dict):
+                continue
+            if row["type"] == "ContractBound":
+                history.append({"policyId": body.get("policy_id"),
+                                "policyVersion": body.get("policy_version"),
+                                "goal": body.get("goal"), "revision": 1})
+            elif row["type"] == "PolicyMigrated":
+                for entry in (body.get("from"), body.get("to")):
+                    if isinstance(entry, dict):
+                        history.append({"policyId": entry.get("policy_id"),
+                                        "policyVersion": entry.get("policy_version"),
+                                        "goal": entry.get("goal"),
+                                        "revision": entry.get("revision")})
+        return history
 
     def _action_context_in(self, db, business_key: str) -> Dict[str, Any]:
         row = db.execute("SELECT id,work_id,body FROM operations WHERE business_key=?",
@@ -2843,6 +2878,10 @@ class WorkflowEngine:
             return self._action_context_refusal(
                 business_key, "OPERATION_IDENTITY_MISMATCH",
                 "The stored operation does not match its row")
+        if operation.get("work_id") != row["work_id"]:
+            return self._action_context_refusal(
+                business_key, "OPERATION_ROW_INCONSISTENT",
+                "The stored operation does not match the work of its row")
         operation_id = operation.get("id")
         links = self._operation_links(db, operation_id)
         if not links:
@@ -2853,19 +2892,21 @@ class WorkflowEngine:
             return self._action_context_refusal(
                 business_key, "OPERATION_LINK_AMBIGUOUS",
                 "Several node instances reference this operation")
-        work_id, node_id, attempt, instance = links[0]
+        work_id, node_id, attempt, node_state, instance = links[0]
         if work_id != operation.get("work_id"):
             return self._action_context_refusal(
                 business_key, "OPERATION_LINK_WORK_MISMATCH",
                 "The node instance belongs to another work")
+        if (instance.get("node") != node_id
+                or instance.get("attempt") != attempt
+                or instance.get("state") != node_state):
+            return self._action_context_refusal(
+                business_key, "NODE_ROW_INCONSISTENT",
+                "The node instance does not match its stored row")
         if instance.get("kind") != "action":
             return self._action_context_refusal(
                 business_key, "OPERATION_LINK_WRONG_KIND",
                 "The node instance is not an action node")
-        if instance.get("attempt") != attempt:
-            return self._action_context_refusal(
-                business_key, "OPERATION_LINK_ATTEMPT_MISMATCH",
-                "The node instance does not match its stored attempt")
         work_row = db.execute("SELECT state FROM works WHERE id=?", (work_id,)).fetchone()
         if work_row is None:
             return self._action_context_refusal(
@@ -2907,11 +2948,6 @@ class WorkflowEngine:
             return self._action_context_refusal(
                 business_key, "OPERATION_TEMPLATE_MISMATCH",
                 "The published definition is not the one the work pinned")
-        contract = work.get("contract") or {}
-        if contract.get("revision") != operation.get("contract_revision"):
-            return self._action_context_refusal(
-                business_key, "OPERATION_CONTRACT_MISMATCH",
-                "The operation does not carry the contract revision of its work")
         subject = instance.get("subject")
         bound = operation.get("object")
         if not isinstance(subject, dict) or not isinstance(bound, dict):
@@ -2952,6 +2988,28 @@ class WorkflowEngine:
             return self._action_context_refusal(
                 business_key, "OPERATION_INPUT_DIGEST_MISSING",
                 "The node instance does not carry the digest of its inputs")
+        # The contract the action was proposed under. A migration moves the
+        # work to a new contract; the historical one is recovered from the
+        # event ledger, and what the ledger does not hold stays unknown.
+        contract = work.get("contract") or {}
+        current_contract = {"policyId": contract.get("policy_id"),
+                            "policyVersion": contract.get("policy_version"),
+                            "goal": contract.get("goal"),
+                            "revision": contract.get("revision")}
+        operation_revision = operation.get("contract_revision")
+        if contract.get("revision") == operation_revision:
+            historical_contract = dict(current_contract)
+            contract_source = "current"
+        else:
+            historical_contract = None
+            for entry in self._contract_history(db, work_id):
+                if entry.get("revision") == operation_revision:
+                    historical_contract = entry
+                    break
+            contract_source = "ledger" if historical_contract is not None else "unknown"
+        if historical_contract is None:
+            historical_contract = {"policyId": None, "policyVersion": None,
+                                   "goal": None, "revision": operation_revision}
         stable = {
             "businessKey": business_key,
             "operationId": operation_id,
@@ -2960,11 +3018,8 @@ class WorkflowEngine:
             "attempt": attempt,
             "actor": operation.get("actor"),
             "capability": operation.get("capability"),
-            "contract": {"policyId": contract.get("policy_id"),
-                         "policyVersion": contract.get("policy_version"),
-                         "goal": contract.get("goal"),
-                         "revision": operation.get("contract_revision")},
-            "contractRevision": operation.get("contract_revision"),
+            "contract": {**historical_contract, "source": contract_source},
+            "contractRevision": operation_revision,
             "planRevision": operation.get("plan_revision"),
             "inputDigest": input_digest,
             "template": {"id": binding.get("template_id"),
@@ -2988,6 +3043,9 @@ class WorkflowEngine:
             "workStatus": work.get("status"),
             "workflowStatus": work.get("workflow_status"),
             "stateVersion": work.get("state_version"),
+            "contract": current_contract,
+            "contractRevision": contract.get("revision"),
+            "planRevision": work.get("plan_revision"),
             "cancelled": bool(work.get("cancellation")),
             "cancellation": work.get("cancellation"),
             "task": {"document": work.get("document"),
@@ -2996,4 +3054,5 @@ class WorkflowEngine:
         }
         # The answer is a copy: changing it can never change the store.
         return copy.deepcopy({"present": True, "businessKey": business_key,
+                              "authorizesExecution": False,
                               "context": stable, "current": current})

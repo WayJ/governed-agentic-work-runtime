@@ -22,7 +22,7 @@ platform adapter must not reach into SQLite or the schema to find out.
 ## Scope of this slice
 
 1. **One public, local, read-only API on the engine**:
-   `WorkflowEngine.suggest_action_context(business_key)`. It resolves
+   `WorkflowEngine.action_context(business_key)`. It resolves
    `operations.business_key` → operation uuid → **exactly one**
    `workflow_nodes` action instance that references that `operation_id`, and
    returns the stored facts that describe the action.
@@ -59,7 +59,7 @@ platform adapter must not reach into SQLite or the schema to find out.
 ## The API
 
 ```python
-engine.suggest_action_context(business_key) -> dict
+engine.action_context(business_key) -> dict
 ```
 
 One of three shapes, always the same outer keys:
@@ -107,8 +107,7 @@ task {document, documentDigest, documentRevision}
    (`OPERATION_LINK_WORK_MISMATCH`) and its node must be an **action** node
    (`OPERATION_LINK_WRONG_KIND`).
 4. The node's declared capability must be the operation's capability
-   (`OPERATION_CAPABILITY_MISMATCH`); the operation's contract revision must
-   be the work's contract revision (`OPERATION_CONTRACT_MISMATCH`).
+   (`OPERATION_CAPABILITY_MISMATCH`).
 5. The published template must still hash to the digest the work pinned
    (`OPERATION_TEMPLATE_MISMATCH`).
 6. The instance's subject must be the operation's object binding
@@ -118,6 +117,15 @@ task {document, documentDigest, documentRevision}
    (`OPERATION_OBJECT_DIGEST_MISMATCH`).
 7. The instance must carry an input digest
    (`OPERATION_INPUT_DIGEST_MISSING`).
+8. The redundant columns must agree with their bodies: the `operations`
+   row's `work_id` (`OPERATION_ROW_INCONSISTENT`) and the `workflow_nodes`
+   row's `node`, `attempt` and `state` (`NODE_ROW_INCONSISTENT`).
+9. The contract of the action is **historical**: the contract the work is
+   bound to now may be a newer one (a `migrate_policy` moves it). The
+   historical contract is recovered from the event ledger
+   (`ContractBound`, `PolicyMigrated`) and the difference is reported under
+   `current`. What the ledger does not hold stays unknown — it is never
+   invented.
 
 The node is never inferred from the capability, the work's cursor or the
 latest instance: only the stored `operation_id` on the node instance links

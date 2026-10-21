@@ -859,7 +859,7 @@ existing Work/Evidence/Operation/Wait machinery. The language, the engine and
 the bridge are described in [workflow-runtime.md](workflow-runtime.md); this
 section records what is verified and what is not.
 
-### Workflow matrix (W01–W66)
+### Workflow matrix (W01–W68)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -929,6 +929,8 @@ section records what is verified and what is not.
 | W64 | A broken linkage is refused, never guessed | covered | `test_two_node_instances_of_one_operation_are_refused`, `test_a_link_of_another_kind_is_refused`, `test_a_subject_that_does_not_match_the_operation_is_refused`, `test_an_object_with_a_broken_digest_is_refused`, `test_a_capability_that_does_not_match_the_node_is_refused` — `OPERATION_LINK_AMBIGUOUS`, `OPERATION_LINK_WRONG_KIND`, `OPERATION_SUBJECT_MISMATCH`, `OPERATION_OBJECT_DIGEST_MISMATCH`, `OPERATION_CAPABILITY_MISMATCH` |
 | W65 | The answer is a copy and the read changes nothing | covered | `test_a_mutated_answer_does_not_change_the_store`, `test_the_read_writes_no_event_and_changes_no_state_version` — a mutated answer leaves the rows untouched; the read writes no event and moves no state version |
 | W66 | A cancelled work keeps its context and grants no execution | covered | `test_a_cancelled_work_keeps_its_context_and_grants_no_execution` — the context still resolves, `current.cancelled` is true, the dispatch state is `cancelled` and the business system records no effect |
+| W67 | A migrated contract keeps the historical action readable | covered | `test_a_migrated_contract_keeps_the_historical_action_readable` — after `migrate_policy` the action still resolves with the contract it was proposed under (`context.contract.source` is `ledger`), and the contract in force now is an observation under `current` |
+| W68 | A row that disagrees with its body is refused | covered | `test_an_operation_row_that_disagrees_with_its_body_is_refused`, `test_a_node_row_that_disagrees_with_its_body_is_refused` — `OPERATION_ROW_INCONSISTENT`, `NODE_ROW_INCONSISTENT`; the answer never carries a self-contradictory relation |
 
 ### Bridge, recovery and demonstration
 

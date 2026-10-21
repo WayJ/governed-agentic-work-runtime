@@ -691,12 +691,13 @@ model is a *latest* view: it carries no `operation_id` and no historical
 attempt. So an adapter that is handed a key cannot tell which action it is
 executing — unless it reaches into the schema, which it must not do.
 
-`WorkflowEngine.suggest_action_context(business_key)` is the answer. It is a
+`WorkflowEngine.action_context(business_key)` is the answer. It is a
 **local, read-only** call: no route, no write, no capability, no external
-call.
+call. It reads a real, persisted relation — it does not *suggest* a context
+that may or may not be there.
 
 ```python
-context = engine.suggest_action_context(business_key)
+context = engine.action_context(business_key)
 ```
 
 Every row the answer is built from is read inside **one deferred
@@ -707,9 +708,13 @@ published definition and the work are always the same committed state.
 
 | answer | shape |
 |---|---|
-| absence | `{"present": False, "businessKey": ..., "code": "ACTION_CONTEXT_ABSENT"}` |
-| refusal | `{"present": False, "businessKey": ..., "code": "ACTION_CONTEXT_REFUSED", "reason": ..., "detail": ...}` |
-| context | `{"present": True, "businessKey": ..., "context": {...}, "current": {...}}` |
+| absence | `{"present": False, "businessKey": ..., "code": "ACTION_CONTEXT_ABSENT", "authorizesExecution": false}` |
+| refusal | `{"present": False, "businessKey": ..., "code": "ACTION_CONTEXT_REFUSED", "reason": ..., "detail": ..., "authorizesExecution": false}` |
+| context | `{"present": True, "businessKey": ..., "authorizesExecution": false, "context": {...}, "current": {...}}` |
+
+Every answer carries **`authorizesExecution: false`**. The read describes a
+stored action; it never dispatches it, never re-dispatches it and never
+confers the capability it names.
 
 The method raises `WorkflowError` only for API misuse (a key that is not a
 nonempty string). It never raises for a missing, ambiguous or corrupt
@@ -731,7 +736,8 @@ not change when the work moves on. `current` is what may still change.
   "businessKey": "…", "operationId": "…", "workId": "…",
   "node": "n06", "attempt": 1,
   "actor": "coordinator", "capability": "work.dispatch",
-  "contract": {"policyId": "…", "policyVersion": "…", "goal": "…", "revision": 1},
+  "contract": {"policyId": "…", "policyVersion": "…", "goal": "…",
+               "revision": 1, "source": "current"},
   "contractRevision": 1, "planRevision": 1,
   "inputDigest": "…",
   "template": {"id": "…", "version": "…", "digest": "…"},
@@ -744,6 +750,8 @@ not change when the work moves on. `current` is what may still change.
   "externalId": "…",
   "nodeState": "completed", "nodeOutcome": "completed", "nodeReason": null,
   "workStatus": "active", "workflowStatus": "active", "stateVersion": 17,
+  "contract": {"policyId": "…", "policyVersion": "…", "goal": "…", "revision": 2},
+  "contractRevision": 2, "planRevision": 1,
   "cancelled": false, "cancellation": null,
   "task": {"document": {}, "documentDigest": "…", "documentRevision": 1}
 }
@@ -775,16 +783,41 @@ state version at proposal time is not persisted either, so only the
    (`OPERATION_LINK_WORK_MISMATCH`) and its node must be an **action** node
    (`OPERATION_LINK_WRONG_KIND`).
 5. The node's declared capability must be the operation's capability
-   (`OPERATION_CAPABILITY_MISMATCH`), the operation's contract revision must
-   be the work's (`OPERATION_CONTRACT_MISMATCH`), and the published
-   definition must still be the one the work pinned
-   (`OPERATION_TEMPLATE_MISMATCH`).
+   (`OPERATION_CAPABILITY_MISMATCH`), and the published definition must
+   still be the one the work pinned (`OPERATION_TEMPLATE_MISMATCH`).
 6. The instance's subject must be the operation's object binding
    (`OPERATION_SUBJECT_MISMATCH`), that exact revision must still exist
    (`OPERATION_OBJECT_UNAVAILABLE`) and it must carry the digest of the
    operation (`OPERATION_OBJECT_DIGEST_MISMATCH`).
 7. The instance must carry the digest of its inputs
    (`OPERATION_INPUT_DIGEST_MISSING`).
+
+### The redundant columns are checked too
+
+The store keeps some facts twice: the `operations` row has its own
+`work_id`, and the `workflow_nodes` row has its own `node`, `attempt` and
+`state` next to the body. The read compares them and **refuses** a row
+that disagrees with its body (`OPERATION_ROW_INCONSISTENT`,
+`NODE_ROW_INCONSISTENT`), so the answer never carries a self-contradictory
+relation.
+
+### The contract the action was proposed under
+
+The work keeps only the contract that is in force **now**. A
+`migrate_policy` moves the work to a new contract, and the historical one
+is still the truth of the action that was proposed under it. So the stable
+context carries the *historical* contract and `current` carries the one in
+force now; the two are different facts and are never merged.
+
+`context.contract.source` says where the historical contract came from:
+
+| source | meaning |
+|---|---|
+| `current` | the work's current contract **is** the contract of the action |
+| `ledger` | the contract was recovered from the event ledger: `ContractBound` and every `PolicyMigrated` record the contract they replaced |
+| `unknown` | the ledger does not hold that revision. The revision is reported, the identity is `null`. **It is never invented.** |
+
+### What the context is not
 
 The answer is a **defensive copy**: changing it can never change the
 store, and the read writes no event and moves no state version.
