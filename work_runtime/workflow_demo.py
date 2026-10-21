@@ -210,6 +210,18 @@ REPORT_SHAPE = {
     "required": ["sections"],
 }
 
+# The shape of the business record the external system returns. It is the
+# material the automatic nodes validate before the workflow routes on.
+EFFECT_SHAPE = {
+    "type": "object",
+    "properties": {
+        "recordId": {"type": "string"},
+        "action": {"type": "string"},
+        "items": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["recordId", "action", "items"],
+}
+
 
 def _criterion_item_ok(item) -> bool:
     """One criterion report item.
@@ -244,10 +256,42 @@ def _require_entries(result, key, code):
     return []
 
 
-def _verdicts(node_ref, reason):
+def _verdicts(node_ref, reason, evidence=None):
     """A passed verdict for every declared criterion of the node."""
     return [{"check": check, "verdict": "passed", "reason": reason,
-             "evidence": []} for check in (node_ref.get("checks") or [])]
+             "evidence": list(evidence) if evidence else ["criterion:" + check]}
+            for check in (node_ref.get("checks") or [])]
+
+
+def effect(work, node_ref, result):
+    """The receipt the external system returned, judged against the criterion.
+
+    The receipt must name the effect it recorded, it must be the effect of
+    the capability the node declared, and it must name what it acted on.
+    """
+    findings = []
+    if not isinstance(result, dict):
+        return {"findings": [{"code": "EFFECT_NOT_OBJECT",
+                              "message": "The receipt is not an object"}],
+                "checks": []}
+    record_id = result.get("recordId")
+    if not isinstance(record_id, str) or not record_id:
+        findings.append({"code": "EFFECT_UNIDENTIFIED",
+                         "message": "The receipt does not name the effect"})
+    capability = node_ref.get("capability")
+    if capability and result.get("action") != capability:
+        findings.append({"code": "EFFECT_ACTION_MISMATCH",
+                         "message": "The receipt names another action"})
+    if not result.get("items"):
+        findings.append({"code": "EFFECT_EMPTY",
+                         "message": "The receipt names no item"})
+    verdict = "failed" if findings else "passed"
+    reason = ("the receipt names the effect it recorded" if not findings
+              else "the receipt did not satisfy the criterion")
+    checks = [{"check": check, "verdict": verdict, "reason": reason,
+               "evidence": ["receipt:" + str(record_id)]}
+              for check in (node_ref.get("checks") or [])]
+    return {"findings": findings, "checks": checks}
 
 
 def workflow_demo_validators() -> ValidatorRegistry:
@@ -317,6 +361,7 @@ def workflow_demo_validators() -> ValidatorRegistry:
     registry.register("analysis", "1", analysis)
     registry.register("proposal", "1", proposal)
     registry.register("report", "1", report)
+    registry.register("effect", "1", effect)
     for name in ("safety-review", "project-approval", "field-report",
                  "independent-review"):
         registry.register(name, "1", review_specification)
@@ -336,7 +381,8 @@ def workflow_demo_template(template_id="inspection-review-delivery",
         "policy_family": policy_family,
         "entry": "n01",
         "terminal": ["n10"],
-        "required_checks": ["N01-1", "N03-1", "N04-2", "N05-3", "N08-3", "N09-2"],
+        "required_checks": ["N01-1", "N03-1", "N04-2", "N05-3", "N06-1",
+                            "N06W-1", "N08-3", "N09-2", "N10-1"],
         "parameters_schema": {
             "type": "object",
             "properties": {"subject": {"type": "string"},
@@ -403,9 +449,37 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                                 "validator": "project-approval",
                                 "validator_version": "1"}]},
             "n06": {"kind": "action", "capability": "work.dispatch",
-                    "subject": {"object": "proposal"}},
+                    "subject": {"object": "proposal"},
+                    "output": {"object": "order",
+                               "evidence_kind": "dispatch_receipt",
+                               "validation": {"shape": EFFECT_SHAPE,
+                                              "validator": "effect",
+                                              "validator_version": "1"}},
+                    "checks": [{"id": "N06-1",
+                                "method": "PROGRAM",
+                                "criterion": "The dispatch receipt names the "
+                                            "order it created.",
+                                "criterion_version": "1",
+                                "validator": "effect",
+                                "validator_version": "1"}]},
+            "n06w": {"kind": "wait", "deadline_s": 86400,
+                     "match": {"evidence_kind": "dispatch_receipt",
+                               "subject": {"object": "order"},
+                               "bind": {"node": "n06"}},
+                     "output": {"object": "dispatch_receipt",
+                                "validation": {"shape": EFFECT_SHAPE,
+                                               "validator": "effect",
+                                               "validator_version": "1"}},
+                     "checks": [{"id": "N06W-1",
+                                 "method": "PROGRAM",
+                                 "criterion": "The dispatch receipt names the "
+                                             "order it created.",
+                                 "criterion_version": "1",
+                                 "validator": "effect",
+                                 "validator_version": "1"}]},
             "n07": {"kind": "human", "evidence_kind": "field_report",
-                    "authority": "responsible-c", "subject": {"object": "proposal"},
+                    "authority": "responsible-c", "subject": {"object": "order"},
+                    "inputs": [{"object": "order"}],
                     "max_attempts": 3,
                     "checks": [{"id": "N07-1",
                                 "method": "HUMAN",
@@ -415,7 +489,8 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                                 "validator": "field-report",
                                 "validator_version": "1"}]},
             "n08": {"kind": "human", "evidence_kind": "independent_review",
-                    "authority": "reviewer-d", "subject": {"object": "proposal"},
+                    "authority": "reviewer-d", "subject": {"object": "order"},
+                    "inputs": [{"object": "order"}],
                     "on_reject": "n07", "max_attempts": 3,
                     "distinct_from": ["n07"],
                     "checks": [{"id": "N08-3",
@@ -449,14 +524,26 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                                 "validator": "review-rubric",
                                 "validator_version": "1"}]},
             "n10": {"kind": "action", "capability": "work.deliver",
-                    "subject": {"object": "report"}},
+                    "subject": {"object": "report"},
+                    "output": {"object": "delivery",
+                               "validation": {"shape": EFFECT_SHAPE,
+                                              "validator": "effect",
+                                              "validator_version": "1"}},
+                    "checks": [{"id": "N10-1",
+                                "method": "PROGRAM",
+                                "criterion": "The delivery receipt names the "
+                                            "delivery it recorded.",
+                                "criterion_version": "1",
+                                "validator": "effect",
+                                "validator_version": "1"}]},
         },
         "edges": [{"from": "n01", "to": "n02"},
                   {"from": "n02", "to": "n03"},
                   {"from": "n03", "to": "n04"},
                   {"from": "n04", "to": "n05"},
                   {"from": "n05", "to": "n06"},
-                  {"from": "n06", "to": "n07"},
+                  {"from": "n06", "to": "n06w"},
+                  {"from": "n06w", "to": "n07"},
                   {"from": "n07", "to": "n08"},
                   {"from": "n08", "to": "n09"},
                   {"from": "n09", "to": "n10"}],
@@ -467,6 +554,28 @@ def workflow_demo_template(template_id="inspection-review-delivery",
 # The stand-in external system
 # --------------------------------------------------------------------------
 
+def effect_payload(action, external_id, document) -> Dict[str, Any]:
+    """The business record the external system created.
+
+    The record is what the external system really knows about the effect;
+    the workflow engine validates it and adopts it as a named object. It is
+    derived from the material the action was given, never invented here.
+    """
+    items = []
+    for key in ("measures", "sections", "records", "findings"):
+        for entry in document.get(key) or []:
+            if not isinstance(entry, dict):
+                continue
+            for field in ("measureId", "id", "issueId", "title"):
+                value = entry.get(field)
+                if isinstance(value, str) and value:
+                    items.append(value)
+                    break
+    if not items and isinstance(document.get("id"), str):
+        items = [document["id"]]
+    return {"recordId": external_id, "action": action, "items": items}
+
+
 class DemoBusinessSystem:
     """A persistent stand-in for the external business system.
 
@@ -474,7 +583,6 @@ class DemoBusinessSystem:
     is still findable by key afterwards. The effect count is read back from
     that store, never from a counter in the process that performed it.
     """
-
     contract = AdapterContract(
         actions=("work.dispatch", "work.deliver"),
         idempotency_scope="adapter-store:key",
@@ -508,10 +616,12 @@ class DemoBusinessSystem:
                     raise ValueError("Idempotency key reused with different content")
                 result = json.loads(row[1])
             else:
+                external_id = "EXT-" + digest([key, action])[:12]
                 result = {"status": "accepted",
-                          "external_id": "EXT-" + digest([key, action])[:12],
+                          "external_id": external_id,
                           "digest": content_digest,
-                          "action": action}
+                          "action": action,
+                          "payload": effect_payload(action, external_id, document)}
                 db.execute("INSERT INTO effects VALUES (?,?,?,?)",
                            (key, content_digest, action, json.dumps(result)))
             db.commit()
@@ -577,13 +687,13 @@ def _send(runtime, actor, work_id, kind, payload, command_id=None):
 
 def _record_decision(runtime, engine, work_id, kind, source, decision,
                      digest_value, revision, event_id=None, node=None, attempt=None,
-                     actor=None, items=None):
+                     actor=None, items=None, evidence=None):
     """Record a human decision: the node, the attempt, the actor and the
     itemized verdict for every criterion the node declared."""
     if attempt is None and node is not None:
         attempt = _attempt(engine, work_id, node)
     if items is None and node is not None:
-        items = _decision_items(node)
+        items = _decision_items(node, evidence=evidence)
     payload = {"node": node, "attempt": attempt, "decision": decision,
                "digest": digest_value, "revision": revision,
                "actor": actor or source, "items": items or []}
@@ -598,11 +708,12 @@ def _record_decision(runtime, engine, work_id, kind, source, decision,
     return receipt
 
 
-def _decision_items(node, verdict="passed", reason="reviewed against the criterion"):
+def _decision_items(node, verdict="passed", reason="reviewed against the criterion",
+                    evidence=None):
     template = workflow_demo_template()
     declaration = (template.get("nodes") or {}).get(node) or {}
     return [{"check": check["id"], "verdict": verdict, "reason": reason,
-             "evidence": ["proposal#revision-1"]}
+             "evidence": list(evidence) if evidence else ["proposal#revision-1"]}
             for check in declaration.get("checks") or []]
 
 
@@ -708,17 +819,28 @@ def run_workflow_demo(directory=None):
 
     # -- N07 to N08: the responsible person and the independent reviewer --
     engine.advance(work_id, int(__import__("time").time()))
+    order = _object_reference(runtime, work_id, "order")
+    view = engine.instance(work_id)
+    n06 = [entry for entry in view["nodes"] if entry["node"] == "n06"][0]
+    n06w = [entry for entry in view["nodes"] if entry["node"] == "n06w"][0]
+    assert n06["state"] == "completed", n06
+    assert n06["quality"]["mode"] == "validated", n06
+    assert n06w["state"] == "completed", n06w
+    print(f"7. N06 dispatch receipt validated → order revision "
+          f"{order['revision']} (digest {order['digest'][:12]}…); N06W wait "
+          f"matched the bound proof {n06w['waitMatch']['eventId']}", flush=True)
     _record_decision(runtime, engine, work_id, "field_report", "responsible-c",
-                     "approved", proposal["digest"], proposal["revision"],
-                     node="n07")
+                     "approved", order["digest"], order["revision"], node="n07",
+                     evidence=["order#revision-" + str(order["revision"])])
     _record_decision(runtime, engine, work_id, "independent_review", "reviewer-d",
-                     "approved", proposal["digest"], proposal["revision"],
-                     node="n08")
+                     "approved", order["digest"], order["revision"], node="n08",
+                     evidence=["order#revision-" + str(order["revision"])])
     agent_intents = engine.intents(kind="agent_task", status="pending")
     assert len(agent_intents) == 1, agent_intents
     assert agent_intents[0]["session_id"] == session_id, agent_intents
-    print(f"7. N08 approved → the original session was queued with the stable "
-          f"request id {agent_intents[0]['id']}", flush=True)
+    print(f"8. N07 and N08 judged the order itself (revision "
+          f"{order['revision']}) → the original session was queued with the "
+          f"stable request id {agent_intents[0]['id']}", flush=True)
 
     # -- N09: the report, and the independent review of the report --------
     attempt = _attempt(engine, work_id, "n09")
@@ -746,7 +868,7 @@ def run_workflow_demo(directory=None):
                                          "evidence": ["proposal#revision-1"]}]}}, None)
     runtime.verify_pending(work_id)
     engine.advance(work_id, int(__import__("time").time()))
-    print("8. N09 report accepted, then completed only after the independent "
+    print("9. N09 report accepted, then completed only after the independent "
           "review evidence arrived", flush=True)
 
     # -- N10: the delivery -------------------------------------------------
@@ -755,7 +877,7 @@ def run_workflow_demo(directory=None):
     assert counted == 2, counted
     view = engine.instance(work_id)
     assert view["workflowStatus"] == "finished", view
-    print(f"9. N10 delivered → external effects {counted} "
+    print(f"10. N10 delivery receipt validated → external effects {counted} "
           f"(one dispatch, one delivery); workflow {view['workflowStatus']}",
           flush=True)
 

@@ -423,6 +423,10 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
         return
     required = _NODE_REQUIRED[kind]
     allowed = set(required) | set(_NODE_OPTIONAL) | {"kind"}
+    if kind in ("agent", "action", "wait"):
+        # Only a node that produces an object may declare one. A human node
+        # produces a decision, not a named object.
+        allowed.add("output")
     for name in required:
         if name not in node:
             findings.append(_finding("NODE_FIELD_MISSING", path + "." + name,
@@ -538,7 +542,8 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
             findings.append(_finding("SPEC_FIELD_TYPE", path + ".match",
                                      "Wait match must be an object"))
         else:
-            allowed_match = {"evidence_kind", "subject", "node_completed", "timeout"}
+            allowed_match = {"evidence_kind", "subject", "node_completed",
+                             "timeout", "bind"}
             for name in match:
                 if name not in allowed_match:
                     findings.append(_finding("SPEC_FIELD_UNKNOWN", path + ".match." + name,
@@ -551,6 +556,14 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
             if "node_completed" in match and not _is_identifier(match["node_completed"]):
                 findings.append(_finding("SPEC_FIELD_TYPE", path + ".match.node_completed",
                                          "Wait match node must be an identifier"))
+            if "bind" in match:
+                _lint_bind(match["bind"], path + ".match.bind", findings)
+            declared = [name for name in ("evidence_kind", "node_completed",
+                                          "timeout") if name in match]
+            if len(declared) != 1:
+                findings.append(_finding("SPEC_FIELD_MISSING", path,
+                                         "A wait match declares exactly one of "
+                                         "evidence_kind, node_completed or timeout"))
 
 
 def _lint_authority(authority: Any, path: str, findings: List[Dict[str, str]]) -> None:
@@ -628,6 +641,32 @@ def _lint_check(entry: Any, path: str, findings: List[Dict[str, str]]) -> None:
                                      flag + " must be a boolean"))
 
 
+def _lint_bind(bind: Any, path: str, findings: List[Dict[str, str]]) -> None:
+    """The binding a wait places on the evidence it accepts.
+
+    A bound wait names the node whose output it awaits and, optionally, the
+    attempt it awaits. The binding is what keeps an old proof from
+    satisfying a new attempt.
+    """
+    if not isinstance(bind, dict):
+        findings.append(_finding("SPEC_FIELD_TYPE", path, "A wait binding must be an object"))
+        return
+    allowed = {"node", "attempt"}
+    for name in bind:
+        if name not in allowed:
+            findings.append(_finding("SPEC_FIELD_UNKNOWN", path + "." + name,
+                                     "Wait binding field is not supported"))
+    if "node" not in bind:
+        findings.append(_finding("SPEC_FIELD_MISSING", path + ".node",
+                                 "A wait binding names the node it awaits"))
+    elif not _is_identifier(bind["node"]):
+        findings.append(_finding("SPEC_FIELD_TYPE", path + ".node",
+                                 "Wait binding node must be an identifier"))
+    if "attempt" in bind and (not _is_int(bind["attempt"]) or bind["attempt"] < 1):
+        findings.append(_finding("SPEC_FIELD_TYPE", path + ".attempt",
+                                 "Wait binding attempt must be a positive integer"))
+
+
 def _lint_validation(validation: Any, path: str, findings: List[Dict[str, str]]) -> None:
     if not isinstance(validation, dict):
         findings.append(_finding("SPEC_FIELD_TYPE", path, "Validation must be an object"))
@@ -651,7 +690,7 @@ def _lint_output(output: Any, path: str, findings: List[Dict[str, str]]) -> None
     if not isinstance(output, dict):
         findings.append(_finding("SPEC_FIELD_TYPE", path, "Output must be an object"))
         return
-    allowed = {"object", "validation"}
+    allowed = {"object", "validation", "evidence_kind"}
     for name in output:
         if name not in allowed:
             findings.append(_finding("SPEC_FIELD_UNKNOWN", path + "." + name,
@@ -662,6 +701,9 @@ def _lint_output(output: Any, path: str, findings: List[Dict[str, str]]) -> None
     elif not _is_identifier(output["object"]):
         findings.append(_finding("SPEC_FIELD_TYPE", path + ".object",
                                  "Output requires an object name"))
+    if "evidence_kind" in output and not _is_identifier(output["evidence_kind"]):
+        findings.append(_finding("SPEC_FIELD_TYPE", path + ".evidence_kind",
+                                 "Output evidence kind must be an identifier"))
     if "validation" in output:
         _lint_validation(output["validation"], path + ".validation", findings)
 
@@ -757,6 +799,12 @@ def lint_template(spec: Any) -> List[Dict[str, str]]:
                         findings.append(_finding("EDGE_REFERENCE_UNKNOWN",
                                                  "nodes." + node_id + ".match.node_completed",
                                                  "Wait match references an undeclared node"))
+                if isinstance(match, dict) and isinstance(match.get("bind"), dict):
+                    target = match["bind"].get("node")
+                    if isinstance(target, str) and target not in known:
+                        findings.append(_finding("EDGE_REFERENCE_UNKNOWN",
+                                                 "nodes." + node_id + ".match.bind.node",
+                                                 "Wait binding references an undeclared node"))
             if node.get("kind") == "human" and "distinct_from" in node:
                 for target in node["distinct_from"] or []:
                     if target not in known:

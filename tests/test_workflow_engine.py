@@ -67,6 +67,11 @@ class WorkflowTestCase(unittest.TestCase):
         row = self.object_rows("proposal")[0]
         return {"name": "proposal", "revision": row[2], "digest": row[3]}
 
+    def order_reference(self):
+        """The order the dispatch receipt produced; N07 and N08 judge it."""
+        row = self.object_rows("order")[0]
+        return {"name": "order", "revision": row[2], "digest": row[3]}
+
 
 def instantiate_work(runtime, engine, work_id="W-1", **kwargs):
     from workflow_support import instantiate
@@ -221,12 +226,12 @@ class RoutingTests(WorkflowTestCase):
         # A decision binds the attempt it was made for, so it is recorded
         # once the node is open.
         decide(self.runtime, self.engine, self.work_id, "field_report",
-               "responsible-c", "approved", self.proposal_reference()["digest"],
-               self.proposal_reference()["revision"])
+               "responsible-c", "approved", self.order_reference()["digest"],
+               self.order_reference()["revision"])
         self.assertEqual(self.node_state("n07")["state"], "completed")
         decide(self.runtime, self.engine, self.work_id, "independent_review",
-               "reviewer-d", "approved", self.proposal_reference()["digest"],
-               self.proposal_reference()["revision"])
+               "reviewer-d", "approved", self.order_reference()["digest"],
+               self.order_reference()["revision"])
         self.assertEqual(self.node_state("n08")["state"], "completed")
         receipt = submit_valid(self.engine, self.runtime, self.work_id, "n09", "report")
         self.assertEqual(receipt["decision"], "accepted")

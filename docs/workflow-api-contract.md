@@ -56,6 +56,7 @@ participant assignment.
 | the published workflow definition and its protected parts | GAWR, published once and pinned by digest |
 | the instance, its node states, its attempts and its evidence | GAWR |
 | the external effect and its true result | the external business system, queried through the adapter |
+| the business record the effect produced | the external business system; GAWR adopts it as a named object only after the declared validator accepts it |
 | the platform's own task, approval and artifact records | the platform |
 
 **The participant and authority mapping.** A published definition names, per
@@ -105,6 +106,16 @@ effects* (a stable operation business key, an adapter-level idempotency key
 and a lookup) and *unknown-effect reconciliation* (an unknown outcome is
 looked up, never repeated). It does not claim exactly-once delivery
 between GAWR and an external system.
+
+**The receipt is the adapter's, not GAWR's.** Where the engine calls the
+adapter it keeps the receipt that came back — bounded, with the operation,
+capability, business key, external id and document digest it belongs to —
+and the business payload that came with it. GAWR never invents the content
+of an external record: the payload is what the external system returned,
+and it is adopted as a named object only after the declared validator
+accepts it. The digest and action linkage of the receipt stay
+authoritative; a receipt that does not match the operation is refused and
+quarantined by the runtime.
 
 ## Mutation rules (every one of them)
 
@@ -179,6 +190,7 @@ refused.
             "subject": {"name": "proposal", "revision": 1, "digest": "…"},
             "inputDigest": "…", "actor": null,
             "outputs": [], "findings": [], "blockers": [], "checkResults": [],
+            "quality": null, "effect": null, "waitMatch": null, "receipt": null,
             "intentId": "wf:W-1:n04:1:human_task", "checks": [{"id": "N04-2", "criterion": "…", "validator": "safety-review", "validator_version": "1"}]}],
  "checks": [{"checkId": "N04-2", "node": "n04", "criterion": "…", "validator": "safety-review", "validatorVersion": "1"}],
  "allowedActions": [{"action": "submit_node_result", "node": "n04", "attempt": 1, "required": ["result"]}],
@@ -187,6 +199,44 @@ refused.
 
 Bounded: at most 64 nodes, 32 intents, 16 findings and 16 check results per
 node. The view never carries a payload body.
+
+### The quality record of a node
+
+An automatic or wait node carries four additive fields. They say what was
+judged, never that something was checked when it was not.
+
+```json
+{"node": "n06", "kind": "action", "state": "completed", "attempt": 1,
+ "quality": {"declared": true, "mode": "validated", "validator": {"id": "effect", "version": "1"}},
+ "effect": {"status": "succeeded", "externalId": "EXT-…", "operationId": "…",
+            "capability": "work.dispatch", "documentDigest": "…"},
+ "waitMatch": null,
+ "receipt": {"externalId": "EXT-…", "status": "accepted", "digest": "…",
+             "action": "work.dispatch", "operationId": "…",
+             "capability": "work.dispatch", "adapter": "DemoBusinessSystem"}}
+```
+
+* `quality.declared` is `false` and `quality.mode` is `undeclared` for a
+  node whose definition declares neither an output nor checks: such a node
+  keeps its previous behaviour and **no quality is implied for it**.
+  `mode` is `validated` when the declared output passed and `rejected` when
+  it did not.
+* `effect` is the external fact: `status` is `succeeded` only when the
+  external system really accepted the effect. A node whose output was
+  rejected keeps `effect.status = "succeeded"` — the effect happened — and
+  fails with `WORKFLOW_OUTPUT_INVALID`; the effect is never produced again.
+* `receipt` carries the transport facts of the receipt the external system
+  returned and the origin that links it to its operation. The business
+  payload is **not** in the view: it is read as the named object the node
+  wrote.
+* `waitMatch` is the binding a wait matched on: `mode` (`bound`, `node` or
+  `kind_only`), the evidence kind, the source and event id of the proof,
+  the work, the node and attempt, the bound node and attempt, and the
+  object revision and digest. `kind_only` says plainly that the wait
+  matched any verified proof of its kind.
+
+The same `quality`, `effect` and `waitMatch` records are returned per
+attempt by `GET /v1/workflows/instances/{workId}/nodes/{nodeId}/attempts`.
 
 ### `POST /v1/workflows/instances/{workId}/results`
 
@@ -335,6 +385,17 @@ Every persisted report entry carries, at judgment time:
 review) or `HUMAN` (a decision). The report is returned in the read model
 under `nodes[].checkResults`, so a historical judgment is reconstructible
 from the stored record and not from the current state of the node.
+
+The automatic and wait nodes produce the same kind of report from the
+validator that judged their output. The report is checked at the core
+boundary before it counts: it may name declared criteria only, a **pass**
+must carry its evidence, and a verdict must come from the validator the
+criterion was bound to (`WORKFLOW_CHECK_VALIDATOR_MISMATCH`). A declared
+criterion with no verdict is a refusal, not a pass
+(`WORKFLOW_CHECK_RESULT_MISSING`); a required criterion that is not
+satisfied is a genuine shortfall (`WORKFLOW_CHECK_SHORTFALL`) and the node
+fails with `WORKFLOW_OUTPUT_INVALID`. Nothing is marked passed by
+default.
 
 `workflowStatus: "finished"` says that the **routing** stopped, never that
 the work was delivered. The read model therefore also carries

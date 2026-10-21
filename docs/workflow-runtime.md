@@ -66,8 +66,15 @@ Per node kind:
 |---|---|---|
 | `agent` | `executor`, `output`, `max_attempts` | `inputs`, `checks`, `on_failure`, `deadline_s`, `max_attempts`, `description` |
 | `human` | `evidence_kind`, `subject` | `authority` (a principal or `{"assigned": true}`), `distinct_from`, `on_reject`, `max_attempts`, `checks`, `deadline_s`, `description` |
-| `action` | `capability`, `subject` | `on_failure`, `deadline_s`, `description` |
-| `wait` | `match`, `deadline_s` | `on_timeout`, `description` |
+| `action` | `capability`, `subject` | `output`, `checks`, `inputs`, `on_failure`, `deadline_s`, `description` |
+| `wait` | `match`, `deadline_s` | `output`, `checks`, `on_timeout`, `description` |
+
+An `output` is `{object, evidence_kind?, validation}`: the named object the
+node produces, the kind of the event it constitutes (optional) and the
+validation that judges it. Only a node that produces an object may declare
+one, so `output` is refused on a human node. A `wait` `match` declares
+exactly one of `evidence_kind`, `node_completed` or `timeout`, and may
+additionally declare `subject` and `bind`.
 
 `authority` names the principal that may decide a human node. It is checked
 against the proof's source; the proof itself can only be written by the
@@ -252,6 +259,65 @@ happens outside the routing transaction, exactly like every other dispatch.
 An operation whose outcome is unknown is **looked up, never repeated**
 (`runtime.reconcile`).
 
+### Automatic node quality
+
+An action node may declare the same two things an agent node declares:
+
+```json
+"n06": {"kind": "action", "capability": "work.dispatch",
+        "subject": {"object": "proposal"},
+        "output": {"object": "order", "evidence_kind": "dispatch_receipt",
+                   "validation": {"shape": {"…": "…"},
+                                  "validator": "effect", "validator_version": "1"}},
+        "checks": [{"id": "N06-1", "method": "PROGRAM",
+                    "criterion": "The dispatch receipt names the order it created.",
+                    "criterion_version": "1",
+                    "validator": "effect", "validator_version": "1"}]}
+```
+
+* **Inputs are judged before the effect.** A node's declared input
+  validation runs the pinned validator, not only the shape descriptor. A
+  failing input blocks the node, and a blocked action node never proposes an
+  operation: no external effect is authorized.
+* **The receipt is the material.** The engine wraps the adapter it calls and
+  keeps the receipt the external system really returned, bounded (8 KiB for
+  the transport fields, 64 KiB for the business payload), together with its
+  origin: the operation id, the capability, the business key, the external
+  id, the document digest and the adapter class. The receipt schema and the
+  digest and action linkage stay authoritative: a receipt that does not
+  match the operation's document digest, or that names another action, is
+  refused (`WORKFLOW_RECEIPT_INVALID`, `WORKFLOW_RECEIPT_ACTION_MISMATCH`).
+  A receipt that does not match is quarantined by the runtime itself — the
+  operation becomes `outcome_unknown`, never a confirmed effect. An
+  operation that was confirmed outside the engine (a host that dispatched it
+  itself) is back-filled from the authoritative **lookup** of the same
+  business key — never from a second effect.
+* **The payload is judged, then adopted.** The business payload the receipt
+  carries is validated against the declared shape and the pinned validator,
+  and the per-criterion report is persisted with the method, the criterion
+  version, the validator id and version, the reviewed input and output
+  digests, the reason and the evidence. Only then is the payload written as
+  the named object and the node completed.
+* **A rejected output is not a false external failure.** The effect stays
+  recorded as what it was (`effect.status = "succeeded"`, with its external
+  id and operation id), the node fails with `WORKFLOW_OUTPUT_INVALID`, the
+  workflow reports `needs_attention`, and the effect is **never produced a
+  second time**: routing back into the same node is refused and a second
+  attempt fails closed with `WORKFLOW_EFFECT_ALREADY_APPLIED`.
+
+When the output validates and the definition declares an `evidence_kind`,
+the engine writes its **own** proof of the external event under the source
+`workflow-engine` (never the ingress source of a signed evidence kind) with
+the event id `wf:<operationId>`. The proof binds the work, the node, the
+attempt, the object revision and digest and the payload.
+
+**Compatibility.** A node that declares neither an `output` nor `checks`
+keeps the previous behaviour: the confirmed effect completes the node and no
+output object is written. The read model says so explicitly —
+`quality.declared` is `false` and `quality.mode` is `undeclared` — so no
+quality is implied for a node that never asked for it, and the stored check
+report stays empty.
+
 ### Review nodes
 
 A node may declare a review: `{"evidence_kind": …, "reviewer": …, "rubric":
@@ -272,6 +338,37 @@ A wait node matches on a verified proof (`evidence_kind`, optionally scoped
 to an object subject), on a completed node, or on a timeout. A proof that
 does not cover the object's current revision does not match.
 
+A wait may declare a **binding**:
+
+```json
+"match": {"evidence_kind": "dispatch_receipt",
+          "subject": {"object": "order"},
+          "bind": {"node": "n06"}}
+```
+
+* `bind.node` names the node whose output the wait awaits. Without an
+  explicit `bind.attempt` the wait accepts the proof of that node's
+  **current** attempt; with one it accepts exactly that attempt. A proof of
+  an earlier attempt therefore never satisfies a new attempt.
+* `subject` pins the proof to the **current revision and digest** of the
+  object it covers: a superseded object is not covered.
+* The matched binding is persisted on the node instance and readable:
+  `waitMatch` carries the work, the node, the attempt, the bound node and
+  attempt, the object revision and digest, and the provenance of the event
+  (its source and event id).
+
+A wait may also declare an `output` and `checks`, exactly like an action
+node. The candidate is the business payload the matched proof carries (or
+the evidence record itself when it carries no payload); it is validated
+against the declared shape and the pinned validator before the workflow
+routes on, and the validated payload becomes the named object.
+
+**Compatibility.** A wait that declares neither a binding nor a subject
+keeps the previous rule — any verified proof of the kind in this work
+satisfies it — and the record says so plainly: `waitMatch.mode` is
+`kind_only` (`bound` for a bound wait, `node` for a node match). No binding
+is implied for it.
+
 ## 4. Routing, rework and the failure table
 
 `advance(work_id, now)` is one deterministic routing pass over the stored
@@ -287,6 +384,9 @@ version bump, no event.
 | agent candidate invalid | the node fails with `WORKFLOW_RESULT_INVALID` and the same node is re-opened as a **new attempt**; the bounded `max_attempts` decides when the work escalates to `needs_attention` (`WorkflowReworkLimitExceeded`) |
 | operation confirmed failed | the node fails; `on_failure` is taken |
 | operation cancelled | the node fails with `OPERATION_CANCELLED`; `on_failure` is taken |
+| a declared input fails its validator | the node is `blocked` before the effect; no operation is proposed |
+| the receipt does not match the operation | the operation is quarantined by the runtime (`outcome_unknown`); the node keeps waiting and is never confirmed |
+| the declared output fails its validator or shape | the node fails with `WORKFLOW_OUTPUT_INVALID`; the effect stays recorded as succeeded, no output object is written and the effect is never repeated |
 | predicate unknown | the edge is blocked; the work reports `needs_attention` |
 | last node terminal | the workflow is `finished` — a **precondition**, never an automatic close; `request_completion` and its full gate remain the only success path. "Finished" says the routing stopped: the read model also carries `terminalNode` and `terminalOutcome`, so a caller never reads it as a delivery |
 
@@ -411,8 +511,7 @@ restarts.
 
 ## 9. The demonstration
 
-`python3 -m work_runtime workflow-demo` runs the ten-node scenario on a
-fresh store:
+`python3 -m work_runtime workflow-demo` runs the scenario on a fresh store:
 
 | node | kind | what it shows |
 |---|---|---|
@@ -421,15 +520,18 @@ fresh store:
 | N03 | agent | the proposal, frozen as an object revision |
 | N04 | human | the safety review; its approval creates N05's task with **no agent turn** |
 | N05 | human | the project approval; it dispatches **exactly one** idempotent external action |
-| N06 | action | the external dispatch, performed by a worker that **really dies** after the effect |
-| N07 | human | the responsible person's report |
-| N08 | human | the independent review; its approval queues the **original session**'s agent work |
+| N06 | action | the external dispatch, performed by a worker that **really dies** after the effect; the receipt it returned is validated and becomes the **order** |
+| N06W | wait | the dispatch wait: it matches only the proof of the attempt it is bound to |
+| N07 | human | the responsible person's report **on the order** |
+| N08 | human | the independent review of the same order; its approval queues the **original session**'s agent work |
 | N09 | agent | the report, completed only after the independent review evidence arrives |
-| N10 | action | the delivery |
+| N10 | action | the delivery; its receipt is validated the same way |
 
 The external effects are counted in the business system's own store, never
 in the process that produced them: after the crash and the restart the count
-is one dispatch and one delivery.
+is one dispatch and one delivery. The order the dispatch receipt produced is
+the object N07 and N08 judge, and the wait accepts only the proof of the
+attempt that produced it.
 
 The scenario is data: `work_runtime/workflow_demo.py` holds a demonstration
 *family* (policy, validators, template, stand-in system). Replacing it with
@@ -471,5 +573,9 @@ consciously, never silently.
   separate slice.
 * No semantic validation of a model's judgement. A review is durable
   evidence, and a program check never claims to have proved meaning.
+* No guarantee that an external system returns a usable business record. A
+  receipt that does not match its operation is quarantined by the runtime,
+  and a receipt that carries no payload cannot produce a named object: the
+  node keeps waiting or fails with the reason it really has.
 * The obligation layer of a family is kind-level; the *exact version* of an
   approval is an engine guarantee, not an obligation.

@@ -19,8 +19,10 @@ published template and by host configuration.
 
 import json
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from .adapter_contract import receipt_is_valid
 from .policy import canonical, digest
 from .workflow_spec import (ValidatorRegistry, eval_predicate, lint_template,
                              template_digest, validate_shape)
@@ -46,6 +48,15 @@ MAX_ADVANCE_STEPS = 128
 
 DEFAULT_MAX_ATTEMPTS = 1
 
+# The source of the proofs the engine writes itself. It is the engine's own
+# trusted channel, never the ingress source of a signed evidence kind: the
+# engine must not impersonate a platform channel.
+WORKFLOW_EVENT_SOURCE = "workflow-engine"
+
+# Bounds on what the engine keeps of an external receipt.
+MAX_RECEIPT_BYTES = 8192
+MAX_OUTPUT_BYTES = 65536
+
 
 class WorkflowError(Exception):
     """Local API misuse raised by the engine (never a persisted rejection)."""
@@ -70,10 +81,99 @@ def _bounded(findings: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return findings[:MAX_FINDINGS]
 
 
+def _bounded_receipt(receipt: Any) -> Tuple[Optional[Dict[str, Any]],
+                                            Optional[Dict[str, Any]]]:
+    """The receipt the adapter returned, and its business payload, bounded.
+
+    The transport fields are kept exactly as the external system stated
+    them — they are what the receipt schema and the digest linkage are
+    checked against. The payload is kept apart and bounded on its own, so
+    an oversized business record is refused instead of silently truncated.
+    """
+    if not isinstance(receipt, dict):
+        return None, None
+    view = {name: value for name, value in receipt.items() if name != "payload"}
+    try:
+        if len(canonical(view).encode("utf-8")) > MAX_RECEIPT_BYTES:
+            return None, None
+    except (TypeError, ValueError):
+        return None, None
+    payload = receipt.get("payload")
+    if payload is None:
+        return view, None
+    if not isinstance(payload, dict):
+        return None, None
+    try:
+        if len(canonical(payload).encode("utf-8")) > MAX_OUTPUT_BYTES:
+            return None, None
+    except (TypeError, ValueError):
+        return None, None
+    return view, payload
+
+
+def _receipt_view(stored: Any) -> Optional[Dict[str, Any]]:
+    """The transport facts of a stored receipt, without its payload.
+
+    The payload is a business record and is read through the object it was
+    written as; the receipt view carries only what links the effect to the
+    operation it belongs to.
+    """
+    if not isinstance(stored, dict):
+        return None
+    receipt = stored.get("receipt")
+    origin = stored.get("origin") or {}
+    if not isinstance(receipt, dict):
+        return None
+    view = {"externalId": receipt.get("external_id"),
+            "status": receipt.get("status"),
+            "digest": receipt.get("digest"),
+            "action": receipt.get("action")}
+    if origin:
+        view["operationId"] = origin.get("operationId")
+        view["capability"] = origin.get("capability")
+        view["adapter"] = origin.get("adapter")
+    return view
+
+
 def _finding(code: str, message: str, **extra) -> Dict[str, Any]:
     entry = {"code": code, "message": message}
     entry.update(extra)
     return entry
+
+
+class _ReceiptRecorder:
+    """The receipts the external system really returned.
+
+    The engine wraps the adapter it is given so the receipt that came back
+    from the external system — not a summary invented afterwards — is the
+    material the node's output is validated against. The recorder changes
+    nothing about the call: it forwards the call and keeps what came back.
+    """
+
+    def __init__(self, adapter):
+        self.adapter = adapter
+        self.receipts: Dict[str, Any] = {}
+        self.adapter_name = type(adapter).__name__
+
+    def execute(self, key, document, content_digest, **kwargs):
+        result = self.adapter.execute(key, document, content_digest, **kwargs)
+        self._remember(key, result)
+        return result
+
+    def lookup(self, key):
+        result = self.adapter.lookup(key)
+        if result is not None:
+            self._remember(key, result)
+        return result
+
+    def _remember(self, key, result):
+        if isinstance(result, dict):
+            self.receipts[key] = result
+
+    def __getattr__(self, name):
+        if name.startswith("_") or name == "adapter":
+            raise AttributeError(name)
+        return getattr(self.__dict__["adapter"], name)
 
 
 class _Context:
@@ -780,8 +880,10 @@ class WorkflowEngine:
             successor = self._successor(db, work, spec, current, instance)
             if successor is None:
                 work["workflow_current"] = None
-                work["workflow_status"] = ("needs_attention" if work.get("cancellation")
-                                          else "finished")
+                work["workflow_status"] = (
+                    "needs_attention" if (work.get("cancellation")
+                                          or instance.get("reason") == "WORKFLOW_OUTPUT_INVALID")
+                    else "finished")
                 work["workflow_terminal"] = {"node": current,
                                               "outcome": instance.get("outcome"),
                                               "reason": instance.get("reason")}
@@ -879,6 +981,33 @@ class WorkflowEngine:
                                              "Input does not match the declared shape",
                                              node=node_id, object=name,
                                              location=problem.get("path", "")))
+            if isinstance(validation, dict) and validation.get("validator") is not None:
+                # The pinned validator judges the input itself, not only its
+                # shape. An input that fails is not usable, and a node whose
+                # input is unusable never authorizes an external effect.
+                validator_id = validation.get("validator")
+                validator_version = validation.get("validator_version")
+                validator = self.validators.resolve(validator_id, validator_version)
+                if validator is None:
+                    findings.append(_finding("INPUT_VALIDATOR_UNKNOWN",
+                                             "The declared input validator does "
+                                             "not resolve",
+                                             node=node_id, object=name,
+                                             validator=str(validator_id),
+                                             validator_version=str(validator_version)))
+                else:
+                    reported = validator(work, {"node": node_id,
+                                                "attempt": instance["attempt"],
+                                                "checks": [], "role": "input",
+                                                "object": name},
+                                         json.loads(row["body"]))
+                    raw_findings, _ = self._split_validator_report(reported)
+                    for problem in raw_findings:
+                        findings.append(_finding(
+                            problem.get("code", "VALIDATOR_REJECTED"),
+                            problem.get("message", "The input was rejected"),
+                            node=node_id, object=name,
+                            location=problem.get("location", "")))
             pinned_inputs.append({"name": name, "revision": row["revision"],
                                   "digest": row["digest"]})
         subject = None
@@ -992,6 +1121,19 @@ class WorkflowEngine:
             instance["state"] = "blocked"
             instance["blockers"] = [{"code": "SUBJECT_MISSING",
                                       "detail": "Action subject is not available"}]
+            return
+        if self._effect_already_applied(db, work["id"], node_id):
+            # The external effect of an earlier attempt of this node really
+            # happened. It is never produced a second time: the node fails
+            # closed and the record of the effect stays.
+            instance["state"] = "failed"
+            instance["outcome"] = "failed"
+            instance["reason"] = "WORKFLOW_EFFECT_ALREADY_APPLIED"
+            instance["blockers"] = [{"code": "WORKFLOW_EFFECT_ALREADY_APPLIED",
+                                      "detail": "The external effect was already applied"}]
+            self._save_instance(db, work, instance, "WorkflowNodeFailed",
+                                {"outcome": "failed",
+                                 "reason": "WORKFLOW_EFFECT_ALREADY_APPLIED"})
             return
         # The automatic action is proposed by the work owner: binding a
         # published template is the owner's authorization of its action
@@ -1401,6 +1543,21 @@ class WorkflowEngine:
                             {"outcome": "completed", "producer": producer})
         return True
 
+    def _effect_already_applied(self, db, work_id, node_id) -> bool:
+        """True when an earlier attempt of this node already had its effect.
+
+        An external effect that really happened is never produced a second
+        time. A node whose output was rejected keeps the record of the
+        effect it caused and fails closed instead of dispatching again.
+        """
+        for instance in self._instances(db, work_id):
+            if instance["node"] != node_id:
+                continue
+            effect = instance.get("effect") or {}
+            if effect.get("status") == "succeeded":
+                return True
+        return False
+
     def _settle_action(self, db, work, spec, node_id, instance, now) -> bool:
         operation_id = instance.get("operation_id")
         if not operation_id:
@@ -1410,13 +1567,8 @@ class WorkflowEngine:
             return self._expire_if_due(db, work, instance, now)
         operation = json.loads(row[0])
         if operation["status"] == "confirmed_succeeded":
-            instance["state"] = "completed"
-            instance["outcome"] = "completed"
-            instance["external_id"] = operation.get("external_id")
-            self._finish_intent(db, work, instance)
-            self._save_instance(db, work, instance, "WorkflowNodeCompleted",
-                                {"outcome": "completed"})
-            return True
+            return self._settle_action_effect(db, work, spec, node_id, instance, now,
+                                              operation)
         if operation["status"] == "confirmed_failed":
             instance["state"] = "failed"
             instance["outcome"] = "failed"
@@ -1435,25 +1587,410 @@ class WorkflowEngine:
             return True
         return self._expire_if_due(db, work, instance, now)
 
+    def _settle_action_effect(self, db, work, spec, node_id, instance, now,
+                               operation) -> bool:
+        """Settle an action node whose external effect really succeeded.
+
+        The effect and the output are two different facts. The effect
+        happened; the output is judged now, against the receipt the
+        external system really returned. A rejected output is a business
+        rejection of the *output* — never a false external failure — and it
+        never causes the effect to be produced a second time.
+        """
+        node = spec["nodes"][node_id]
+        output = node.get("output") or {}
+        declarations = self._check_declarations(node)
+        effect = {"status": "succeeded",
+                  "externalId": operation.get("external_id"),
+                  "operationId": operation["id"],
+                  "capability": operation["capability"],
+                  "documentDigest": operation["document_digest"]}
+        if not output and not declarations:
+            # Compatibility: this node declared no quality at all. It
+            # completes exactly as it always did, and the record says
+            # plainly that nothing was checked.
+            instance["quality"] = {"declared": False, "mode": "undeclared"}
+            instance["effect"] = effect
+            instance["state"] = "completed"
+            instance["outcome"] = "completed"
+            instance["external_id"] = operation.get("external_id")
+            self._finish_intent(db, work, instance)
+            self._save_instance(db, work, instance, "WorkflowNodeCompleted",
+                                {"outcome": "completed"})
+            return True
+        stored = instance.get("receipt") or {}
+        receipt = stored.get("receipt")
+        payload = stored.get("payload")
+        if not isinstance(receipt, dict):
+            # The receipt has not been captured yet. Nothing about the
+            # effect is guessed: the node keeps waiting for the receipt.
+            return self._expire_if_due(db, work, instance, now)
+        findings = []
+        if not receipt_is_valid(receipt, operation["document_digest"]):
+            findings.append(_finding("WORKFLOW_RECEIPT_INVALID",
+                                     "The receipt does not match the operation"))
+        action = receipt.get("action")
+        if action is not None and action != operation["capability"]:
+            findings.append(_finding("WORKFLOW_RECEIPT_ACTION_MISMATCH",
+                                     "The receipt names another action"))
+        origin = stored.get("origin") or {}
+        if (origin.get("externalId")
+                and receipt.get("external_id") != origin.get("externalId")):
+            findings.append(_finding("WORKFLOW_RECEIPT_LINK_MISMATCH",
+                                     "The receipt does not belong to the recorded effect"))
+        if not isinstance(payload, dict):
+            findings.append(_finding("WORKFLOW_OUTPUT_MISSING",
+                                     "The receipt carries no business payload"))
+            payload = None
+        validation = output.get("validation") or {}
+        validator_id = validation.get("validator")
+        validator_version = validation.get("validator_version")
+        check_report = []
+        if payload is not None:
+            shape = validation.get("shape")
+            if isinstance(shape, dict):
+                for problem in validate_shape(shape, payload,
+                                              output.get("object") or "output"):
+                    findings.append(_finding(
+                        problem["code"],
+                        "The external payload does not match the declared shape",
+                        location=problem.get("path", "")))
+            if validator_id is None:
+                findings.append(_finding("WORKFLOW_VALIDATOR_MISSING",
+                                         "A declared output requires a pinned validator"))
+            else:
+                validator = self.validators.resolve(validator_id, validator_version)
+                if validator is None:
+                    findings.append(_finding("WORKFLOW_VALIDATOR_UNKNOWN",
+                                             "The declared validator does not resolve"))
+                else:
+                    check_ids = [declaration["id"] for declaration in declarations
+                                 if declaration.get("method") in (None, "PROGRAM")]
+                    reported = validator(
+                        work, {"node": node_id, "attempt": instance["attempt"],
+                               "checks": check_ids, "role": "output",
+                               "capability": operation["capability"]}, payload)
+                    raw_findings, raw_checks = self._split_validator_report(reported)
+                    for problem in raw_findings:
+                        findings.append(_finding(
+                            problem.get("code", "VALIDATOR_REJECTED"),
+                            problem.get("message", "The validator rejected the payload"),
+                            location=problem.get("location", "")))
+                    check_report = self._check_report_from_validator(
+                        node, raw_checks, validator_id, validator_version,
+                        instance.get("input_digest"), digest(payload), now)
+                    findings.extend(self._report_findings(node, check_report))
+                    missing = self._missing_check_results(node, check_report, "PROGRAM")
+                    if missing:
+                        findings.append(_finding(
+                            "WORKFLOW_CHECK_RESULT_MISSING",
+                            "A declared criterion has no verdict from the validator",
+                            checks=missing))
+                    shortfalls = self._criterion_shortfalls(node, check_report, "PROGRAM")
+                    if shortfalls:
+                        findings.append(_finding(
+                            "WORKFLOW_CHECK_SHORTFALL",
+                            "A required criterion is not satisfied by the validator",
+                            shortfalls=shortfalls))
+        if findings:
+            instance["findings"] = _bounded(findings)
+            instance["check_results"] = check_report
+            instance["quality"] = {
+                "declared": True, "mode": "rejected",
+                "validator": ({"id": validator_id, "version": validator_version}
+                              if validator_id else None)}
+            # The effect stays recorded as what it was: it really happened.
+            instance["effect"] = effect
+            instance["state"] = "failed"
+            instance["outcome"] = "failed"
+            instance["reason"] = "WORKFLOW_OUTPUT_INVALID"
+            instance["external_id"] = operation.get("external_id")
+            self._finish_intent(db, work, instance)
+            self._save_instance(db, work, instance, "WorkflowOutputRejected", {
+                "outcome": "failed", "reason": "WORKFLOW_OUTPUT_INVALID",
+                "effect": effect, "findings": instance["findings"]})
+            return True
+        reference = None
+        if output.get("object"):
+            reference = self._write_object(db, work["id"], output["object"], payload)
+            instance["output"] = reference
+        instance["check_results"] = check_report
+        instance["quality"] = {
+            "declared": True, "mode": "validated",
+            "validator": ({"id": validator_id, "version": validator_version}
+                          if validator_id else None)}
+        instance["effect"] = effect
+        instance["state"] = "completed"
+        instance["outcome"] = "completed"
+        instance["external_id"] = operation.get("external_id")
+        if output.get("evidence_kind"):
+            self._write_output_proof(db, work, node_id, instance, output, reference,
+                                     effect, payload)
+        self._finish_intent(db, work, instance)
+        self._save_instance(db, work, instance, "WorkflowNodeCompleted",
+                            {"outcome": "completed", "output": reference})
+        return True
+
+    def _report_findings(self, node, report) -> List[Dict[str, Any]]:
+        """The quality of a validator's per-criterion report.
+
+        A report is never accepted on the strength of its verdict alone: it
+        names declared criteria only, carries a reason, carries the evidence
+        of a pass, and comes from the validator the criterion was bound to.
+        """
+        findings = []
+        items = [{"check": entry.get("checkId"), "verdict": entry.get("verdict"),
+                  "reason": entry.get("reason"), "evidence": entry.get("evidence")}
+                 for entry in report]
+        findings.extend(self._criterion_findings(node, items))
+        for entry in report:
+            bound = self._bound_validator_for(node, entry.get("checkId"))
+            if bound and (bound.get("validator") != entry.get("validator")
+                          or bound.get("validator_version") != entry.get("validatorVersion")):
+                findings.append(_finding("WORKFLOW_CHECK_VALIDATOR_MISMATCH",
+                                         "The verdict came from a validator the "
+                                         "criterion was not bound to",
+                                         location=str(entry.get("checkId"))))
+        return findings
+
+    def _write_output_proof(self, db, work, node_id, instance, output, reference,
+                            effect, payload) -> Optional[str]:
+        """The engine's own proof that the external event really happened.
+
+        The proof binds the work, the node, the attempt, the object revision
+        and digest and the event provenance, so a wait that awaits this event
+        can never be satisfied by the proof of an earlier attempt.
+        """
+        kind = output.get("evidence_kind")
+        if not kind:
+            return None
+        event_id = "wf:" + str(effect.get("operationId"))
+        row = db.execute("SELECT 1 FROM evidence WHERE source=? AND event_id=?",
+                         (WORKFLOW_EVENT_SOURCE, event_id)).fetchone()
+        if row is not None:
+            return event_id
+        data = {"node": node_id, "attempt": instance["attempt"], "work": work["id"],
+                "object": reference, "external_id": effect.get("externalId"),
+                "operation_id": effect.get("operationId"),
+                "capability": effect.get("capability"), "payload": payload}
+        proof = {"id": uuid.uuid4().hex, "source": WORKFLOW_EVENT_SOURCE,
+                 "event_id": event_id, "kind": kind, "status": "verified",
+                 "data": data}
+        db.execute("INSERT INTO evidence VALUES (?,?,?,?,?)",
+                   (WORKFLOW_EVENT_SOURCE, event_id, work["id"], digest(proof),
+                    canonical(proof)))
+        return event_id
+
     def _settle_wait(self, db, work, spec, node_id, instance, now) -> bool:
         match = instance.get("match") or {}
         if match.get("timeout"):
             return self._expire_if_due(db, work, instance, now)
-        context = _Context(self, db, work)
-        satisfied = False
         if match.get("evidence_kind"):
-            subject = match.get("subject")
-            answer = context.evidence_verified(match["evidence_kind"], subject)
-            satisfied = answer is True
-        elif match.get("node_completed"):
-            satisfied = context.node_completed(match["node_completed"]) is True
-        if not satisfied:
-            return self._expire_if_due(db, work, instance, now)
+            proof = self._wait_evidence(db, work, node_id, instance, match)
+            if proof is None:
+                return self._expire_if_due(db, work, instance, now)
+            return self._settle_wait_matched(db, work, spec, node_id, instance, now,
+                                             proof, match)
+        if match.get("node_completed"):
+            context = _Context(self, db, work)
+            if context.node_completed(match["node_completed"]) is not True:
+                return self._expire_if_due(db, work, instance, now)
+            return self._settle_wait_on_node(db, work, spec, node_id, instance, now,
+                                             match)
+        return self._expire_if_due(db, work, instance, now)
+
+    def _wait_evidence(self, db, work, node_id, instance, match):
+        """The verified proof that satisfies this wait, if there is one.
+
+        A bound wait only accepts a proof of the node it names, at the
+        attempt it awaits: an old proof never satisfies a new attempt. A
+        subject pins the proof to the current revision of the object it
+        covers, so a superseded object is not covered either.
+        """
+        kind = match["evidence_kind"]
+        subject = match.get("subject") or {}
+        bind = match.get("bind") or {}
+        expected_attempt = None
+        if bind.get("node"):
+            if bind.get("attempt") is not None:
+                expected_attempt = bind["attempt"]
+            else:
+                target = self._latest_instance(db, work["id"], bind["node"])
+                if target is None:
+                    return None
+                expected_attempt = target["attempt"]
+        for proof in self.runtime._proofs(db, work["id"]):
+            if proof["status"] != "verified" or proof["kind"] != kind:
+                continue
+            data = proof.get("data") or {}
+            if bind.get("node"):
+                if data.get("node") != bind["node"]:
+                    continue
+                if (expected_attempt is not None
+                        and data.get("attempt") != expected_attempt):
+                    continue
+            if subject.get("object"):
+                name = subject["object"]
+                reference = data.get("object")
+                if isinstance(reference, dict):
+                    row = self._object_row(db, work["id"], name)
+                    if row is None:
+                        continue
+                    if reference.get("name") != name:
+                        continue
+                    if reference.get("revision") != row["revision"]:
+                        continue
+                    if reference.get("digest") != row["digest"]:
+                        continue
+                elif not self._proof_covers_object(db, work["id"], data, name):
+                    continue
+            return proof
+        return None
+
+    def _settle_wait_matched(self, db, work, spec, node_id, instance, now, proof,
+                              match) -> bool:
+        """Settle a wait on the proof it matched.
+
+        The binding that was matched is recorded: the work, the node, the
+        attempt, the object revision and digest, and the provenance of the
+        event. The output the node declares is validated before the workflow
+        routes onward.
+        """
+        data = proof.get("data") or {}
+        reference = data.get("object") if isinstance(data.get("object"), dict) else None
+        bind = match.get("bind") or {}
+        subject = match.get("subject") or {}
+        bound_attempt = None
+        if bind.get("node"):
+            if bind.get("attempt") is not None:
+                bound_attempt = bind["attempt"]
+            else:
+                target = self._latest_instance(db, work["id"], bind["node"])
+                bound_attempt = target["attempt"] if target else None
+        instance["wait_match"] = {
+            "mode": "bound" if (bind.get("node") or subject.get("object")) else "kind_only",
+            "evidenceKind": proof["kind"], "source": proof["source"],
+            "eventId": proof["event_id"], "work": work["id"], "node": node_id,
+            "attempt": instance["attempt"], "boundNode": bind.get("node"),
+            "boundAttempt": bound_attempt, "object": reference}
+        payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
+        return self._settle_wait_output(db, work, spec, node_id, instance, now, payload)
+
+    def _settle_wait_on_node(self, db, work, spec, node_id, instance, now,
+                             match) -> bool:
+        """Settle a wait that awaits the completion of another node."""
+        target = self._latest_instance(db, work["id"], match["node_completed"])
+        reference = (target or {}).get("output") or {}
+        payload = None
+        if reference.get("name"):
+            row = self._object_at(db, work["id"], reference["name"],
+                                  reference["revision"])
+            if row is not None:
+                payload = json.loads(row["body"])
+        instance["wait_match"] = {
+            "mode": "node", "evidenceKind": None, "source": None,
+            "eventId": None, "work": work["id"], "node": node_id,
+            "attempt": instance["attempt"], "boundNode": match["node_completed"],
+            "boundAttempt": (target or {}).get("attempt"), "object": reference}
+        return self._settle_wait_output(db, work, spec, node_id, instance, now, payload)
+
+    def _settle_wait_output(self, db, work, spec, node_id, instance, now,
+                             payload) -> bool:
+        """Validate the output a wait declares before the workflow routes on."""
+        node = spec["nodes"][node_id]
+        output = node.get("output") or {}
+        declarations = self._check_declarations(node)
+        if not output and not declarations:
+            instance["quality"] = {"declared": False, "mode": "undeclared"}
+            instance["state"] = "completed"
+            instance["outcome"] = "completed"
+            self._finish_intent(db, work, instance)
+            self._save_instance(db, work, instance, "WorkflowNodeCompleted",
+                                {"outcome": "completed"})
+            return True
+        findings = []
+        validation = output.get("validation") or {}
+        validator_id = validation.get("validator")
+        validator_version = validation.get("validator_version")
+        check_report = []
+        if not isinstance(payload, dict):
+            findings.append(_finding("WORKFLOW_OUTPUT_MISSING",
+                                     "The matched evidence carries no payload"))
+            payload = {}
+        shape = validation.get("shape")
+        if isinstance(shape, dict):
+            for problem in validate_shape(shape, payload,
+                                          output.get("object") or "output"):
+                findings.append(_finding(
+                    problem["code"],
+                    "The matched evidence does not match the declared shape",
+                    location=problem.get("path", "")))
+        if validator_id is None:
+            findings.append(_finding("WORKFLOW_VALIDATOR_MISSING",
+                                     "A declared output requires a pinned validator"))
+        else:
+            validator = self.validators.resolve(validator_id, validator_version)
+            if validator is None:
+                findings.append(_finding("WORKFLOW_VALIDATOR_UNKNOWN",
+                                         "The declared validator does not resolve"))
+            else:
+                check_ids = [declaration["id"] for declaration in declarations
+                             if declaration.get("method") in (None, "PROGRAM")]
+                reported = validator(work, {"node": node_id,
+                                            "attempt": instance["attempt"],
+                                            "checks": check_ids, "role": "output"},
+                                     payload)
+                raw_findings, raw_checks = self._split_validator_report(reported)
+                for problem in raw_findings:
+                    findings.append(_finding(
+                        problem.get("code", "VALIDATOR_REJECTED"),
+                        problem.get("message", "The validator rejected the evidence"),
+                        location=problem.get("location", "")))
+                check_report = self._check_report_from_validator(
+                    node, raw_checks, validator_id, validator_version,
+                    instance.get("input_digest"), digest(payload), now)
+                findings.extend(self._report_findings(node, check_report))
+                missing = self._missing_check_results(node, check_report, "PROGRAM")
+                if missing:
+                    findings.append(_finding(
+                        "WORKFLOW_CHECK_RESULT_MISSING",
+                        "A declared criterion has no verdict from the validator",
+                        checks=missing))
+                shortfalls = self._criterion_shortfalls(node, check_report, "PROGRAM")
+                if shortfalls:
+                    findings.append(_finding(
+                        "WORKFLOW_CHECK_SHORTFALL",
+                        "A required criterion is not satisfied by the validator",
+                        shortfalls=shortfalls))
+        if findings:
+            instance["findings"] = _bounded(findings)
+            instance["check_results"] = check_report
+            instance["quality"] = {
+                "declared": True, "mode": "rejected",
+                "validator": ({"id": validator_id, "version": validator_version}
+                              if validator_id else None)}
+            instance["state"] = "failed"
+            instance["outcome"] = "failed"
+            instance["reason"] = "WORKFLOW_OUTPUT_INVALID"
+            self._finish_intent(db, work, instance)
+            self._save_instance(db, work, instance, "WorkflowOutputRejected", {
+                "outcome": "failed", "reason": "WORKFLOW_OUTPUT_INVALID",
+                "findings": instance["findings"]})
+            return True
+        reference = None
+        if output.get("object"):
+            reference = self._write_object(db, work["id"], output["object"], payload)
+            instance["output"] = reference
+        instance["check_results"] = check_report
+        instance["quality"] = {
+            "declared": True, "mode": "validated",
+            "validator": ({"id": validator_id, "version": validator_version}
+                          if validator_id else None)}
         instance["state"] = "completed"
         instance["outcome"] = "completed"
         self._finish_intent(db, work, instance)
         self._save_instance(db, work, instance, "WorkflowNodeCompleted",
-                            {"outcome": "completed"})
+                            {"outcome": "completed", "output": reference})
         return True
 
     def _finish_intent(self, db, work, instance):
@@ -1490,6 +2027,10 @@ class WorkflowEngine:
                 # A rejected candidate is re-executed as a new attempt of the
                 # same node; the bounded allowance decides when to escalate.
                 return node_id
+            if reason == "WORKFLOW_OUTPUT_INVALID" and node.get("on_failure") == node_id:
+                # The external effect of this node really happened. Routing
+                # back into it would ask for the same effect again.
+                return None
             if node.get("on_failure"):
                 return node["on_failure"]
             return None
@@ -1800,12 +2341,106 @@ class WorkflowEngine:
         against the confirmed result.
         """
         moment = int(time.time()) if now is None else int(now)
+        recorder = _ReceiptRecorder(adapter)
         work_ids = self.workflow_work_ids()
         for work_id in work_ids:
             self.advance(work_id, moment)
         results = []
         for operation_id in self._prepared_operations(work_ids):
-            results.append(self.runtime.dispatch(operation_id, adapter))
+            results.append(self.runtime.dispatch(operation_id, recorder))
+        self._capture_receipts(recorder)
+        for work_id in self.workflow_work_ids():
+            self.advance(work_id, moment)
+        return results
+
+    def _capture_receipts(self, recorder) -> None:
+        """Persist the receipts the adapter returned onto the waiting nodes.
+
+        The receipt is the material the node's output is validated against,
+        so it is stored with the node that awaits it: bounded, with the
+        origin that links it to the operation it belongs to.
+        """
+        pending = []
+        with self.runtime._connection() as db:
+            for work_id in self.workflow_work_ids():
+                for instance in self._instances(db, work_id):
+                    if instance["state"] not in ("running", "submitted"):
+                        continue
+                    operation_id = instance.get("operation_id")
+                    if not operation_id:
+                        continue
+                    row = db.execute("SELECT body FROM operations WHERE id=?",
+                                     (operation_id,)).fetchone()
+                    if row is None:
+                        continue
+                    operation = json.loads(row[0])
+                    if operation["status"] != "confirmed_succeeded":
+                        continue
+                    pending.append((work_id, instance["node"], instance["attempt"],
+                                    operation))
+        if not pending:
+            return
+        captured = []
+        for work_id, node_id, attempt, operation in pending:
+            receipt = recorder.receipts.get(operation["business_key"])
+            if receipt is None:
+                # An operation that was confirmed outside this engine is
+                # back-filled from the authoritative lookup of the same
+                # business key — never from a second effect.
+                receipt = recorder.lookup(operation["business_key"])
+            if receipt is None:
+                continue
+            captured.append((work_id, node_id, attempt, operation, receipt))
+        if not captured:
+            return
+        with self.runtime._transaction() as db:
+            for work_id, node_id, attempt, operation, receipt in captured:
+                self._store_receipt(db, work_id, node_id, attempt, operation,
+                                    receipt, recorder.adapter_name)
+
+    def _store_receipt(self, db, work_id, node_id, attempt, operation, receipt,
+                       adapter_name) -> None:
+        """Write the receipt and its origin onto the node instance."""
+        view, payload = _bounded_receipt(receipt)
+        if view is None:
+            return
+        origin = {"operationId": operation["id"], "capability": operation["capability"],
+                  "businessKey": operation["business_key"],
+                  "externalId": operation.get("external_id"),
+                  "digest": operation["document_digest"], "adapter": adapter_name}
+        stored = {"receipt": view, "origin": origin, "payload": payload}
+        row = db.execute("SELECT body FROM workflow_nodes WHERE work_id=? AND node=? "
+                         "AND attempt=?", (work_id, node_id, attempt)).fetchone()
+        if row is None:
+            return
+        instance = json.loads(row[0])
+        if instance.get("receipt") == stored:
+            return
+        instance["receipt"] = stored
+        work = self.runtime._work(db, work_id)
+        self._save_instance(db, work, instance, "WorkflowReceiptCaptured", {
+            "operation_id": operation["id"], "external_id": operation.get("external_id"),
+            "adapter": adapter_name})
+
+    def recover(self, adapter, now: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Resume progress after a restart.
+
+        Order matters: evidence is evaluated, waits expire, the workflow is
+        routed (so newly ready nodes create their intents and operations),
+        and only then are uncertain calls reconciled and prepared intents
+        dispatched. Uncertain external effects are looked up, never repeated.
+        """
+        moment = int(time.time()) if now is None else int(now)
+        recorder = _ReceiptRecorder(adapter)
+        for work_id in self.workflow_work_ids():
+            self.runtime.verify_pending(work_id)
+            self.runtime.expire_waits(work_id, moment)
+            self._cancel_workflow(work_id)
+            self.advance(work_id, moment)
+        results = self.runtime.recover(recorder, moment)
+        self._capture_receipts(recorder)
+        # The dispatch above may have confirmed an operation: settle the nodes
+        # that were waiting for it.
         for work_id in self.workflow_work_ids():
             self.advance(work_id, moment)
         return results
@@ -1825,27 +2460,6 @@ class WorkflowEngine:
                         and operation["dispatch_state"] == "ready"):
                     found.append(operation["id"])
         return found
-
-    def recover(self, adapter, now: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Resume progress after a restart.
-
-        Order matters: evidence is evaluated, waits expire, the workflow is
-        routed (so newly ready nodes create their intents and operations),
-        and only then are uncertain calls reconciled and prepared intents
-        dispatched. Uncertain external effects are looked up, never repeated.
-        """
-        moment = int(time.time()) if now is None else int(now)
-        for work_id in self.workflow_work_ids():
-            self.runtime.verify_pending(work_id)
-            self.runtime.expire_waits(work_id, moment)
-            self._cancel_workflow(work_id)
-            self.advance(work_id, moment)
-        results = self.runtime.recover(adapter, moment)
-        # The dispatch above may have confirmed an operation: settle the nodes
-        # that were waiting for it.
-        for work_id in self.workflow_work_ids():
-            self.advance(work_id, moment)
-        return results
 
     def _record_advance_failure(self, work_id: str, reason: str) -> None:
         try:
@@ -1885,6 +2499,9 @@ class WorkflowEngine:
                     "inputDigest": instance.get("input_digest"),
                     "output": instance.get("output"),
                     "checkResults": (instance.get("check_results") or [])[:MAX_VIEW_FINDINGS],
+                    "quality": instance.get("quality"),
+                    "effect": instance.get("effect"),
+                    "waitMatch": instance.get("wait_match"),
                     "createdAt": instance.get("created_at"),
                 })
         return history
@@ -1924,6 +2541,11 @@ class WorkflowEngine:
                     if instance else [],
                     "intentId": instance.get("intent_id") if instance else None,
                     "checks": (spec["nodes"][node_id] or {}).get("checks") or [],
+                    "quality": instance.get("quality") if instance else None,
+                    "effect": instance.get("effect") if instance else None,
+                    "waitMatch": instance.get("wait_match") if instance else None,
+                    "receipt": _receipt_view(instance.get("receipt"))
+                    if instance else None,
                 })
             intents = []
             for row in db.execute("SELECT body FROM workflow_intents WHERE work_id=? "

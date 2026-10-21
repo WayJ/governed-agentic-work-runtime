@@ -48,10 +48,11 @@ class ReviewTestCase(unittest.TestCase):
                "reviewer-b", "approved", proposal["digest"], proposal["revision"])
         self.engine.pump(RecordingAdapter(os.path.join(self.folder, "effects.sqlite")),
                          1000)
+        order = self.node("n06")["outputs"][0]
         decide(self.runtime, self.engine, self.work_id, "field_report",
-               "responsible-c", "approved", proposal["digest"], proposal["revision"])
+               "responsible-c", "approved", order["digest"], order["revision"])
         decide(self.runtime, self.engine, self.work_id, "independent_review",
-               "reviewer-d", "approved", proposal["digest"], proposal["revision"])
+               "reviewer-d", "approved", order["digest"], order["revision"])
         self.assertEqual(self.node("n09")["state"], "running")
 
     def submit_report(self, attempt=1):

@@ -444,7 +444,7 @@ class InstanceTests(HttpBridgeTestCase):
         self.assertEqual(body["workId"], "W-1")
         self.assertEqual(body["workflowStatus"], "active")
         self.assertEqual(body["currentNode"], "n01")
-        self.assertEqual(len(body["nodes"]), 10)
+        self.assertEqual(len(body["nodes"]), 11)
         self.assertEqual(body["allowedActions"][0]["action"], "submit_node_result")
         self.assertEqual(body["allowedActions"][0]["node"], "n01")
 

@@ -112,14 +112,19 @@ class RestartTests(RecoveryTestCase):
             entry = [item for item in view["nodes"] if item["node"] == node][0]
             self.assertEqual(entry["attempt"], 1)
             self.assertEqual(entry["state"], "completed")
-        # And the object was written exactly once.
+        # And every object was written exactly once: the intake, the
+        # analysis, the proposal, the order the dispatch receipt produced and
+        # the receipt the bound wait recorded.
         db = sqlite3.connect(self.path)
         try:
-            count = db.execute("SELECT COUNT(*) FROM workflow_objects WHERE work_id=?",
-                               (self.work_id,)).fetchone()[0]
+            rows = db.execute("SELECT name,COUNT(*) FROM workflow_objects "
+                              "WHERE work_id=? GROUP BY name",
+                              (self.work_id,)).fetchall()
         finally:
             db.close()
-        self.assertEqual(count, 3)
+        self.assertEqual(sorted(rows),
+                         [("analysis", 1), ("dispatch_receipt", 1), ("intake", 1),
+                          ("order", 1), ("proposal", 1)])
 
     def test_a_pending_human_task_survives_a_restart(self):
         instantiate(self.runtime, self.engine, self.work_id)

@@ -904,6 +904,17 @@ section records what is verified and what is not.
 | W40 | A criterion names its judge, and the stages keep their own records | covered | `test_a_complete_review_completes_the_node` — the program check and the review keep different identifiers and both records |
 | W36 | The judgment history is readable per attempt | covered | `test_the_judgment_history_is_readable_per_attempt`, `test_the_attempt_history_of_a_node_is_readable` — a judgment belongs to the attempt that produced it |
 | W35 | The create validates the contract, the plan and the snapshot | covered | `test_a_policy_that_is_not_the_registered_one_is_refused`, `test_the_registered_policy_is_accepted`, `test_the_submitted_plan_is_used`, `test_a_malformed_plan_is_refused`, `test_the_trusted_snapshot_carries_the_session_and_the_participants`, `test_a_participant_must_name_a_declared_node` — `WORKFLOW_POLICY_MISMATCH`, `PLAN_INVALID`, `WORKFLOW_PARTICIPANT_UNKNOWN` |
+| W42 | An automatic node's input is judged before the effect | covered | `test_an_input_validator_failure_prevents_the_external_effect` — the node is `blocked`, no operation is prepared, the effect count is 0 |
+| W43 | An automatic node's output is judged by the pinned validator | covered | `test_a_validated_payload_becomes_a_named_object`, `test_the_output_report_names_the_judge_of_every_criterion` — the payload becomes the named object; the report names the method, the criterion version, the validator and version, the reviewed digests, the reason and the evidence |
+| W44 | A failed output is not a false external failure | covered | `test_the_external_effect_stays_recorded_when_the_output_fails` — the operation stays `confirmed_succeeded`, the instance records the effect as succeeded |
+| W45 | A failed output is never produced again | covered | `test_a_rejected_output_is_never_dispatched_again`, `test_a_rejected_output_is_never_routed_back_into_the_same_node` — one effect in the business system's own store across the rejection and the recovery |
+| W46 | The receipt is the adapter's, and its linkage is authoritative | covered | `test_a_receipt_that_names_another_action_is_refused`, `test_a_receipt_that_does_not_match_the_document_is_never_accepted` — `WORKFLOW_RECEIPT_ACTION_MISMATCH`; a digest that does not match is quarantined by the runtime (`outcome_unknown`) |
+| W47 | A missing per-check verdict is a refusal, not a pass | covered | `test_a_missing_per_check_verdict_is_refused` — `WORKFLOW_CHECK_RESULT_MISSING`, no object written |
+| W48 | A wait binds the proof it matched | covered | `test_a_wait_binds_the_proof_it_matched` — the work, the node, the attempt, the bound node and attempt, the object revision and digest and the event provenance are on the record |
+| W49 | An old proof never satisfies a new attempt | covered | `test_a_proof_of_another_attempt_does_not_satisfy_the_wait` — the wait keeps waiting |
+| W50 | A wait is bound to the current revision of its subject | covered | `test_a_proof_of_a_superseded_revision_does_not_satisfy_the_wait`, `test_a_proof_of_another_digest_does_not_satisfy_the_wait` |
+| W51 | A wait's output is judged before the workflow routes on | covered | `test_a_wait_writes_its_validated_output`, `test_a_wait_output_failure_stops_the_downstream_node` — the validated payload becomes the named object; a rejected output stops the next node |
+| W52 | A node that asked for no quality is not implied to have it | covered | `test_a_node_without_a_declaration_is_not_implied_to_be_checked` — `quality.declared` is `false`, `quality.mode` is `undeclared`, the report stays empty |
 
 ### Bridge, recovery and demonstration
 
@@ -956,6 +967,19 @@ section records what is verified and what is not.
   the published definition carries the criterion text and its validator
   binding, and a criterion validator that does not resolve fails closed at
   publication.
+- **Per-node IO and quality** (`tests/test_workflow_node_quality.py`, 24
+  tests): an automatic node's input is judged by the pinned validator before
+  any effect is authorized; the receipt the external system really returned
+  is persisted with its origin and is refused when it names another action
+  or does not match the document; the validated payload becomes a named
+  object and the per-criterion report names the judge of every criterion; a
+  rejected output is not a false external failure and is never produced
+  again — one effect in the business system's own store across the rejection
+  and the recovery; a missing per-check verdict is a refusal; a wait binds
+  the work, node, attempt, object revision and digest and event provenance
+  of the proof it matched, and an old proof never satisfies a new attempt; a
+  wait's output is judged before the workflow routes on; and a node that
+  declared no quality says so plainly.
 - **Recovery** (`tests/test_workflow_recovery.py`, 7 tests): a prepared
   action dispatched once after a restart, an effect committed before a real
   crash looked up rather than repeated, a restart that resumes without
@@ -963,12 +987,15 @@ section records what is verified and what is not.
   restart, a cancellation with an in-flight effect that is neither closed
   nor declared failed, a late callback that cannot revive a cancelled
   instance, and a cancelled work that dispatches nothing further.
-- **Demonstration** (`tests/test_workflow_demo.py`, 2 tests): the ten-node
-  scenario end to end on a fresh store, with a real worker process that dies
+- **Demonstration** (`tests/test_workflow_demo.py`, 2 tests): the scenario end
+  to end on a fresh store, with a real worker process that dies
   after the external effect, a restart that recovers the original operation,
   the external effects counted in the business system's own store (one
   dispatch, one delivery), every operation `confirmed_succeeded` with
   exactly one attempt, and a stale decision that does not advance a node.
+  The dispatch receipt becomes the named order the field report and the
+  independent review judge, and the dispatch wait matches only the bound
+  proof of the attempt that produced it.
 
 ### Explicitly not covered
 
