@@ -231,6 +231,32 @@ python3 -m work_runtime support-demo
 
 The ninth demonstration runs the third business family — customer support tickets — over the frozen command surface: `work_runtime/runtime.py` and `work_runtime/adapters.py` stayed byte-identical while the family shipped (the S15 freeze verdict; SHA-256 pins recorded in the sprint evidence). Chapter one files a critical billing ticket before triage: with severity and category unresolved the proposal is blocked `APPLICABILITY_UNRESOLVED` — unknown never passes as within-policy, and the unresolved severity keeps the SLA rule's applicability unknown too. Triage revises the document (severity `critical`, category `billing`), the desk commits a 45-minute SLA within the critical budget, and admission accepts with the ticket reference itself as the business key — no content digest in the key. Dispatch files issue `#1` in the GitHub-issue-shaped fake tracker; the tracker-source acceptance satisfies the goal and the work closes `succeeded`. Chapter two dispatches a second ticket through a grants-carrying worker subprocess that really dies (exit 73) after the tracker accepted the write; a restarted Runtime `recover()`s by the ticket-reference business key — the original receipt, exactly one attempt, nothing re-sent — and the second work closes. The tracker keeps one issue per ticket reference: identical content under a fresh key reuses the issue number, changed content under a used reference is a stored business rejection `TICKET_REFERENCE_CONTENT_CONFLICT`, and through the governed flow it surfaces as `OPERATION_CONTENT_CONFLICT` at proposal time — one reference, one governed dispatch. Every printed count is asserted against the SQLite stores directly; no credentials, services or secrets are involved. See the [adapter contract](docs/adapter-contract.md) and [runtime boundaries](docs/runtime-boundaries.md).
 
+## Run a mixed-node workflow: agent, human and automatic nodes
+
+```bash
+python3 -m work_runtime workflow-demo
+```
+
+The tenth demonstration mixes node kinds inside one governed work. The
+scenario is *published data*, not code: a definition with ten nodes, the
+executors, the review authorities, the capabilities and the validators are
+bound to a content digest, so a binding can always be checked against the
+exact bytes it pinned. An agent prepares the material, a first reviewer
+approves it and the runtime creates the second reviewer's task by itself —
+no agent turn in between — a second reviewer approves and the runtime
+dispatches exactly one external action, a responsible person reports what
+was done, an independent reviewer checks it and the runtime queues the
+*original session's* agent work with a stable request id, the agent writes
+the report and it completes only after the independent review evidence
+arrives, and the runtime delivers the artifact. The dispatching worker is a
+real process that dies (exit 73) after the external effect; the restart
+looks the original operation up instead of repeating it. The external
+effects are counted in the stand-in business system's own store: one
+dispatch, one delivery. An executor can never approve, a candidate is
+accepted only by the registered, version-pinned validator, and a stale
+decision never satisfies a node. See the [workflow runtime](docs/workflow-runtime.md)
+and [runtime boundaries](docs/runtime-boundaries.md).
+
 ## Browse it: a local read-only GUI
 
 ```bash

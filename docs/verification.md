@@ -848,3 +848,77 @@ in [adapter-contract.md](adapter-contract.md).
 No protocol matrix row is added: the family reuses the already-covered
 command, dispatch, reconciliation and migration machinery — that reuse under
 byte-pinned lifecycle files is the freeze result itself.
+
+## S16 coverage — mixed-node workflow runtime (core wave)
+
+The mixed-node engine (`work_runtime/workflow.py`,
+`work_runtime/workflow_spec.py`), the generic HTTP bridge
+(`work_runtime/workflow_server.py`) and the ten-node demonstration
+(`work_runtime/workflow_demo.py`) are a new execution organization over the
+existing Work/Evidence/Operation/Wait machinery. The language, the engine and
+the bridge are described in [workflow-runtime.md](workflow-runtime.md); this
+section records what is verified and what is not.
+
+### Workflow matrix (W01–W16)
+
+| Case | Behaviour | Status | Evidence |
+|---|---|---|---|
+| W01 | One routing pass changes nothing twice | covered | `test_a_second_pass_writes_nothing` — two further passes leave the state version untouched |
+| W02 | The entry node opens and waits for its executor | covered | `test_the_entry_node_opens_and_waits_for_the_executor` — one `agent_task` intent with a stable id |
+| W03 | Only the configured executor may submit a candidate | covered | `test_only_the_configured_executor_may_submit` — `AUTHORITY_DENIED` |
+| W04 | A candidate is accepted only by the registered, version-pinned validator | covered | `test_an_invalid_candidate_is_rejected_and_stores_no_object` — `WORKFLOW_RESULT_INVALID`, no object row, node not completed |
+| W05 | A self-certifying payload is not a validation path | covered | `test_a_self_certifying_claim_is_not_accepted` — the `validated` field is an undeclared field |
+| W06 | An approval creates the next human task with no agent turn | covered | `test_an_approval_creates_the_next_human_task_without_an_agent_turn` — the `n05` task appears, the agent intents do not change |
+| W07 | A decision must cover the subject's exact revision and digest | covered | `test_a_stale_decision_does_not_satisfy_a_node` — a wrong digest and a wrong revision both leave the node waiting |
+| W08 | An executor may not approve; a reviewer may not repeat a role | covered | `test_an_executor_may_not_approve`, `test_a_reviewer_may_not_repeat_another_reviewers_role` — bounded findings, the node does not advance |
+| W09 | A rejection takes the declared rework branch | covered | `test_a_rejection_routes_back_to_the_rework_branch` — `n03` runs again as attempt 2 |
+| W10 | Rework is bounded and escalates | covered | `test_bounded_rework_escalates_to_needs_attention` — `WorkflowReworkLimitExceeded` |
+| W11 | Rework invalidates the approval of the previous version | covered | `test_rework_invalidates_the_approval_of_the_previous_version` — the old proof stays on the record, the new attempt waits |
+| W12 | A late callback cannot revive a completed node | covered | `test_a_late_result_cannot_revive_a_completed_node` — `WORKFLOW_ATTEMPT_STALE`, one object revision |
+| W13 | The same command replays; changed content conflicts | covered | `test_the_same_command_replays_and_a_changed_body_conflicts` — the original receipt, then `COMMAND_ID_REUSED` |
+| W14 | An approval dispatches exactly one external action | covered | `test_an_approval_creates_exactly_one_external_action` — one operation, one effect, still one after a second pump |
+| W15 | An unknown effect is looked up, never repeated | covered | `test_an_unknown_effect_is_looked_up_and_never_repeated` — a real crash between the effect and the record, then one effect and a confirmed operation |
+| W16 | Publication and binding fail closed | covered | `PublicationAndBindingTests` — an immutable definition, an unknown validator version, a family mismatch, an incomplete required check, a double binding |
+
+### Bridge, recovery and demonstration
+
+- **HTTP bridge** (`tests/test_workflow_http.py`, 11 tests, real loopback
+  socket): the route whitelist (the product's `/v1/deliveries` route is not
+  part of this surface and answers 404 here), a published template read
+  back, an instance created and read back, the bounded read model (≤64
+  nodes, ≤32 intents, ≤16 findings per node), a candidate accepted and a bad
+  one refused with findings, a stale decision refused `409`, the durable
+  intent ids and their acknowledgement, a body carrying a credential absent
+  from the log, and **progress without a client poll** — the ticker
+  dispatches the authorized action on its own.
+- **Recovery** (`tests/test_workflow_recovery.py`, 7 tests): a prepared
+  action dispatched once after a restart, an effect committed before a real
+  crash looked up rather than repeated, a restart that resumes without
+  re-running a completed node, a pending human task that survives a
+  restart, a cancellation with an in-flight effect that is neither closed
+  nor declared failed, a late callback that cannot revive a cancelled
+  instance, and a cancelled work that dispatches nothing further.
+- **Demonstration** (`tests/test_workflow_demo.py`, 2 tests): the ten-node
+  scenario end to end on a fresh store, with a real worker process that dies
+  after the external effect, a restart that recovers the original operation,
+  the external effects counted in the business system's own store (one
+  dispatch, one delivery), every operation `confirmed_succeeded` with
+  exactly one attempt, and a stale decision that does not advance a node.
+
+### Explicitly not covered
+
+- **No authentication and no tenant isolation.** The bridge resolves the
+  approving principal from the published node and the policy's source
+  registry, not from the request body, but the principal names remain
+  trusted local configuration. Nothing here is distributed authentication.
+- **No distributed exactly-once, no leases, no fencing.** The bridge takes
+  a single-coordinator file lock; a second coordinator fails fast instead
+  of being fenced.
+- **No semantic proof.** A review is durable evidence from a named
+  authority; a program check never claims that a model's judgement is
+  correct, and a passing shape never stands in for a business review.
+- **No arbitrary dynamic graph.** Only published, immutable definitions may
+  be bound, with constrained instance parameters.
+- **The installed verifier was not extended** with a workflow stage in this
+  slice: `scripts/verify_install.py` still exercises the previous
+  demonstrations only.

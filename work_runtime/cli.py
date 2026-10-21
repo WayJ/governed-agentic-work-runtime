@@ -12,6 +12,7 @@ from .publishing import PublishingPolicy
 from .publishing_demo import publishing_grants, run_demo as run_publish_demo
 from .support import SupportPolicy, support_grants
 from .support_demo import run_demo as run_support_demo
+from .workflow_demo import run_workflow_demo, run_workflow_worker
 from .revocation_demo import run_revocation_demo
 from .rotation_demo import run_rotation_demo
 from .runtime import Runtime
@@ -89,6 +90,20 @@ def main(argv=None):
              "doctored-card conflict, loader fail-closed, key rotation)")
     publication.add_argument("--directory",
                              help="Parent directory for a fresh demo folder")
+    workflow = sub.add_parser(
+        "workflow-demo",
+        help="Run the ten-node mixed-node workflow demonstration "
+             "(agent, human, automatic nodes; a real crash, a restart and "
+             "independently counted external effects)")
+    workflow.add_argument("--directory",
+                          help="Parent directory for a fresh demo folder")
+    worker = sub.add_parser("workflow-worker",
+                            help="Internal demonstration worker for one "
+                                 "workflow operation")
+    worker.add_argument("--runtime", required=True)
+    worker.add_argument("--system", required=True)
+    worker.add_argument("--operation", required=True)
+    worker.add_argument("--crash-after-effect", action="store_true")
     lint = sub.add_parser("lint-sop",
                           help="Lint a static SOP rule-card JSON file "
                                "(exit 0 clean / 1 diagnostics / 2 file error)")
@@ -141,6 +156,11 @@ def main(argv=None):
         run_publication_demo(args.directory)
     elif args.command == "support-demo":
         run_support_demo(args.directory)
+    elif args.command == "workflow-demo":
+        run_workflow_demo(args.directory)
+    elif args.command == "workflow-worker":
+        run_workflow_worker(args.runtime, args.system, args.operation,
+                            args.crash_after_effect)
     elif args.command == "lint-sop":
         raise SystemExit(run_lint_sop(args.path, args.as_json))
     elif args.command == "inspect":

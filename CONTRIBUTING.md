@@ -31,6 +31,10 @@ The package has zero runtime dependencies. Optional development installation: `p
 | `work_runtime/authoring.py` | Static SOP rule-card linting and canonical content digests |
 | `work_runtime/file_adapter.py` | Real-filesystem `FilePublisher` adapter (one immutable JSON artifact per key) |
 | `work_runtime/adoption_demo.py` | Strict SOP file loader, packaged-card access and the adoption demonstration |
+| `work_runtime/workflow_spec.py` | Workflow definition lint, canonical digest, three-valued predicates, closed shape descriptors, validator registry |
+| `work_runtime/workflow.py` | The mixed-node engine: published templates, named objects, node instances, routing, agent results, human decisions, automatic actions, durable intents, recovery |
+| `work_runtime/workflow_server.py` | The generic `/v1/workflows` HTTP bridge, the single-coordinator lock and the periodic advance/recover ticker |
+| `work_runtime/workflow_demo.py` | The ten-node demonstration family and its crash/restart harness |
 | `work_runtime/data/sop/` | Packaged single-source example rule cards (shipped as package data) |
 | `work_runtime/demo.py` | Deterministic proposer and real worker crash demonstration |
 | `work_runtime/publishing_demo.py` | Signed-evidence publication demonstration |

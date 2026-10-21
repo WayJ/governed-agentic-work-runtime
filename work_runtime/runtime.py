@@ -14,6 +14,7 @@ from typing import Callable, Dict, Optional, Protocol
 
 from .adapter_contract import receipt_is_valid, valid_contract
 from .policy import Policy, canonical, digest
+from .workflow import WORKFLOW_COMMANDS
 
 
 class CommandError(ValueError):
@@ -104,6 +105,10 @@ class Runtime:
                  *, policies: Optional[Dict[str, Policy]] = None):
         self.policies = _validated_registry(policy, policies)
         self.path, self.policy, self.grants = str(path), policy, grants
+        # Mixed-node workflow engine (optional). Set by WorkflowEngine; the
+        # runtime stays usable without one and non-workflow works are
+        # unaffected either way.
+        self.workflow = None
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as db:
             db.executescript("""
@@ -127,6 +132,21 @@ class Runtime:
                     type TEXT NOT NULL, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS metadata (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS workflow_templates (
+                    id TEXT, version TEXT, digest TEXT NOT NULL, body TEXT NOT NULL,
+                    PRIMARY KEY(id, version));
+                CREATE TABLE IF NOT EXISTS workflow_objects (
+                    work_id TEXT NOT NULL, name TEXT NOT NULL, revision INTEGER NOT NULL,
+                    digest TEXT NOT NULL, body TEXT NOT NULL,
+                    PRIMARY KEY(work_id, name, revision));
+                CREATE TABLE IF NOT EXISTS workflow_nodes (
+                    work_id TEXT NOT NULL, node TEXT NOT NULL, attempt INTEGER NOT NULL,
+                    state TEXT NOT NULL, body TEXT NOT NULL,
+                    PRIMARY KEY(work_id, node, attempt));
+                CREATE TABLE IF NOT EXISTS workflow_intents (
+                    id TEXT PRIMARY KEY, work_id TEXT NOT NULL, node TEXT NOT NULL,
+                    attempt INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
+                    body TEXT NOT NULL);
             """)
             row = db.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
             if row and row[0] != "1":
@@ -205,8 +225,12 @@ class Runtime:
                                     or requirement["applicability"] == "not_applicable"):
                     wait["status"] = "triggered"
             if work["status"] != "needs_attention":
-                work["status"] = "waiting" if any(
-                    w["status"] == "waiting" for w in work["waits"]) else "active"
+                workflow_status = work.get("workflow_status")
+                if workflow_status in ("active", "waiting", "needs_attention"):
+                    work["status"] = workflow_status
+                else:
+                    work["status"] = "waiting" if any(
+                        w["status"] == "waiting" for w in work["waits"]) else "active"
 
     def _save(self, db, work, event, details=None):
         work["state_version"] += 1
@@ -333,6 +357,9 @@ class Runtime:
         elif kind in ("bind_contract", "revise_plan", "revise_document",
                       "register_wait", "request_completion"):
             ok = self._manager(actor, work)
+        elif kind in WORKFLOW_COMMANDS:
+            engine = getattr(self, "workflow", None)
+            ok = bool(engine) and engine.replay_allowed(actor, work, kind)
         else:
             ok = True  # Unsupported kinds replay exactly as they were decided.
         return None if ok else self._reject("AUTHORITY_DENIED", version)
@@ -365,9 +392,20 @@ class Runtime:
 
     def _apply(self, db, actor, work, kind, payload):
         version = work["state_version"]
+        if kind in WORKFLOW_COMMANDS:
+            engine = getattr(self, "workflow", None)
+            if engine is None:
+                return self._reject("WORKFLOW_ENGINE_UNAVAILABLE", version)
+            return engine.apply_command(db, actor, work, kind, payload, version)
         if kind == "propose_action":
             return self._propose(db, actor, work, payload)
         if kind == "request_cancel":
+            # The workflow's own nodes and durable intents are cancelled in
+            # the same transaction as the work, so a crash can never leave a
+            # running node behind a cancelled work.
+            engine = getattr(self, "workflow", None)
+            if engine is not None and work.get("workflow"):
+                engine.cancel_in_transaction(db, work)
             return self._request_cancel(db, actor, work, payload, version)
         if kind == "finalize_cancel":
             return self._finalize_cancel(db, actor, work, payload, version)
@@ -622,6 +660,47 @@ class Runtime:
         return self._accepted(work, policy_version=target.version,
                               contract_revision=work["contract"]["revision"])
 
+    @staticmethod
+    def _object_binding(payload):
+        """The optional named-object binding of a proposal.
+
+        A bound proposal dispatches a named object revision instead of the
+        work-global document. The binding names the exact revision and
+        digest, so a proposal can never ride a newer object than the one
+        the caller saw.
+        """
+        binding = payload.get("object")
+        if binding is None:
+            return None
+        if (not isinstance(binding, dict)
+                or set(binding) != {"name", "revision", "digest"}
+                or not isinstance(binding["name"], str) or not binding["name"]
+                or type(binding["revision"]) is not int
+                or not isinstance(binding["digest"], str) or not binding["digest"]):
+            raise CommandError("Object binding requires exactly name, revision and digest")
+        return binding
+
+    @staticmethod
+    def _object_current(db, work_id, name):
+        return db.execute(
+            "SELECT name,revision,digest,body FROM workflow_objects "
+            "WHERE work_id=? AND name=? ORDER BY revision DESC LIMIT 1",
+            (work_id, name)).fetchone()
+
+    @staticmethod
+    def _object_operation_key(policy, capability, work, binding):
+        """Business key of an object-bound operation.
+
+        Families that never bind workflows keep their own operation_key. A
+        family that wants object-aware keys may declare operation_key_for_object;
+        otherwise the runtime derives a stable, structurally distinct key.
+        """
+        hook = getattr(policy, "operation_key_for_object", None)
+        if callable(hook):
+            return hook(capability, work, binding)
+        return digest([policy.id, capability, work["id"],
+                       binding["name"], binding["revision"]])
+
     def _propose(self, db, actor, work, payload):
         version = work["state_version"]
         compensation_of = payload.get("compensates")
@@ -656,8 +735,29 @@ class Runtime:
             return self._reject("CONTRACT_REVISION_MISMATCH", version)
         if payload.get("plan_revision") != work["plan_revision"]:
             return self._reject("PLAN_REVISION_MISMATCH", version)
-        if payload.get("document_digest") != work["document_digest"]:
-            return self._reject("EVIDENCE_SCOPE_MISMATCH", version)
+        binding = self._object_binding(payload)
+        if binding is not None and not work.get("workflow"):
+            # An object-bound proposal is a workflow capability. A work without
+            # a bound workflow keeps exactly its previous admission path, so
+            # no client can route around the document-based checks.
+            return self._reject("WORKFLOW_OBJECT_BINDING_UNSUPPORTED", version,
+                                [binding["name"]])
+        if binding is None:
+            if payload.get("document_digest") != work["document_digest"]:
+                return self._reject("EVIDENCE_SCOPE_MISMATCH", version)
+            subject_digest = work["document_digest"]
+            subject_body = work["document"]
+        else:
+            current = self._object_current(db, work["id"], binding["name"])
+            if current is None:
+                return self._reject("WORKFLOW_OBJECT_UNKNOWN", version, [binding["name"]])
+            if (current["digest"] != binding["digest"]
+                    or current["revision"] != binding["revision"]):
+                return self._reject("WORKFLOW_OBJECT_REVISION_MISMATCH", version)
+            if payload.get("document_digest") != binding["digest"]:
+                return self._reject("EVIDENCE_SCOPE_MISMATCH", version)
+            subject_digest = binding["digest"]
+            subject_body = json.loads(current["body"])
         policy = self._policy_for(work)
         link = None
         if compensation_of is not None:
@@ -673,11 +773,17 @@ class Runtime:
             return self._reject(code, version, blockers)
         for row in db.execute("SELECT body FROM operations WHERE work_id=?", (work["id"],)):
             pending = json.loads(row[0])
-            if (pending["status"] in ("dispatched", "outcome_unknown")
-                    and pending["document_digest"] != work["document_digest"]):
+            if pending["status"] not in ("dispatched", "outcome_unknown"):
+                continue
+            if binding is None:
+                diverged = pending["document_digest"] != work["document_digest"]
+            else:
+                diverged = pending.get("object") != binding
+            if diverged:
                 return self._reject("OUTCOME_UNRESOLVED", version, [pending["id"]])
         if compensation_of is None:
-            key = policy.operation_key(capability, work)
+            key = (self._object_operation_key(policy, capability, work, binding)
+                   if binding is not None else policy.operation_key(capability, work))
         else:
             # Runtime-owned compensation key (D6): stable across same-family
             # policy versions, structurally distinct from every forward key,
@@ -686,7 +792,11 @@ class Runtime:
         old = db.execute("SELECT body FROM operations WHERE business_key=?", (key,)).fetchone()
         if old:
             operation = json.loads(old[0])
-            if operation["document_digest"] != work["document_digest"] or operation["work_id"] != work["id"]:
+            if binding is None:
+                same_subject = operation["document_digest"] == work["document_digest"]
+            else:
+                same_subject = operation.get("object") == binding
+            if not same_subject or operation["work_id"] != work["id"]:
                 return self._reject("OPERATION_CONTENT_CONFLICT", version)
             if operation["status"] == "prepared" and operation["dispatch_state"] in ("cancelled", "held"):
                 operation.update(actor=actor, plan_revision=work["plan_revision"],
@@ -703,9 +813,11 @@ class Runtime:
         operation = {"id": uuid.uuid4().hex, "business_key": key, "work_id": work["id"],
                      "actor": actor, "capability": capability, "status": "prepared",
                      "dispatch_state": "ready", "attempts": [],
-                     "document": work["document"], "document_digest": work["document_digest"],
+                     "document": subject_body, "document_digest": subject_digest,
                      "plan_revision": work["plan_revision"],
                      "contract_revision": work["contract"]["revision"]}
+        if binding is not None:
+            operation["object"] = dict(binding)
         if link is not None:
             operation["compensates"] = link
         self._save_op(db, operation)
@@ -1008,7 +1120,15 @@ class Runtime:
                 self._save(db, work, "DispatchHeld",
                            {"operation_id": op["id"], "reason": op["reason"]})
                 return op
-            if (work["status"] == "closed" or op["document_digest"] != work["document_digest"]
+            bound = op.get("object")
+            if bound is None:
+                subject_stale = op["document_digest"] != work["document_digest"]
+            else:
+                current = self._object_current(db, work["id"], bound["name"])
+                subject_stale = (current is None
+                                 or current["digest"] != bound["digest"]
+                                 or current["revision"] != bound["revision"])
+            if (work["status"] == "closed" or subject_stale
                     or op["plan_revision"] != work["plan_revision"]
                     or op["contract_revision"] != work["contract"]["revision"]):
                 op["dispatch_state"] = "cancelled"

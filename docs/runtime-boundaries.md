@@ -42,6 +42,36 @@ stored receipt is returned for a closed work while authority holds.
 | operation | business key derived by the policy (expense demo: policy id + capability + document id + document revision; publishing family: policy id + capability + document id + document digest; support-ticket family: policy id + capability + the ticket reference alone) | a new command proposing the same logical effect re-associates the existing operation instead of creating a second one; same key with different content is rejected `OPERATION_CONTENT_CONFLICT` |
 | external effect | idempotency key = the operation's business key, enforced by the adapter | the external system deduplicates repeated calls with the same key and content |
 
+## Mixed-node workflow boundary (S16 — the disclosed freeze exception)
+
+The S15 verdict froze `work_runtime/runtime.py` for new *families*. Generic
+mixed-node workflow support cannot be built as family-only code, so S16 edits
+that file additively and records the digests here. The full description of
+the language, the engine and the bridge lives in
+[workflow-runtime.md](workflow-runtime.md).
+
+| file | SHA-256 before | SHA-256 after |
+|---|---|---|
+| `work_runtime/runtime.py` | `80bf721b3369a6fb865fd6aba0e57804a69eb8587431f8fa6edf1183fc53f4b3` | `0655baa42be96a3367f606063668c64f4dd6f7c7bfe0dfaaa09607e2349d1d06` |
+| `work_runtime/adapters.py` | `ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e` | unchanged |
+
+The runtime edits are: four workflow tables under the existing schema
+version, the dispatch of the workflow command kinds, the workflow status in
+`_evaluate`, the **object binding** of a proposal, and the cancellation hook.
+Non-workflow works keep their previous behaviour; the byte pin in
+`tests/test_publishing_compensation.py` is updated consciously.
+
+New boundaries that the workflow adds:
+
+| boundary | guarantee | evidence |
+|---|---|---|
+| definition provenance | a binding pins the digest of an immutable published definition; an unknown validator, an unknown version, an incomplete required check or a family mismatch fails closed at publication and at binding | `tests/test_workflow_engine.py` — `PublicationAndBindingTests` |
+| candidate acceptance | a candidate is stored only after the shape descriptor and the registered, version-pinned validator accept it; a rejection stores nothing and completes nothing; a self-certifying payload is an undeclared field, not a validation | `tests/test_workflow_engine.py` — `RoutingTests` |
+| approval | a decision counts only when it is verified, of the node's kind, from the declared authority and covers the subject's exact revision and digest; an executor may not approve; a reviewer may not repeat a role | `tests/test_workflow_engine.py` — `RoleIsolationTests` |
+| automatic action | one prepared operation per node, proposed through the ordinary admission path, dispatched outside the routing transaction; an unknown effect is looked up, never repeated | `tests/test_workflow_engine.py` — `ActionTests`; `tests/test_workflow_recovery.py` |
+| routing | one deterministic pass; a pass that changes nothing writes nothing; rework increments the attempt and invalidates the affected approval by exact version; a late callback is refused | `tests/test_workflow_engine.py` — `RoutingTests` |
+| bridge | a generic `/v1/workflows` surface with bounded read models, durable intent ids, a single-coordinator file lock and a log that never carries a body | `tests/test_workflow_http.py` |
+
 ## Third-family command-surface freeze (S15)
 
 The support-ticket family (`work_runtime/support.py`, tests

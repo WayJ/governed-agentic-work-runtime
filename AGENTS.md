@@ -49,3 +49,7 @@ The coordinator owns roadmap, dispatch, supervision and acceptance decisions. De
 | work_runtime/publication.py | docs/sop-authoring.md |
 | work_runtime/publication_demo.py | docs/sop-authoring.md |
 | work_runtime/file_adapter.py | docs/file-adapter.md |
+| work_runtime/workflow.py | docs/workflow-runtime.md |
+| work_runtime/workflow_spec.py | docs/workflow-runtime.md |
+| work_runtime/workflow_server.py | docs/workflow-runtime.md |
+| work_runtime/workflow_demo.py | docs/workflow-runtime.md |
