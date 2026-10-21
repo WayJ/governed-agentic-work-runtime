@@ -289,6 +289,18 @@ class WorkflowService:
                      "publishedAt": stored.get("published_at")}
 
     def create_instance(self, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Create an instance: the work, the contract, the plan, the binding.
+
+        The creation is four commands, not one. Each of them is a
+        compare-and-swap on the work's state version, so the version is
+        part of the command's identity: a version recomputed on a later
+        attempt is a *different* command and the runtime refuses it as a
+        reused command id. The exact identity, body and version of every
+        stage are therefore recorded before the stage is issued, and a
+        replay re-issues the recorded command instead of recomputing one.
+        A command id is bound to one request: a changed request under the
+        same id conflicts rather than being dropped.
+        """
         work_id = body.get("workId")
         document = body.get("document")
         template_id = body.get("templateId")
@@ -329,45 +341,21 @@ class WorkflowService:
         if parameters is None:
             return 400, _error("INSTANCE_INVALID",
                                "The instance snapshot is malformed")
-        try:
-            created = self.runtime.command(actor, command_id + ":create", work_id,
-                                           "create_work", {"document": document})
-        except CommandError as error:
-            return 400, _error("DOCUMENT_INVALID", str(error))
-        if created.get("decision") != "accepted":
-            return _status_for(created), _error(created.get("code", "REJECTED"),
-                                                "The work was not created")
-        contract = {"policy_id": policy.id, "policy_version": policy.version,
-                    "goal": policy.goal}
-        bound = self.runtime.command(actor, command_id + ":contract", work_id,
-                                     "bind_contract", contract,
-                                     self.runtime.get_work(work_id)["state_version"])
-        if bound.get("decision") != "accepted":
-            return _status_for(bound), _error(bound.get("code", "REJECTED"),
-                                              "The contract was not bound")
-        plan = body.get("plan")
-        if plan is None:
+        # The plan and the pinned template are settled before anything is
+        # written: a refused request creates nothing at all.
+        submitted_plan = body.get("plan")
+        if submitted_plan is None:
             plan = self._default_plan(template_id, template_version)
+            normalized_plan = None
         else:
-            plan = self._normalized_plan(plan)
-        if plan is None or not all(isinstance(plan.get(key), list)
-                                   for key in ("steps", "open_requirements",
-                                               "replan_when")):
-            return 400, _error("PLAN_INVALID",
-                               "plan requires steps, open_requirements and "
-                               "replan_when lists")
-        revised = self.runtime.command(actor, command_id + ":plan", work_id,
-                                       "revise_plan", plan,
-                                       self.runtime.get_work(work_id)["state_version"])
-        if revised.get("decision") != "accepted":
-            return _status_for(revised), _error(revised.get("code", "REJECTED"),
-                                                "The plan was not revised")
-        payload = {"template_id": template_id, "template_version": template_version,
-                   "parameters": parameters}
-        if session_id is not None:
-            payload["session_id"] = session_id
-        if participants is not None:
-            payload["participants"] = participants
+            plan = self._normalized_plan(submitted_plan)
+            normalized_plan = plan
+            if plan is None or not all(isinstance(plan.get(key), list)
+                                       for key in ("steps", "open_requirements",
+                                                   "replan_when")):
+                return 400, _error("PLAN_INVALID",
+                                   "plan requires steps, open_requirements and "
+                                   "replan_when lists")
         expected_digest = body.get("templateDigest")
         if expected_digest is not None:
             if not isinstance(expected_digest, str) or not expected_digest:
@@ -380,10 +368,86 @@ class WorkflowService:
             if published["digest"] != expected_digest:
                 return 409, _error("WORKFLOW_TEMPLATE_MISMATCH",
                                    "The published template has another digest")
-        receipt = self.engine.command(actor, command_id + ":bind", work_id,
-                                      "bind_workflow", payload,
-                                      self.runtime.get_work(work_id)["state_version"],
-                                      now=self.now())
+        # The identity of the request. A command id belongs to one request:
+        # a receipt that exists is never proof that the request is the same.
+        request_digest = content_digest({
+            "actor": actor,
+            "work_id": work_id,
+            "document": document,
+            "template_id": template_id,
+            "template_version": template_version,
+            "template_digest": expected_digest,
+            "parameters": parameters,
+            "session_id": session_id,
+            "participants": participants,
+            "plan": normalized_plan,
+            "instance": snapshot,
+        })
+        preparation = self.preparations.load(command_id, work_id)
+        stages = {}
+        if preparation is not None:
+            if (preparation["actor"] != actor
+                    or preparation["request_digest"] != request_digest):
+                return 409, _error("COMMAND_ID_REUSED",
+                                   "The command id was already used for "
+                                   "another request")
+            stages = preparation["stages"]
+
+        def stage(name, kind, payload):
+            """The recorded stage of the creation, or a newly prepared one.
+
+            A recorded stage keeps the command identity, the body and the
+            compare-and-swap version it was prepared with: a resume issues
+            the very same command, and the runtime recognises it.
+            """
+            recorded = stages.get(name)
+            if recorded is not None:
+                return recorded
+            entry = {"kind": kind,
+                     "command_id": command_id + ":" + name,
+                     "payload": payload,
+                     "expected_version": (None if kind == "create_work"
+                                         else self._version(work_id))}
+            stages[name] = entry
+            # Written ahead of the stage: a crash between the record and
+            # the command resumes with the same command.
+            self.preparations.save(command_id, work_id, actor, request_digest,
+                                   stages)
+            return entry
+
+        created = stage("create", "create_work", {"document": document})
+        receipt = self.runtime.command(actor, created["command_id"], work_id,
+                                       created["kind"], created["payload"],
+                                       created["expected_version"])
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
+                                                "The work was not created")
+        contract = {"policy_id": policy.id, "policy_version": policy.version,
+                    "goal": policy.goal}
+        bound = stage("contract", "bind_contract", contract)
+        receipt = self.runtime.command(actor, bound["command_id"], work_id,
+                                       bound["kind"], bound["payload"],
+                                       bound["expected_version"])
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
+                                                "The contract was not bound")
+        revised = stage("plan", "revise_plan", plan)
+        receipt = self.runtime.command(actor, revised["command_id"], work_id,
+                                       revised["kind"], revised["payload"],
+                                       revised["expected_version"])
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
+                                                "The plan was not revised")
+        payload = {"template_id": template_id, "template_version": template_version,
+                   "parameters": parameters}
+        if session_id is not None:
+            payload["session_id"] = session_id
+        if participants is not None:
+            payload["participants"] = participants
+        binding = stage("bind", "bind_workflow", payload)
+        receipt = self.engine.command(actor, binding["command_id"], work_id,
+                                      binding["kind"], binding["payload"],
+                                      binding["expected_version"], now=self.now())
         if receipt.get("decision") != "accepted":
             return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
                                                 "The workflow was not bound",
