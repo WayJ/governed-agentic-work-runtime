@@ -104,7 +104,7 @@ Phase 8 (the read-only GUI wave) is **not** part of this slice.
 
 | file | SHA-256 before | SHA-256 after |
 |---|---|---|
-| `work_runtime/runtime.py` | `80bf721b3369a6fb865fd6aba0e57804a69eb8587431f8fa6edf1183fc53f4b3` | `0655baa42be96a3367f606063668c64f4dd6f7c7bfe0dfaaa09607e2349d1d06` |
+| `work_runtime/runtime.py` | `80bf721b3369a6fb865fd6aba0e57804a69eb8587431f8fa6edf1183fc53f4b3` | `49a8864b49d4b91ceeb456e1d4d5567c0a15b6d66815c576daf31dc700df1247` |
 | `work_runtime/adapters.py` | `ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e` | unchanged |
 
 The five edits: four workflow tables under the existing schema version; the
@@ -118,6 +118,7 @@ green throughout.
 ## RED/GREEN evidence
 
 | step | RED | GREEN |
+| the third round (the follow-up corrections) | `test_workflow_participants.py` (16) and `test_workflow_review.py` (8) written first; the first RED run showed 22 errors and 1 failure — the assigned authority was not resolvable, the criterion report was not checked, no review intent existed and the review proof did not bind the instance | `PYTHONPATH=.:tests python3 -m unittest test_workflow_participants test_workflow_review` → 24 tests, OK; the whole suite → 1268 tests, OK (2 skipped) |
 | the second round (the coordinator's corrections) | `test_workflow_authority.py` — 11 tests written first; the first RED run showed 3 failures (a decision without a node/attempt binding still matched, a candidate without an input digest was accepted, a stale input reported the wrong code) | `PYTHONPATH=.:tests python3 -m unittest test_workflow_authority` → 11 tests, OK; the whole suite → 1234 tests, OK (2 skipped) |
 |---|---|---|
 | the definition language | `test_workflow_spec.py` — 31 tests, written before `work_runtime/workflow_spec.py` existed | `python3 -m unittest discover -s tests` → 1163 tests, OK |
@@ -189,6 +190,25 @@ contract cases of `tests/test_workflow_http.py`.
 | the participant and authority mapping | documented in [docs/workflow-api-contract.md](../../workflow-api-contract.md): GAWR knows a principal per node, the platform maps a node to a workspace role and asserts the actor id, and the core enforces the assigned actor per node and attempt |
 | no exactly-once across systems | the docs now say *stable idempotent effects and unknown-effect reconciliation* |
 
+## Third round — the follow-up corrections
+
+The coordinator reviewed the second slice and named six gaps in the
+committed source. They are implemented here; the RED evidence is in
+`tests/test_workflow_participants.py` (16 tests), `tests/test_workflow_review.py`
+(8 tests) and the new contract cases of `tests/test_workflow_http.py`.
+
+| gap | implementation | evidence |
+|---|---|---|
+| the decision wrote evidence without a compare-and-swap | the decision is a workflow command, `record_decision`: the runtime's CAS on `state_version` runs in the same transaction as the evidence intake, and the command is deduplicated under (ingress source, `commandId`). The HTTP route requires the caller's `expectedVersion` | `test_a_decision_without_an_expected_version_is_refused`, `test_a_stale_expected_version_is_refused` |
+| a static authority cannot represent a role-assigned user per instance | a published definition may declare `"authority": {"assigned": true}`; a trusted, injected `ParticipantResolver` answers who currently holds the assignment and fails closed without one. The ingress source and the actual actor stay separate, and the separation rules compare the actual actors | `test_without_a_resolver_an_assigned_node_fails_closed`, `test_the_resolved_assignee_may_decide`, `test_the_assignment_is_rechecked_when_the_node_settles`, `test_two_roles_held_by_one_person_is_refused` |
+| a criterion report was only checked for coverage | the report is checked at the core boundary (unknown, repeated, blank reason, empty evidence, unknown verdict) and at settlement a required criterion must be passed; a not-applicable verdict counts only under a protected rule; a shortfall stops an approval and is kept in a rejection | `test_an_unknown_criterion_is_refused` … `test_a_rejection_keeps_the_shortages` |
+| the report did not record how and against what it was judged | every entry records the method (PROGRAM, AGENT, HUMAN), the criterion version, the bound validator, the reviewed input and output digests, the real verdict, the reason, the evidence, the actor and the time | `test_the_report_records_the_judgment_context` |
+| no durable asynchronous review intent | a node that declares a review gets a `review_task` intent pinning the rubric, the criteria, the candidate revision, the input digest and the independent producer; the proof binds the work, node, attempt and both digests, and the executor may not review its own candidate | `test_a_review_node_creates_a_durable_review_intent`, `test_a_review_of_another_attempt_does_not_satisfy`, `test_the_executor_may_not_review_its_own_candidate` |
+| the create ignored the caller's contract and plan | the submitted contract is checked against the registered immutable policy (`WORKFLOW_POLICY_MISMATCH`), the submitted plan is used as given, and the trusted platform create snapshot supplies the session, the parameters and the participant assignment | `test_a_policy_that_is_not_the_registered_one_is_refused`, `test_the_submitted_plan_is_used`, `test_the_trusted_snapshot_carries_the_session_and_the_participants` |
+
+The exact wire contract of this round is
+[docs/workflow-api-contract.md](../../workflow-api-contract.md).
+
 ## Deviations from the plan, and the open items
 
 * The plan's phase 1–7 shape was kept; phase 8 (the GUI) was not part of
@@ -203,6 +223,10 @@ contract cases of `tests/test_workflow_http.py`.
 * `revise_workflow`, `migrate` and any other revision shortcut are **not**
   implemented and are not offered.
 * `scripts/verify_install.py` was **not** extended with a workflow stage.
+* The participant resolver is a **port**, not an implementation: the
+  enterprise adapter that resolves a member against the platform's current
+  membership, department and role state lives in dsh-saas. The default is
+  no resolver, and an assigned authority then fails closed.
 * The obligation layer of the demonstration family is kind-level; the exact
   version of an approval is an engine guarantee.
 

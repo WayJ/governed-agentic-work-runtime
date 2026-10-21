@@ -885,6 +885,19 @@ section records what is verified and what is not.
 | W20 | Every declared criterion carries a verdict, a reason and its evidence | covered | `test_every_declared_criterion_carries_a_verdict`, `test_the_check_report_is_persisted_and_readable` — `WORKFLOW_CHECK_RESULT_MISSING`; the persisted report is readable |
 | W21 | A candidate is bound to the input digest | covered | `test_a_candidate_must_be_bound_to_the_current_input_digest`, `test_the_input_digest_follows_the_pinned_input` — `WORKFLOW_INPUT_STALE` |
 | W22 | The published definition carries the criterion text and its validator | covered | `test_the_published_definition_carries_the_criterion_text`, `test_a_criterion_validator_must_resolve_at_publication` — `WORKFLOW_VALIDATOR_UNKNOWN` |
+| W23 | A decision is admitted under the caller's compare-and-swap | covered | `test_a_decision_without_an_expected_version_is_refused`, `test_a_stale_expected_version_is_refused` — `EXPECTED_VERSION_REQUIRED`, `STATE_VERSION_CONFLICT`; the write is the workflow command `record_decision`, so the version check and the evidence intake are one transaction |
+| W24 | An assigned authority fails closed without a resolver | covered | `test_without_a_resolver_an_assigned_node_fails_closed` — `WORKFLOW_AUTHORITY_MISMATCH` |
+| W25 | The resolved assignee may decide; nobody else may | covered | `test_the_resolved_assignee_may_decide`, `test_someone_else_may_not_decide` — the actor is checked against the trusted resolution |
+| W26 | The assignment is rechecked when the node settles | covered | `test_the_assignment_is_rechecked_when_the_node_settles` — a withdrawn assignment stops an already written decision |
+| W27 | Separation of duties compares the actual actors | covered | `test_two_roles_held_by_one_person_is_refused` — `WORKFLOW_ROLE_ISOLATION` |
+| W28 | A participant must name a declared node | covered | `test_a_participant_must_name_a_declared_node` — `WORKFLOW_PARTICIPANT_UNKNOWN` |
+| W29 | A criterion report is checked at the core boundary | covered | `test_an_unknown_criterion_is_refused`, `test_a_repeated_criterion_is_refused`, `test_a_blank_reason_is_refused`, `test_empty_evidence_is_refused`, `test_an_unknown_verdict_is_refused` — `WORKFLOW_CHECK_REPORT_INVALID` |
+| W30 | A required criterion that failed stops an approval | covered | `test_a_failing_required_criterion_stops_an_approval`, `test_a_not_applicable_verdict_needs_a_protected_rule`, `test_a_not_applicable_verdict_is_accepted_when_the_rule_allows_it`, `test_a_rejection_keeps_the_shortages` — `WORKFLOW_CHECK_SHORTFALL`; the report keeps the real verdict |
+| W31 | The judgment context is persisted with the report | covered | `test_the_report_records_the_judgment_context` — the method, the criterion version, the reviewed digests, the actor and the time |
+| W32 | A review node creates a durable review intent | covered | `test_a_review_node_creates_a_durable_review_intent` — the rubric, the criteria, the candidate and the input digest are pinned |
+| W33 | A review binds the exact instance | covered | `test_a_review_of_another_attempt_does_not_satisfy`, `test_a_review_of_another_input_does_not_satisfy`, `test_a_review_of_another_candidate_does_not_satisfy`, `test_a_same_digest_review_of_an_earlier_attempt_does_not_satisfy` |
+| W34 | The executor may not review its own candidate | covered | `test_the_executor_may_not_review_its_own_candidate`, `test_only_the_declared_reviewer_may_review` |
+| W35 | The create validates the contract, the plan and the snapshot | covered | `test_a_policy_that_is_not_the_registered_one_is_refused`, `test_the_registered_policy_is_accepted`, `test_the_submitted_plan_is_used`, `test_a_malformed_plan_is_refused`, `test_the_trusted_snapshot_carries_the_session_and_the_participants`, `test_a_participant_must_name_a_declared_node` — `WORKFLOW_POLICY_MISMATCH`, `PLAN_INVALID`, `WORKFLOW_PARTICIPANT_UNKNOWN` |
 
 ### Bridge, recovery and demonstration
 
@@ -909,6 +922,23 @@ section records what is verified and what is not.
   `WORKFLOW_AUTHORITY_MISMATCH`, a decision for another attempt is
   `WORKFLOW_ATTEMPT_STALE`, a request for more material keeps the node
   waiting, and every mutation answers with the root instance view.
+- **Participant assignment and criterion quality**
+  (`tests/test_workflow_participants.py`, 16 tests): an assigned authority
+  fails closed without a resolver; the resolved assignee may decide and
+  nobody else may; the assignment is re-resolved when the node settles; two
+  roles held by one person are refused; a participant must name a declared
+  node; a criterion report that names an undeclared criterion, repeats one,
+  carries a blank reason, empty evidence or an unknown verdict is refused at
+  the boundary; a required criterion that failed stops an approval; a
+  not-applicable verdict counts only when the protected declaration allows
+  it; a rejection keeps the shortages; and the report records the judgment
+  context.
+- **The asynchronous review** (`tests/test_workflow_review.py`, 8 tests): the
+  review intent pins the rubric, the criteria, the candidate and the input
+  digest; a review of another attempt, another input or another candidate
+  does not satisfy the node; a same-digest review of an earlier attempt does
+  not satisfy the current one; the executor may not review its own
+  candidate; and only the declared reviewer may.
 - **Authority, attempt binding and criterion reports**
   (`tests/test_workflow_authority.py`, 11 tests): a decision without a node
   and attempt binding never matches; a same-digest approval of an earlier

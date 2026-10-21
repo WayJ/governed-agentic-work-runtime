@@ -9,6 +9,41 @@ The surface is `http://127.0.0.1:<port>/v1/workflows`. It is **separate
 from** the product's `/v1/deliveries` route: the bridge is a governance
 surface, not a task-delivery shortcut.
 
+## The trusted platform create snapshot
+
+The create request carries a snapshot produced by the platform's own create
+path. It is not arbitrary caller input, and it is the only source of the
+participant assignment.
+
+```json
+{"workId": "W-1",
+ "commandId": "create-1",
+ "document": {"id": "H-001", "subject": "east parapet"},
+ "policy": {"policyId": "workflow-demo", "policyVersion": "demo-1", "goal": "workflow.completed"},
+ "plan": {"steps": ["n01"], "openRequirements": ["R01"], "replanWhen": ["a reviewer rejects"]},
+ "instance": {
+   "workspaceId": "ws-1",
+   "taskId": "task-1",
+   "ownerUserId": "user-1",
+   "sessionId": "session-original-1",
+   "parameters": {"subject": "east parapet"},
+   "participants": {"n04": "member-123", "n05": "member-456"}
+ }}
+```
+
+* The submitted `policy` is checked against the **registered** immutable
+  policy: a mismatch is `422 WORKFLOW_POLICY_MISMATCH`. The contract that
+  is bound is never silently replaced.
+* The submitted `plan` is used as given (both `open_requirements` and
+  `openRequirements` are accepted) and is shape-validated; when it is
+  absent the steps are derived from the pinned template's node ids.
+* The `instance` snapshot supplies the session, the instance parameters and
+  the participant assignment. `parameters` are validated against the
+  template's `parameters_schema`; every `participants` key must be a node
+  the pinned definition declares, else `422 WORKFLOW_PARTICIPANT_UNKNOWN`.
+* The read model returns the stored snapshot under `workflow`:
+  `{"templateId", "templateVersion", "digest", "revision", "parameters", "sessionId", "participants"}`.
+
 ## What the platform owns and what GAWR owns
 
 | concern | owner |
@@ -37,6 +72,30 @@ carries a decision; it says nothing about who decided. The *actor* is the
 asserted principal, and the separation rules (an executor may never
 approve; two roles may not be held by the same person) are checked against
 the actor.
+
+**The participant port.** The core knows a *principal* per node and asks a
+trusted, injected resolver who currently holds the assignment:
+
+```python
+class ParticipantResolver:
+    def resolve(self, work, node_id, member_id) -> Optional[str]:
+        """The GAWR principal of the member, or None when the member is not
+        currently assigned, not enabled, or out of scope. An enterprise
+        adapter resolves only from the trusted snapshot plus the platform's
+        current check."""
+```
+
+A published definition declares the authority in one of two closed forms:
+
+```json
+"authority": "reviewer-a"          // a static GAWR principal
+"authority": {"assigned": true}    // whoever the platform assigns now
+```
+
+With no resolver injected, `{"assigned": true}` **fails closed**: no
+decision is ever admitted for that node and the node keeps waiting. The
+assignment is re-resolved at settlement, so a withdrawn assignment stops a
+decision that was already written.
 
 **No exactly-once across systems.** The bridge offers *stable idempotent
 effects* (a stable operation business key, an adapter-level idempotency key
@@ -82,10 +141,7 @@ protected definition, including every criterion's text and its validator binding
 
 ### `POST /v1/workflows/instances`
 
-```json
-{"workId": "W-1", "document": {"id": "H-001", "subject": "east parapet"}, "templateId": "inspection-review-delivery", "templateVersion": "test-1", "parameters": {"subject": "east parapet"}, "sessionId": "session-original-1", "commandId": "create-1"}
-```
-
+See [the trusted create snapshot](#the-trusted-platform-create-snapshot).
 `201` the instance view. The document, contract and plan are constructed by
 the host policy, not by arbitrary caller input. `parameters` are validated
 against the definition's `parameters_schema`; an arbitrary dynamic graph is
@@ -136,13 +192,21 @@ and the node does not complete.
 more material keeps the node waiting: it is neither an approval nor a
 rejection and it opens no rework attempt.
 
+The write is the workflow command `record_decision`: the runtime's own
+compare-and-swap on `state_version` runs in the same transaction as the
+evidence intake, and the command is deduplicated under (ingress source,
+`commandId`). The command's actor is the **ingress source** — the platform
+channel configured for the node's evidence kind — and the actual decider
+travels in `actorId`.
+
 `200` the instance view with `decision: {node, attempt, outcome, actorId, resultStateVersion}`.
 `400 ACTOR_ID_REQUIRED`; `400 DECISION_INVALID` — no `items`;
-`400 COMMAND_ID_REQUIRED`; `403 WORKFLOW_AUTHORITY_MISMATCH` — the actor is
-not the principal the definition assigned; `409 WORKFLOW_ATTEMPT_STALE`;
-`409 WORKFLOW_DECISION_STALE` — the digest or revision is not the current
-subject; `422 WORKFLOW_CHECK_RESULT_MISSING` — a declared criterion has no
-verdict.
+`400 COMMAND_ID_REQUIRED`; `400 EXPECTED_VERSION_REQUIRED`;
+`403 WORKFLOW_AUTHORITY_MISMATCH` — the actor is not the resolved assignment;
+`409 STATE_VERSION_CONFLICT` — the caller's version is stale;
+`409 WORKFLOW_ATTEMPT_STALE`; `409 WORKFLOW_DECISION_STALE` — the digest or
+revision is not the current subject; `422 WORKFLOW_CHECK_REPORT_INVALID` —
+the criterion report is malformed.
 
 ### `POST /v1/workflows/instances/{workId}/objects`
 
@@ -182,6 +246,81 @@ restarts; it is the request id a bridge uses for the original session.
 client rarely needs this: every mutation settles the workflow, and the
 bridge advances and recovers on its own schedule.
 
+## The criterion report
+
+A node's `checks` are protected declarations:
+
+```json
+{"id": "N04-2", "criterion": "<the text the reviewer read>",
+ "criterion_version": "1", "validator": "safety-review", "validator_version": "1",
+ "required": true, "allow_not_applicable": false}
+```
+
+A decision's `items` are refused at admission (`422
+WORKFLOW_CHECK_REPORT_INVALID`) when an item names an undeclared criterion,
+repeats one, carries a blank reason, carries empty evidence, or a verdict
+outside `{passed, failed, insufficient, conflict, not_applicable}`.
+
+At settlement every **required** criterion must be passed; a
+`not_applicable` verdict counts only when the protected declaration sets
+`allow_not_applicable`. A required criterion that is failed, insufficient or
+in conflict is a genuine shortfall: an `approved` decision does **not**
+complete the node, the shortage is persisted with its real verdict, and the
+node keeps waiting. A `rejected` or `request_material` decision keeps the
+shortages in the report — nothing is turned into a pass.
+
+Every persisted report entry carries, at judgment time:
+
+```json
+{"checkId": "N04-2", "verdict": "passed", "reason": "...", "evidence": ["..."],
+ "method": "HUMAN", "criterionVersion": "1",
+ "validator": "safety-review", "validatorVersion": "1",
+ "reviewedInputDigest": "...", "reviewedOutputDigest": "...",
+ "decidedBy": "user-1", "at": 1760000000}
+```
+
+`method` is `PROGRAM` (a registered validator), `AGENT` (an independent
+review) or `HUMAN` (a decision). The report is returned in the read model
+under `nodes[].checkResults`, so a historical judgment is reconstructible
+from the stored record and not from the current state of the node.
+
+## The asynchronous review
+
+A node that declares a review gets a durable `review_task` intent (id
+`wf:<workId>:<node>:<attempt>:review_task`) with the same dedup, recovery and
+acknowledgement discipline as the agent and human intents:
+
+```json
+{"node": "n09", "attempt": 1, "evidence_kind": "agent_review",
+ "reviewer": "reviewer-v", "rubric": {"validator": "review-rubric", "validator_version": "1"},
+ "criteria": [{"id": "N09-2", "criterion": "...", "criterion_version": "1", "required": true}],
+ "candidate": {"name": "report", "revision": 1, "digest": "..."},
+ "input_digest": "...", "inputs": [...], "deadline_at": null, "created_at": 1760000000}
+```
+
+The node's review declaration is
+`{"evidence_kind": "agent_review", "reviewer": "reviewer-v", "rubric": {"validator": "review-rubric", "validator_version": "1"}}`.
+The rubric must resolve at its exact version or the definition is not
+publishable.
+
+The review proof binds the exact instance:
+
+```json
+{"kind": "agent_review",
+ "data": {"node": "n09", "attempt": 1,
+          "input_digest": "<the node's pinned input digest>",
+          "output_digest": "<the candidate's digest>",
+          "producer": "reviewer-v", "verdict": "passed",
+          "items": [{"check": "N09-2", "verdict": "passed", "reason": "...", "evidence": ["..."]}]}}
+```
+
+The proof's source must be the configured source for the kind; the producer
+must be the declared reviewer and must **not** be the node's executor; the
+node, the attempt and both digests must match the current attempt, so a
+same-digest review of a previous attempt cannot satisfy the current one.
+The reviewer's verdicts are persisted with `method` `AGENT`. Which model
+actually produced the review is an enterprise adapter matter, not core.
+
 ## Errors
 
 Every error is `{"error": {"code": "...", "message": "...", "findings": [...]}}` with
@@ -190,7 +329,9 @@ the engine's code verbatim. The status mapping is in
 `AUTHORITY_DENIED` (403), `STATE_VERSION_CONFLICT`, `WORKFLOW_ATTEMPT_STALE`,
 `WORKFLOW_DECISION_STALE`, `WORKFLOW_INPUT_STALE` (409),
 `WORKFLOW_RESULT_INVALID`, `WORKFLOW_AUTHORITY_MISMATCH`,
-`WORKFLOW_CHECK_RESULT_MISSING` (422).
+`WORKFLOW_CHECK_RESULT_MISSING`, `WORKFLOW_CHECK_REPORT_INVALID`,
+`WORKFLOW_CHECK_SHORTFALL`, `WORKFLOW_POLICY_MISMATCH`,
+`WORKFLOW_PARTICIPANT_UNKNOWN` (422).
 
 ## What the bridge does not do
 

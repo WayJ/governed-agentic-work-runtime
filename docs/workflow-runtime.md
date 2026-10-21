@@ -65,7 +65,7 @@ Per node kind:
 | kind | required | optional |
 |---|---|---|
 | `agent` | `executor`, `output`, `max_attempts` | `inputs`, `checks`, `on_failure`, `deadline_s`, `max_attempts`, `description` |
-| `human` | `evidence_kind`, `subject` | `authority`, `distinct_from`, `on_reject`, `max_attempts`, `checks`, `deadline_s`, `description` |
+| `human` | `evidence_kind`, `subject` | `authority` (a principal or `{"assigned": true}`), `distinct_from`, `on_reject`, `max_attempts`, `checks`, `deadline_s`, `description` |
 | `action` | `capability`, `subject` | `on_failure`, `deadline_s`, `description` |
 | `wait` | `match`, `deadline_s` | `on_timeout`, `description` |
 
@@ -205,9 +205,12 @@ A human node waits for a decision proof:
   was made for, the **actor** who decided, and the itemized `items`;
 * a decision of an earlier attempt never satisfies a later one, even when
   the content digest is identical: the attempt is part of the binding;
-* the **actor** must be the node's `authority` (or the policy's source for
-  the kind). A decision from anyone else is refused
-  (`WORKFLOW_AUTHORITY_MISMATCH`);
+* the **actor** must be the node's effective authority: a static
+  `authority`, or — when the definition says `{"assigned": true}` — the
+  principal the trusted participant resolver currently resolves. A decision
+  from anyone else is refused (`WORKFLOW_AUTHORITY_MISMATCH`), and the
+  assignment is re-resolved at settlement, so a withdrawn assignment stops
+  a decision that was already written;
 * the proof's **source** is the platform ingress. It is never the actor:
   the source says which channel carried the decision, and the separation
   rules are checked against the actor;
@@ -240,6 +243,20 @@ happens outside the routing transaction, exactly like every other dispatch.
 
 An operation whose outcome is unknown is **looked up, never repeated**
 (`runtime.reconcile`).
+
+### Review nodes
+
+A node may declare a review: `{"evidence_kind": …, "reviewer": …, "rubric":
+{"validator": …, "validator_version": …}}`. The rubric must resolve at its
+exact version, or the definition is not publishable.
+
+When the candidate is accepted, the engine writes a durable `review_task`
+intent that pins the rubric, the criteria, the candidate revision, the
+input digest and the independent producer. The review proof must bind the
+exact instance — node, attempt, input digest and output digest — and its
+producer must be the declared reviewer and must not be the node's executor.
+A same-digest review of an earlier attempt therefore never satisfies the
+current one.
 
 ### Wait nodes
 
@@ -323,7 +340,7 @@ The exact wire contract, with the request and response fixtures, is
 | `POST` | `/v1/workflows/instances` | instantiate: work, contract, plan, binding |
 | `GET` | `/v1/workflows/instances/{workId}` | the bounded read model |
 | `POST` | `/v1/workflows/instances/{workId}/results` | submit an agent candidate |
-| `POST` | `/v1/workflows/instances/{workId}/decisions` | record a human decision |
+| `POST` | `/v1/workflows/instances/{workId}/decisions` | record a human decision (CAS-guarded) |
 | `POST` | `/v1/workflows/instances/{workId}/objects` | revise a named object |
 | `GET` | `/v1/workflows/instances/{workId}/objects/{name}/revisions/{revision}` | read one exact object revision |
 | `GET` | `/v1/workflows/instances/{workId}/intents` | the durable intents |
@@ -344,7 +361,13 @@ Two properties matter to a client:
 * **every mutation carries a stable `commandId`** and, on an existing work,
   the `expectedVersion` the client observed. The bridge never substitutes
   its own current version for the caller's, and it never invents a command
-  id.
+  id. A decision is admitted by the workflow command `record_decision`, so
+  the compare-and-swap, the evidence intake and the decision admission are
+  one atomic step under the runtime's own command dedup.
+* **the instance creation validates the submitted contract** against the
+  registered immutable policy (`WORKFLOW_POLICY_MISMATCH`) and uses the
+  submitted plan as given; the trusted platform create snapshot supplies
+  the session, the parameters and the participant assignment.
 * **progress does not need a client to poll.** Every mutating call settles
   the workflow before it answers, and a background ticker advances and
   recovers the store on its own schedule. The bridge logs the method and the
