@@ -669,3 +669,46 @@ class ReceiptAndTerminalTests(HttpBridgeTestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(body["workflowStatus"], "active")
         self.assertIsNone(body["terminalNode"])
+
+
+class ExactMaterialTests(HttpBridgeTestCase):
+    def test_the_exact_read_returns_the_material_the_digest_covers(self):
+        self.publish()
+        self.create()
+        self.submit("n01", 1, "intake",
+                    {"records": [{"id": "R-1", "source": "s"}], "standard": "STD"})
+        status, body = self.call("GET", API_PREFIX + "/instances/W-1/objects/intake"
+                                  "/revisions/1")
+        self.assertEqual(status, 200, body)
+        self.assertFalse(body["redacted"])
+        self.assertEqual(body["digest"], body["originalDigest"])
+        # The digest covers exactly what was returned.
+        from work_runtime.policy import digest as content_digest
+        self.assertEqual(body["digest"], content_digest(body["object"]))
+
+    def test_a_material_with_a_credential_is_never_silently_altered(self):
+        self.publish()
+        self.create()
+        self.submit("n01", 1, "intake",
+                    {"records": [{"id": "R-1", "source": "s"}], "standard": "STD"})
+        status, body = self.call("POST", API_PREFIX + "/instances/W-1/objects", {
+            "name": "intake",
+            "object": {"records": [{"id": "R-1", "source": "s"}], "standard": "STD",
+                       "access_token": "super-secret"},
+            "actor": "coordinator",
+            "commandId": "object-1",
+            "expectedVersion": self.view("W-1")["stateVersion"]})
+        self.assertEqual(status, 200, body)
+        status, body = self.call("GET", API_PREFIX + "/instances/W-1/objects/intake"
+                                  "/revisions/2")
+        # The exact read refuses rather than returning something the digest
+        # does not cover.
+        self.assertEqual(status, 422)
+        self.assertEqual(body["error"]["code"], "WORKFLOW_OBJECT_CONTAINS_SECRETS")
+        # The declared alternative says exactly what it returned.
+        status, body = self.call("GET", API_PREFIX + "/instances/W-1/objects/intake"
+                                  "/revisions/2?redact=true")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["redacted"])
+        self.assertNotEqual(body["digest"], body["originalDigest"])
+        self.assertNotIn("access_token", body["object"])

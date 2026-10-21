@@ -240,9 +240,19 @@ the criterion report is malformed.
 
 ### `GET /v1/workflows/instances/{workId}/objects/{name}/revisions/{revision}`
 
-`200 {"workId", "name", "revision", "digest", "object"}` — the exact stored
-content of one object revision, for a workbench or an agent that restores
-its context.
+`200 {"workId", "name", "revision", "digest", "originalDigest", "redacted", "object"}`
+
+The default read is **exact**: the stored body is returned unchanged and
+`digest` covers exactly what was returned, so a reviewer approves the
+material the digest names. The body is not silently altered.
+
+If the stored material contains a field that looks like a credential, the
+exact read refuses (`422 WORKFLOW_OBJECT_CONTAINS_SECRETS`) rather than
+returning something the digest does not cover. The caller may then ask for
+the declared alternative, `?redact=true`, which returns the redacted body
+with `redacted: true`, the digest of **what was returned** in `digest`, and
+the stored digest in `originalDigest`. A platform must not use a redacted
+fragment as complete approval material.
 
 ### `GET /v1/workflows/instances/{workId}/intents?kind=&sessionId=&status=&limit=`
 

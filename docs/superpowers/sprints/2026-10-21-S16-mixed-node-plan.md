@@ -219,6 +219,8 @@ The exact wire contract of this round is
 | the create wire must state the template fields | the request carries `templateId`, `templateVersion` and the optional `templateDigest`, which is checked against the published digest | `test_a_pinned_template_digest_is_checked` |
 | a read-only command receipt lookup, scoped by work, actor and id | `GET /v1/workflows/commands/{commandId}?workId=&actor=` reads the stored receipt; it never re-runs the command. The multi-step create derives stable ids (`<commandId>:create|contract|plan|bind`) and returns the binding id | `test_a_stored_command_receipt_is_readable_without_resending`, `test_a_receipt_of_another_work_or_actor_is_not_found` |
 
+| the exact material read must not be silently redacted | the default object-revision read returns the stored body unchanged and its digest covers exactly what was returned; a material carrying a credential-shaped field is refused (`WORKFLOW_OBJECT_CONTAINS_SECRETS`) rather than returned altered, and the declared `?redact=true` form returns the digest of what it returned beside the stored `originalDigest`. The event history declares `redacted` per altered event | `test_the_exact_read_returns_the_material_the_digest_covers`, `test_a_material_with_a_credential_is_never_silently_altered` |
+
 ## Deviations from the plan, and the open items
 
 * The plan's phase 1–7 shape was kept; phase 8 (the GUI) was not part of

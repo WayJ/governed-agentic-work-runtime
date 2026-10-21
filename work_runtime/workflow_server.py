@@ -26,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .policy import digest as content_digest
 from .runtime import CommandError
 
 API_PREFIX = "/v1/workflows"
@@ -582,9 +583,19 @@ class WorkflowService:
                           "resultStateVersion": receipt.get("result_state_version")}
         return 200, redact(view)
 
-    def object_revision(self, work_id: str, name: str,
-                        revision: str) -> Tuple[int, Dict[str, Any]]:
-        """The exact stored content of one object revision."""
+    def object_revision(self, work_id: str, name: str, revision: str,
+                        query: Optional[Dict[str, List[str]]] = None
+                        ) -> Tuple[int, Dict[str, Any]]:
+        """The stored content of one object revision.
+
+        The default read is exact: the body is returned unchanged and the
+        digest covers exactly what was returned, so a reviewer approves the
+        material the digest names. When the stored material contains a field
+        that looks like a credential, the exact read refuses rather than
+        returning something the digest does not cover; the caller may ask
+        for the declared redacted form instead, which says what it returned
+        and what the original digest was.
+        """
         try:
             number = int(revision)
         except ValueError:
@@ -597,8 +608,24 @@ class WorkflowService:
         if row is None:
             return 404, _error("WORKFLOW_OBJECT_UNKNOWN", "No such object revision")
         body = json.loads(row[3])
+        stored_digest = row[2]
+        requested = _first(query or {}, "redact")
+        if requested in ("true", "1", "yes"):
+            redacted = redact(body)
+            return 200, {"workId": work_id, "name": row[0], "revision": row[1],
+                         "digest": content_digest(redacted),
+                         "originalDigest": stored_digest,
+                         "redacted": True,
+                         "object": redacted}
+        if _has_credential_fields(body):
+            return 422, _error(
+                "WORKFLOW_OBJECT_CONTAINS_SECRETS",
+                "The stored material contains a field that looks like a "
+                "credential. Read it with ?redact=true and do not use a "
+                "fragment as complete approval material.")
         return 200, {"workId": work_id, "name": row[0], "revision": row[1],
-                     "digest": row[2], "object": redact(body)}
+                     "digest": stored_digest, "originalDigest": stored_digest,
+                     "redacted": False, "object": body}
 
     def list_intents(self, work_id: str, query: Dict[str, List[str]]) -> Tuple[int, Dict[str, Any]]:
         kind = _first(query, "kind")
@@ -670,7 +697,17 @@ class WorkflowService:
         except ValueError:
             return 400, _error("AFTER_INVALID", "after must be an integer")
         events = self.runtime.events(work_id, after_value)
-        return 200, {"events": [redact(event) for event in events]}
+        rendered = []
+        altered = False
+        for event in events:
+            body = event.get("body")
+            cleaned = redact(body)
+            if cleaned != body:
+                altered = True
+                cleaned = dict(cleaned)
+                cleaned["redacted"] = True
+            rendered.append(dict(event, body=cleaned))
+        return 200, {"events": rendered, "redacted": altered}
 
     def advance(self, work_id: str) -> Tuple[int, Dict[str, Any]]:
         self._settle(work_id)
@@ -726,6 +763,21 @@ class WorkflowService:
         if node is None:
             return None
         return node.get("subject")
+
+
+def _has_credential_fields(value: Any) -> bool:
+    """True when a value carries a field that looks like a credential."""
+    if isinstance(value, dict):
+        for key, entry in value.items():
+            if (isinstance(key, str)
+                    and any(marker in key.lower() for marker in SECRET_FIELDS)):
+                return True
+            if _has_credential_fields(entry):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_has_credential_fields(entry) for entry in value)
+    return False
 
 
 def _intent_view(intent: Dict[str, Any]) -> Dict[str, Any]:
@@ -877,7 +929,7 @@ class WorkflowRequestHandler(BaseHTTPRequestHandler):
                 return service.revise_object(work_id, body)
             if (method == "GET" and len(tail) == 4 and tail[0] == "objects"
                     and tail[2] == "revisions"):
-                return service.object_revision(work_id, tail[1], tail[3])
+                return service.object_revision(work_id, tail[1], tail[3], query)
             if method == "POST" and tail == ["advance"]:
                 return service.advance(work_id)
             return 404, _error("ROUTE_UNKNOWN", "No such route")
