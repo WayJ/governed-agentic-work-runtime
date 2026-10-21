@@ -284,6 +284,21 @@ principal re-proposed it).
 
 This is **out of scope** for the two named drifts and was therefore left
 alone; it is now stated in [workflow-runtime.md](../../docs/workflow-runtime.md)
-under *What the context is not*. The coordinator should decide whether the
-next slice refuses a re-admitted operation or records the proposal-time
-actor and revisions when the operation is created.
+under *What the context is not*.
+
+**The coordinator's decision (independent review of `432f9ab`):** the
+limitation is accepted, because the platform's business phase is prepared
+exclusively inside the native `adapter.execute`, after the operation is
+persisted as `dispatched`/`in_flight`, and its lookup reads that frozen
+phase. The review asked for two things, and both are done in the follow-up
+commit:
+
+* the public API documentation states that the context reflects the
+  **current native admission** before the dispatch and **stabilises** for
+  dispatched/reconciled operations;
+* the context is **not** claimed to be globally immutable across a
+  pre-dispatch re-admission.
+
+The docstring of `WorkflowEngine.action_context` and the whole of §11 of
+[workflow-runtime.md](../../docs/workflow-runtime.md) now say exactly that.
+No `runtime.py` edit was made in this slice.

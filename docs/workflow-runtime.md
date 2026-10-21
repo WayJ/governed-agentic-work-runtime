@@ -759,13 +759,21 @@ not change when the work moves on. `current` is what may still change.
 }
 ```
 
-Every field of `context` is a fact about the action that does not move.
-Everything that *can* move is in `current`: the operation status, the node
-state, the work's state version, the contract and the plan in force now,
-the owner of the work, the cancellation and the Work's document. The two
-sections are never mixed, and the **complete** `context` of an action that
-already happened is the same before and after a policy migration or an
-owner transfer.
+Every field of `context` is a fact about the action. Everything that
+belongs to the work rather than to the action is in `current`: the operation
+status, the node state, the work's state version, the contract and the plan
+in force now, the owner of the work, the cancellation and the Work's
+document. The two sections are never mixed, and the **complete** `context`
+of an action that already happened is the same before and after a policy
+migration or an owner transfer.
+
+The stable part reflects the operation's **current native admission**. While
+the operation is only `prepared`, the runtime may still re-admit it — a
+dispatch that was cancelled or held is admitted again with the actor and the
+revisions of that admission — so `context` then holds what the store says
+now. From the dispatch on (dispatched, reconciled, confirmed) the admission
+is settled and `context` no longer moves. **The context is never a claim of
+global immutability.**
 
 `envelope` is the **original** session/task envelope of the work: the
 session the work was started in, the trusted participant assignment, the
@@ -848,13 +856,17 @@ store, and the read writes no event and moves no state version.
   result; the context only says which action the key belongs to.
 * It does **not** claim an original compare-and-swap, an original task
   document or an original template that the store does not hold.
-* The stable context is the fact of the **stored operation**. A prepared
+* The stable context is the fact of the **stored operation**, and the
+  operation body is not immutable while it is still `prepared`. A prepared
   operation that is *re-admitted* — the runtime deliberately re-admits a
   prepared operation whose dispatch was cancelled or held — is rewritten in
   place: its actor and its plan and contract revisions become the ones of
   the re-admission. The proposal-time values are not persisted separately
   and are therefore never invented; the context reports what the operation
-  says now.
+  says now, and it settles from the dispatch on. The platform prepares its
+  business phase exclusively inside the native `adapter.execute`, after the
+  operation is persisted as `dispatched`/`in_flight`, and its lookup reads
+  that frozen phase.
 
 ### The name clash
 

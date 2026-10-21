@@ -2777,10 +2777,19 @@ class WorkflowEngine:
         * ``{"present": True, "context": {...}, "current": {...}}`` — the
           stable facts of the action and the mutable state around it.
 
-        The stable part is the identity of the action: it does not change
-        when the work moves on. The mutable part is what may still change:
-        the operation's status, the node's state, the work's state version
-        and the cancellation. The two are never mixed.
+        The stable part is the identity of the action and the mutable part
+        is what may still change: the operation's status, the node's
+        state, the work's state version and the cancellation. The two are
+        never mixed.
+
+        The stable part reflects the **current native admission** of the
+        operation. While the operation is only ``prepared``, the runtime may
+        still re-admit it — a dispatch that was cancelled or held is
+        admitted again with the actor and the revisions of that admission —
+        so those fields are what the store says now. From the dispatch on
+        (dispatched, reconciled, confirmed) the admission is settled and the
+        stable part no longer moves. The context is never a claim of global
+        immutability.
         """
         if not isinstance(business_key, str) or not business_key:
             raise WorkflowError("A business key must be a nonempty string")
