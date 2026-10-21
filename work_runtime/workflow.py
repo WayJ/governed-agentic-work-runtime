@@ -17,6 +17,7 @@ predicates, authorities, capabilities and validators are declared by a
 published template and by host configuration.
 """
 
+import copy
 import json
 import time
 import uuid
@@ -52,6 +53,10 @@ DEFAULT_MAX_ATTEMPTS = 1
 # trusted channel, never the ingress source of a signed evidence kind: the
 # engine must not impersonate a platform channel.
 WORKFLOW_EVENT_SOURCE = "workflow-engine"
+
+# The codes of the native action context read.
+ACTION_CONTEXT_ABSENT = "ACTION_CONTEXT_ABSENT"
+ACTION_CONTEXT_REFUSED = "ACTION_CONTEXT_REFUSED"
 
 # Bounds on what the engine keeps of an external receipt.
 MAX_RECEIPT_BYTES = 8192
@@ -2740,3 +2745,255 @@ class WorkflowEngine:
                 "allowedActions": allowed,
                 "intents": intents[:MAX_VIEW_INTENTS],
             }
+
+    # ------------------------------------------------------------------
+    # The native action context
+    # ------------------------------------------------------------------
+
+    def suggest_action_context(self, business_key: str) -> Dict[str, Any]:
+        """The native context of the automatic action behind a business key.
+
+        A platform adapter receives the native business key and nothing
+        else. This read answers what that key really is: the operation it
+        names, the workflow node instance that proposed it, the pinned
+        definition, the contract and plan revision it belongs to and the
+        subject the action is bound to.
+
+        The read is local, read-only and snapshot-consistent: every row is
+        read inside one deferred transaction, so the answer always describes
+        one committed state. It describes stored facts and nothing else: it
+        routes nothing, writes nothing, grants no capability and calls no
+        external system. A context is never an authority to execute.
+
+        Three answers are possible:
+
+        * ``{"present": False, "code": "ACTION_CONTEXT_ABSENT"}`` — no
+          operation carries that key.
+        * ``{"present": False, "code": "ACTION_CONTEXT_REFUSED",
+          "reason": ...}`` — the operation exists, but its linkage is
+          missing, ambiguous or inconsistent. The context is refused, never
+          guessed and never partially answered.
+        * ``{"present": True, "context": {...}, "current": {...}}`` — the
+          stable facts of the action and the mutable state around it.
+
+        The stable part is the identity of the action: it does not change
+        when the work moves on. The mutable part is what may still change:
+        the operation's status, the node's state, the work's state version
+        and the cancellation. The two are never mixed.
+        """
+        if not isinstance(business_key, str) or not business_key:
+            raise WorkflowError("A business key must be a nonempty string")
+        with self.runtime._connection() as db:
+            # One deferred transaction: every row below is read from the
+            # same committed snapshot.
+            db.execute("BEGIN")
+            return self._action_context_in(db, business_key)
+
+    @staticmethod
+    def _action_context_absence(business_key: str) -> Dict[str, Any]:
+        return {"present": False, "businessKey": business_key,
+                "code": ACTION_CONTEXT_ABSENT}
+
+    @staticmethod
+    def _action_context_refusal(business_key: str, reason: str,
+                                detail: str) -> Dict[str, Any]:
+        return {"present": False, "businessKey": business_key,
+                "code": ACTION_CONTEXT_REFUSED, "reason": reason,
+                "detail": detail}
+
+    @staticmethod
+    def _operation_links(db, operation_id: str) -> List[Tuple[str, str, int,
+                                                               Dict[str, Any]]]:
+        """Every node instance in the store that references the operation.
+
+        The link is the stored ``operation_id`` on the node instance and
+        nothing else: the node is never inferred from the capability, from
+        the work's cursor or from the latest instance of a node.
+        """
+        links = []
+        rows = db.execute("SELECT work_id,node,attempt,body FROM workflow_nodes")
+        for row in rows.fetchall():
+            try:
+                body = json.loads(row["body"])
+            except ValueError:
+                # A corrupt row cannot be a link. It is skipped, exactly like
+                # the engine skips a corrupt work when it lists workflows.
+                continue
+            if isinstance(body, dict) and body.get("operation_id") == operation_id:
+                links.append((row["work_id"], row["node"], row["attempt"], body))
+        return links
+
+    def _action_context_in(self, db, business_key: str) -> Dict[str, Any]:
+        row = db.execute("SELECT id,work_id,body FROM operations WHERE business_key=?",
+                         (business_key,)).fetchone()
+        if row is None:
+            return self._action_context_absence(business_key)
+        try:
+            operation = json.loads(row["body"])
+        except ValueError:
+            return self._action_context_refusal(
+                business_key, "OPERATION_BODY_INVALID",
+                "The stored operation cannot be read")
+        if not isinstance(operation, dict):
+            return self._action_context_refusal(
+                business_key, "OPERATION_BODY_INVALID",
+                "The stored operation is not an object")
+        if (operation.get("id") != row["id"]
+                or operation.get("business_key") != business_key):
+            return self._action_context_refusal(
+                business_key, "OPERATION_IDENTITY_MISMATCH",
+                "The stored operation does not match its row")
+        operation_id = operation.get("id")
+        links = self._operation_links(db, operation_id)
+        if not links:
+            return self._action_context_refusal(
+                business_key, "OPERATION_NOT_WORKFLOW_BOUND",
+                "No workflow node instance proposed this operation")
+        if len(links) > 1:
+            return self._action_context_refusal(
+                business_key, "OPERATION_LINK_AMBIGUOUS",
+                "Several node instances reference this operation")
+        work_id, node_id, attempt, instance = links[0]
+        if work_id != operation.get("work_id"):
+            return self._action_context_refusal(
+                business_key, "OPERATION_LINK_WORK_MISMATCH",
+                "The node instance belongs to another work")
+        if instance.get("kind") != "action":
+            return self._action_context_refusal(
+                business_key, "OPERATION_LINK_WRONG_KIND",
+                "The node instance is not an action node")
+        if instance.get("attempt") != attempt:
+            return self._action_context_refusal(
+                business_key, "OPERATION_LINK_ATTEMPT_MISMATCH",
+                "The node instance does not match its stored attempt")
+        work_row = db.execute("SELECT state FROM works WHERE id=?", (work_id,)).fetchone()
+        if work_row is None:
+            return self._action_context_refusal(
+                business_key, "OPERATION_WORK_UNKNOWN",
+                "The work of this operation is gone")
+        try:
+            work = json.loads(work_row[0])
+        except ValueError:
+            return self._action_context_refusal(
+                business_key, "OPERATION_WORK_INVALID",
+                "The work of this operation cannot be read")
+        binding = work.get("workflow")
+        if not isinstance(binding, dict):
+            return self._action_context_refusal(
+                business_key, "OPERATION_WORK_NOT_BOUND",
+                "The work of this operation has no workflow binding")
+        spec = self._spec_in(db, work)
+        node = ((spec or {}).get("nodes") or {}).get(node_id)
+        if not isinstance(node, dict):
+            return self._action_context_refusal(
+                business_key, "OPERATION_NODE_UNKNOWN",
+                "The pinned definition does not declare the node")
+        if node.get("kind") != "action":
+            return self._action_context_refusal(
+                business_key, "OPERATION_LINK_WRONG_KIND",
+                "The pinned definition does not declare an action node")
+        if node.get("capability") != operation.get("capability"):
+            return self._action_context_refusal(
+                business_key, "OPERATION_CAPABILITY_MISMATCH",
+                "The operation does not carry the capability of its node")
+        template = db.execute(
+            "SELECT digest FROM workflow_templates WHERE id=? AND version=?",
+            (binding.get("template_id"), binding.get("template_version"))).fetchone()
+        if template is None:
+            return self._action_context_refusal(
+                business_key, "OPERATION_TEMPLATE_UNKNOWN",
+                "The published definition of this work is gone")
+        if template[0] != binding.get("digest"):
+            return self._action_context_refusal(
+                business_key, "OPERATION_TEMPLATE_MISMATCH",
+                "The published definition is not the one the work pinned")
+        contract = work.get("contract") or {}
+        if contract.get("revision") != operation.get("contract_revision"):
+            return self._action_context_refusal(
+                business_key, "OPERATION_CONTRACT_MISMATCH",
+                "The operation does not carry the contract revision of its work")
+        subject = instance.get("subject")
+        bound = operation.get("object")
+        if not isinstance(subject, dict) or not isinstance(bound, dict):
+            return self._action_context_refusal(
+                business_key, "OPERATION_SUBJECT_MISSING",
+                "The action is not bound to a subject")
+        for field in ("name", "revision", "digest"):
+            if subject.get(field) != bound.get(field):
+                return self._action_context_refusal(
+                    business_key, "OPERATION_SUBJECT_MISMATCH",
+                    "The subject of the node is not the subject of the operation")
+        object_row = self._object_at(db, work_id, subject["name"], subject["revision"])
+        if object_row is None:
+            return self._action_context_refusal(
+                business_key, "OPERATION_OBJECT_UNAVAILABLE",
+                "The bound revision of the subject is gone")
+        if (object_row["digest"] != operation.get("document_digest")
+                or object_row["digest"] != subject.get("digest")):
+            return self._action_context_refusal(
+                business_key, "OPERATION_OBJECT_DIGEST_MISMATCH",
+                "The bound subject does not carry the digest of the operation")
+        try:
+            body = json.loads(object_row["body"])
+        except ValueError:
+            return self._action_context_refusal(
+                business_key, "OPERATION_OBJECT_BODY_INVALID",
+                "The bound subject cannot be read")
+        if digest(body) != object_row["digest"]:
+            return self._action_context_refusal(
+                business_key, "OPERATION_OBJECT_BODY_MISMATCH",
+                "The bound subject does not match its own digest")
+        if body != operation.get("document"):
+            return self._action_context_refusal(
+                business_key, "OPERATION_DOCUMENT_MISMATCH",
+                "The operation does not carry the body of its bound subject")
+        input_digest = instance.get("input_digest")
+        if not isinstance(input_digest, str) or not input_digest:
+            return self._action_context_refusal(
+                business_key, "OPERATION_INPUT_DIGEST_MISSING",
+                "The node instance does not carry the digest of its inputs")
+        stable = {
+            "businessKey": business_key,
+            "operationId": operation_id,
+            "workId": work_id,
+            "node": node_id,
+            "attempt": attempt,
+            "actor": operation.get("actor"),
+            "capability": operation.get("capability"),
+            "contract": {"policyId": contract.get("policy_id"),
+                         "policyVersion": contract.get("policy_version"),
+                         "goal": contract.get("goal"),
+                         "revision": operation.get("contract_revision")},
+            "contractRevision": operation.get("contract_revision"),
+            "planRevision": operation.get("plan_revision"),
+            "inputDigest": input_digest,
+            "template": {"id": binding.get("template_id"),
+                         "version": binding.get("template_version"),
+                         "digest": binding.get("digest")},
+            "subject": {"name": subject["name"], "revision": subject["revision"],
+                        "digest": subject["digest"], "body": body},
+            "envelope": {"sessionId": binding.get("session_id"),
+                         "participants": binding.get("participants") or {},
+                         "parameters": binding.get("parameters") or {},
+                         "owner": work.get("owner"),
+                         "runner": instance.get("runner")},
+        }
+        current = {
+            "operationStatus": operation.get("status"),
+            "dispatchState": operation.get("dispatch_state"),
+            "externalId": operation.get("external_id"),
+            "nodeState": instance.get("state"),
+            "nodeOutcome": instance.get("outcome"),
+            "nodeReason": instance.get("reason"),
+            "workStatus": work.get("status"),
+            "workflowStatus": work.get("workflow_status"),
+            "stateVersion": work.get("state_version"),
+            "cancelled": bool(work.get("cancellation")),
+            "cancellation": work.get("cancellation"),
+            "task": {"document": work.get("document"),
+                     "documentDigest": work.get("document_digest"),
+                     "documentRevision": work.get("document_revision")},
+        }
+        # The answer is a copy: changing it can never change the store.
+        return copy.deepcopy({"present": True, "businessKey": business_key,
+                              "context": stable, "current": current})

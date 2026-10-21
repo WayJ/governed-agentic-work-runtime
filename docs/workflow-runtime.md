@@ -482,6 +482,10 @@ id, without a second session and without a poll loop.
 Intents are cancelled when their node is cancelled, when the object they
 pinned is superseded, or when the work is cancelled.
 
+An adapter that receives only the native business key has no intent to read:
+it holds a key, not a node. [The native action context](#11-the-native-action-context)
+answers what that key is.
+
 ## 7. The HTTP bridge
 
 `work_runtime/workflow_server.py` exposes a **generic** `/v1/workflows`
@@ -679,7 +683,133 @@ works keep their previous behaviour**: the existing suite is the regression
 net, and the byte pin in `tests/test_publishing_compensation.py` is updated
 consciously, never silently.
 
-## 11. What is deliberately not here
+## 11. The native action context
+
+A platform adapter receives the **native business key** and nothing else.
+`runtime.get_operation` takes the operation *uuid*, and the instance read
+model is a *latest* view: it carries no `operation_id` and no historical
+attempt. So an adapter that is handed a key cannot tell which action it is
+executing — unless it reaches into the schema, which it must not do.
+
+`WorkflowEngine.suggest_action_context(business_key)` is the answer. It is a
+**local, read-only** call: no route, no write, no capability, no external
+call.
+
+```python
+context = engine.suggest_action_context(business_key)
+```
+
+Every row the answer is built from is read inside **one deferred
+transaction**, so the operation, the node instance, the subject object, the
+published definition and the work are always the same committed state.
+
+### The three answers
+
+| answer | shape |
+|---|---|
+| absence | `{"present": False, "businessKey": ..., "code": "ACTION_CONTEXT_ABSENT"}` |
+| refusal | `{"present": False, "businessKey": ..., "code": "ACTION_CONTEXT_REFUSED", "reason": ..., "detail": ...}` |
+| context | `{"present": True, "businessKey": ..., "context": {...}, "current": {...}}` |
+
+The method raises `WorkflowError` only for API misuse (a key that is not a
+nonempty string). It never raises for a missing, ambiguous or corrupt
+linkage: an adapter that asks inside `execute` must not turn a refusal into
+a runtime `outcome_unknown`.
+
+The read assumes the **single coordinator** of this runtime. It does not
+need one for correctness of the answer — one snapshot is one state — but the
+store it reads is written by one coordinator, exactly like every other
+runtime read.
+
+### The stable context and the mutable current state
+
+The two are never mixed. `context` is the identity of the action — it does
+not change when the work moves on. `current` is what may still change.
+
+```json
+"context": {
+  "businessKey": "…", "operationId": "…", "workId": "…",
+  "node": "n06", "attempt": 1,
+  "actor": "coordinator", "capability": "work.dispatch",
+  "contract": {"policyId": "…", "policyVersion": "…", "goal": "…", "revision": 1},
+  "contractRevision": 1, "planRevision": 1,
+  "inputDigest": "…",
+  "template": {"id": "…", "version": "…", "digest": "…"},
+  "subject": {"name": "proposal", "revision": 1, "digest": "…", "body": {}},
+  "envelope": {"sessionId": "…", "participants": {}, "parameters": {},
+               "owner": "coordinator", "runner": "workflow-runner"}
+},
+"current": {
+  "operationStatus": "confirmed_succeeded", "dispatchState": "…",
+  "externalId": "…",
+  "nodeState": "completed", "nodeOutcome": "completed", "nodeReason": null,
+  "workStatus": "active", "workflowStatus": "active", "stateVersion": 17,
+  "cancelled": false, "cancellation": null,
+  "task": {"document": {}, "documentDigest": "…", "documentRevision": 1}
+}
+```
+
+`envelope` is the **original** session/task envelope of the work: the
+session the work was started in, the trusted participant assignment, the
+pinned parameters, the owner and the configured runner. The *bound subject*
+is the frozen material of the operation.
+
+`current.task` is the Work's own document, and it is reported under
+`current` on purpose: `revise_document` may change it, and the Work's
+document at proposal time is **not persisted**, so it is never presented as
+an original fact. The same discipline applies to the compare-and-swap: the
+state version at proposal time is not persisted either, so only the
+*current* state version is reported.
+
+### The resolution
+
+1. `operations WHERE business_key = ?` — no row is an **absence**.
+2. The stored `operation_id` on the node instances is the **only** link. A
+   node is never inferred from the capability, from the work's cursor or
+   from the latest instance of a node.
+3. Exactly one node instance may reference the operation. Zero is a
+   **refusal** (`OPERATION_NOT_WORKFLOW_BOUND` — an operation that was
+   proposed by hand is not a workflow action); several are a **refusal**
+   (`OPERATION_LINK_AMBIGUOUS`).
+4. The link must belong to the operation's work
+   (`OPERATION_LINK_WORK_MISMATCH`) and its node must be an **action** node
+   (`OPERATION_LINK_WRONG_KIND`).
+5. The node's declared capability must be the operation's capability
+   (`OPERATION_CAPABILITY_MISMATCH`), the operation's contract revision must
+   be the work's (`OPERATION_CONTRACT_MISMATCH`), and the published
+   definition must still be the one the work pinned
+   (`OPERATION_TEMPLATE_MISMATCH`).
+6. The instance's subject must be the operation's object binding
+   (`OPERATION_SUBJECT_MISMATCH`), that exact revision must still exist
+   (`OPERATION_OBJECT_UNAVAILABLE`) and it must carry the digest of the
+   operation (`OPERATION_OBJECT_DIGEST_MISMATCH`).
+7. The instance must carry the digest of its inputs
+   (`OPERATION_INPUT_DIGEST_MISSING`).
+
+The answer is a **defensive copy**: changing it can never change the
+store, and the read writes no event and moves no state version.
+
+### What the context is not
+
+* It is **not an authority to execute**. A context describes a stored
+  action; it does not dispatch it, re-dispatch it or grant the capability
+  it names. A cancelled work keeps its context — the record of what the
+  action was — and grants no execution.
+* It is **not a receipt**. The receipt of an effect is the adapter's own
+  result; the context only says which action the key belongs to.
+* It does **not** claim an original compare-and-swap, an original task
+  document or an original template that the store does not hold.
+
+### The name clash
+
+`AdapterContract.supports_action_context` is an **older and unrelated**
+opt-in: it means "this adapter receives the explicit `action=` and
+`compensates=` execution context" (see
+[adapter-contract.md](adapter-contract.md)). The action context of this
+section is the *workflow* context of an automatic action. The two never
+meet.
+
+## 12. What is deliberately not here
 
 * No authentication, no tenant isolation, no distributed leases or fencing.
   Principals are trusted local configuration.

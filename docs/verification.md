@@ -859,7 +859,7 @@ existing Work/Evidence/Operation/Wait machinery. The language, the engine and
 the bridge are described in [workflow-runtime.md](workflow-runtime.md); this
 section records what is verified and what is not.
 
-### Workflow matrix (W01–W16)
+### Workflow matrix (W01–W66)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -921,6 +921,14 @@ section records what is verified and what is not.
 | W56 | The binding receipt is the platform's probe point | covered | `test_the_binding_receipt_is_readable_after_a_crash`, `test_the_binding_receipt_is_readable_after_a_replay` — the receipt is absent before the binding and accepted after it |
 | W57 | Two callers of one creation never truncate each other | covered | `test_two_concurrent_creations_of_the_same_body_keep_one_creation`, `test_two_concurrent_creations_with_different_bodies_conflict`, `test_two_concurrent_preparations_keep_every_stage`, `test_two_concurrent_preparations_keep_one_prepared_version` — the second caller waits its turn, one body wins and the other conflicts, every prepared stage survives |
 | W58 | A prepared stage is never re-prepared | covered | `test_a_recorded_stage_is_never_overwritten`, `test_another_request_under_the_same_command_id_conflicts` — the prepared version and the recorded request digest are immutable |
+| W59 | A native business key resolves to the action it names | covered | `test_the_context_is_readable_inside_the_adapter_execute` — the adapter reads the context inside its own `execute`: the operation, the node, the attempt, the capability, the contract and plan revision, the input digest, the pinned template and the bound subject (`tests/test_workflow_action_context.py`) |
+| W60 | The context survives a restart | covered | `test_the_context_survives_a_process_reopen_and_is_readable_through_lookup` — a fresh process reads the same context from the same store; the adapter's `lookup` path reads the same context |
+| W61 | The same capability in two nodes never confuses the mapping | covered | `test_two_nodes_of_the_same_capability_map_to_their_own_action` — two action nodes of one capability on two subjects, each with its own operation, node and subject |
+| W62 | A historical attempt keeps its own action | covered | `test_a_historical_attempt_keeps_its_own_action` — a superseded attempt keeps its operation, its subject revision and its attempt number; the live attempt has its own |
+| W63 | An unknown key and a manual operation are not a context | covered | `test_an_unknown_key_is_a_documented_absence`, `test_a_manual_operation_is_refused` — `ACTION_CONTEXT_ABSENT`; an operation no node proposed is `ACTION_CONTEXT_REFUSED` / `OPERATION_NOT_WORKFLOW_BOUND` |
+| W64 | A broken linkage is refused, never guessed | covered | `test_two_node_instances_of_one_operation_are_refused`, `test_a_link_of_another_kind_is_refused`, `test_a_subject_that_does_not_match_the_operation_is_refused`, `test_an_object_with_a_broken_digest_is_refused`, `test_a_capability_that_does_not_match_the_node_is_refused` — `OPERATION_LINK_AMBIGUOUS`, `OPERATION_LINK_WRONG_KIND`, `OPERATION_SUBJECT_MISMATCH`, `OPERATION_OBJECT_DIGEST_MISMATCH`, `OPERATION_CAPABILITY_MISMATCH` |
+| W65 | The answer is a copy and the read changes nothing | covered | `test_a_mutated_answer_does_not_change_the_store`, `test_the_read_writes_no_event_and_changes_no_state_version` — a mutated answer leaves the rows untouched; the read writes no event and moves no state version |
+| W66 | A cancelled work keeps its context and grants no execution | covered | `test_a_cancelled_work_keeps_its_context_and_grants_no_execution` — the context still resolves, `current.cancelled` is true, the dispatch state is `cancelled` and the business system records no effect |
 
 ### Bridge, recovery and demonstration
 
