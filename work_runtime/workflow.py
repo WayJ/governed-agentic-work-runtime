@@ -33,7 +33,7 @@ from .workflow_spec import (EFFECT_POLICIES, EFFECT_POLICY_ONCE,
 # Command kinds the runtime routes to the engine. They are ordinary runtime
 # commands: CAS-guarded, deduplicated and receipt-bearing like every other.
 WORKFLOW_COMMANDS = ("bind_workflow", "revise_object", "submit_node_result",
-                     "record_decision")
+                     "record_decision", "finalize_workflow_success")
 
 TERMINAL_NODE_STATES = ("completed", "failed", "expired", "cancelled")
 
@@ -60,6 +60,23 @@ WORKFLOW_EVENT_SOURCE = "workflow-engine"
 ACTION_CONTEXT_ABSENT = "ACTION_CONTEXT_ABSENT"
 ACTION_CONTEXT_REFUSED = "ACTION_CONTEXT_REFUSED"
 
+# The refusals of the workflow-success finalization. Every one of them says
+# what is *not* settled yet; none of them freezes anything.
+WORKFLOW_RUNNER_UNCONFIGURED = "WORKFLOW_RUNNER_UNCONFIGURED"
+WORKFLOW_RUNNER_MISMATCH = "WORKFLOW_RUNNER_MISMATCH"
+WORKFLOW_NOT_FINISHED = "WORKFLOW_NOT_FINISHED"
+WORKFLOW_TERMINAL_NOT_COMPLETED = "WORKFLOW_TERMINAL_NOT_COMPLETED"
+WORKFLOW_TERMINAL_NOT_DECLARED = "WORKFLOW_TERMINAL_NOT_DECLARED"
+WORKFLOW_NODE_UNSETTLED = "WORKFLOW_NODE_UNSETTLED"
+WORKFLOW_NODE_NOT_COMPLETED = "WORKFLOW_NODE_NOT_COMPLETED"
+WORKFLOW_QUALITY_UNSETTLED = "WORKFLOW_QUALITY_UNSETTLED"
+WORKFLOW_CHECK_UNSATISFIED = "WORKFLOW_CHECK_UNSATISFIED"
+WORKFLOW_EFFECT_UNRESOLVED = "WORKFLOW_EFFECT_UNRESOLVED"
+WORKFLOW_REQUIREMENT_UNSATISFIED = "WORKFLOW_REQUIREMENT_UNSATISFIED"
+WORKFLOW_INTENT_UNSETTLED = "WORKFLOW_INTENT_UNSETTLED"
+WORKFLOW_CANCELLED = "WORKFLOW_CANCELLED"
+WORKFLOW_SNAPSHOT_UNBOUNDED = "WORKFLOW_SNAPSHOT_UNBOUNDED"
+
 # The reasons an automatic node refuses to produce its external effect. The
 # default policy refuses with WORKFLOW_EFFECT_ALREADY_APPLIED; the
 # per-revision policy names the exact reason it refuses.
@@ -72,6 +89,9 @@ WORKFLOW_EFFECT_REUSED = "WORKFLOW_EFFECT_REUSED"
 # Bounds on what the engine keeps of an external receipt.
 MAX_RECEIPT_BYTES = 8192
 MAX_OUTPUT_BYTES = 65536
+
+# The bound of the frozen final snapshot: the named objects it names.
+MAX_FINALIZATION_OBJECTS = 64
 
 
 class WorkflowError(Exception):
@@ -392,6 +412,10 @@ class WorkflowEngine:
             return "workflow.execute" in self.runtime.grants.get(actor, set())
         if kind == "record_decision":
             return self._decision_authority_holds(actor, work, payload or {})
+        if kind == "finalize_workflow_success":
+            # The stored receipt of a finalization is replayed while the
+            # trusted runner still holds the role that decided it.
+            return self.runner is not None and actor == self.runner
         return False
 
     def _decision_authority_holds(self, actor: str, work: dict,
@@ -424,6 +448,8 @@ class WorkflowEngine:
         if kind == "record_decision":
             return self._record_decision(db, actor, work, payload, version,
                                          command_id)
+        if kind == "finalize_workflow_success":
+            return self._finalize_success(db, actor, work, payload, version)
         return self.runtime._reject("COMMAND_UNSUPPORTED", version)
 
     # ------------------------------------------------------------------
@@ -885,6 +911,21 @@ class WorkflowEngine:
         """One deterministic routing pass over a work's stored state."""
         with self.runtime._transaction() as db:
             work = self.runtime._work(db, work_id)
+            if work.get("workflow_finalization"):
+                # A finalized workflow is frozen: no routing, no new node,
+                # no new effect. Late evidence may still be recorded, but it
+                # never reopens what was accepted.
+                return {"decision": "noop", "work_id": work_id,
+                        "status": work.get("workflow_status"),
+                        "finalized": True}
+            if work.get("workflow_terminal"):
+                # The routing stopped at a terminal: a finished workflow is
+                # not routed again. Without this, the next pass would walk
+                # the completed chain and open a fresh attempt of the last
+                # node, and a terminal that says "completed" would not be a
+                # fact anybody could rely on.
+                return {"decision": "noop", "work_id": work_id,
+                        "status": work.get("workflow_status")}
             spec = self._spec_in(db, work)
             if spec is None:
                 return {"decision": "noop", "work_id": work_id}
@@ -2632,6 +2673,294 @@ class WorkflowEngine:
             "outputDigest": reference["digest"]}
         self._save_instance(db, work, instance, "WorkflowOutputAccepted", {
             "actor": actor, "source": source, "output": reference})
+
+    # ------------------------------------------------------------------
+    # Workflow-success finalization
+    # ------------------------------------------------------------------
+
+    def _finalize_success(self, db, actor, work, payload, version):
+        """Accept a successful workflow and freeze it, in one transaction.
+
+        The finalization is an acceptance decision, not a read: it verifies
+        the declared terminal, the settled material, the settled effects and
+        the settled obligations, and only then freezes the work and records
+        the exact final snapshot it accepted. A workflow that is not
+        verifiably successful is never frozen, and a frozen workflow is never
+        routed, revised, cancelled or reopened again.
+        """
+        if payload:
+            raise WorkflowError("finalize_workflow_success takes no payload")
+        if self.runner is None:
+            # No trusted runner is configured: the acceptance has no actor.
+            return self.runtime._reject(WORKFLOW_RUNNER_UNCONFIGURED, version)
+        if actor != self.runner:
+            # The acceptance belongs to the protected runner, never to an
+            # agent, a reviewer or the work owner.
+            return self.runtime._reject(WORKFLOW_RUNNER_MISMATCH, version)
+        binding = work.get("workflow")
+        if not binding:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_TEMPLATE_UNKNOWN", version)
+        if work.get("cancellation"):
+            return self.runtime._reject(WORKFLOW_CANCELLED, version)
+        terminal = work.get("workflow_terminal") or {}
+        finished = (work.get("workflow_status") == "finished"
+                    and work.get("workflow_current") is None)
+        if finished:
+            if terminal.get("outcome") != "completed":
+                # Failed, expired, cancelled and rejected terminals are not
+                # a success, whatever the routing says.
+                return self.runtime._reject(WORKFLOW_TERMINAL_NOT_COMPLETED,
+                                            version, [{
+                                                "node": terminal.get("node"),
+                                                "outcome": terminal.get("outcome"),
+                                                "reason": terminal.get("reason")}])
+            declared_terminals = spec.get("terminal") or []
+            if declared_terminals and terminal.get("node") not in declared_terminals:
+                return self.runtime._reject(WORKFLOW_TERMINAL_NOT_DECLARED,
+                                            version, [{
+                                                "node": terminal.get("node"),
+                                                "declared": list(declared_terminals)}])
+        elif terminal.get("outcome") not in (None, "completed"):
+            # The workflow stopped at a failed terminal: that is not a
+            # success either.
+            return self.runtime._reject(WORKFLOW_TERMINAL_NOT_COMPLETED, version, [{
+                "node": terminal.get("node"), "outcome": terminal.get("outcome"),
+                "reason": terminal.get("reason")}])
+        else:
+            # "Finished" is the precondition; a running, a blocked or a
+            # reopened workflow is never accepted.
+            return self.runtime._reject(WORKFLOW_NOT_FINISHED, version, [{
+                "status": work.get("workflow_status"),
+                "currentNode": work.get("workflow_current")}])
+
+        operations = []
+        unresolved = []
+        for row in db.execute("SELECT body FROM operations WHERE work_id=?",
+                              (work["id"],)).fetchall():
+            operation = json.loads(row[0])
+            operations.append({"id": operation["id"],
+                               "capability": operation.get("capability"),
+                               "businessKey": operation.get("business_key"),
+                               "status": operation.get("status"),
+                               "dispatchState": operation.get("dispatch_state"),
+                               "externalId": operation.get("external_id")})
+            if (operation.get("status") not in ("confirmed_succeeded",
+                                                "confirmed_failed")
+                    and operation.get("dispatch_state") != "cancelled"):
+                # A prepared, dispatched or unknown effect is not settled.
+                unresolved.append(operation["id"])
+        if unresolved:
+            return self.runtime._reject(WORKFLOW_EFFECT_UNRESOLVED, version,
+                                        unresolved)
+
+        requirements = []
+        blockers = []
+        for requirement in work.get("requirements") or []:
+            requirements.append({"id": requirement.get("id"),
+                                 "ruleId": requirement.get("rule_id"),
+                                 "applicability": requirement.get("applicability"),
+                                 "fulfillment": requirement.get("fulfillment")})
+            applicability = requirement.get("applicability")
+            if applicability in ("unknown", "conflict"):
+                blockers.append(requirement.get("id"))
+            elif (applicability == "applicable"
+                    and requirement.get("fulfillment") != "satisfied"):
+                blockers.append(requirement.get("id"))
+        if blockers:
+            return self.runtime._reject(WORKFLOW_REQUIREMENT_UNSATISFIED, version,
+                                        blockers)
+
+        latest: Dict[str, Dict[str, Any]] = {}
+        for instance in self._instances(db, work["id"]):
+            latest[instance["node"]] = instance
+
+        unsettled = []
+        not_completed = []
+        quality_open = []
+        checks_open = []
+        passed_checks = set()
+        for node_id in sorted(latest):
+            instance = latest[node_id]
+            node = spec["nodes"].get(node_id) or {}
+            if instance.get("state") not in TERMINAL_NODE_STATES:
+                unsettled.append({"node": node_id, "state": instance.get("state")})
+                continue
+            if instance.get("outcome") != "completed":
+                not_completed.append({"node": node_id, "state": instance.get("state"),
+                                      "outcome": instance.get("outcome"),
+                                      "reason": instance.get("reason")})
+            quality = instance.get("quality") or {}
+            if quality.get("declared") and quality.get("mode") != "validated":
+                quality_open.append({"node": node_id, "mode": quality.get("mode")})
+            results = {}
+            for entry in instance.get("check_results") or []:
+                results.setdefault(entry.get("checkId"), entry)
+                if entry.get("verdict") == "passed":
+                    passed_checks.add(entry.get("checkId"))
+            for declaration in self._check_declarations(node):
+                identifier = declaration.get("id")
+                if not isinstance(identifier, str) or not identifier:
+                    continue
+                if declaration.get("required") is False:
+                    continue
+                entry = results.get(identifier)
+                if not entry or entry.get("verdict") != "passed":
+                    checks_open.append({"node": node_id, "checkId": identifier,
+                                        "verdict": (entry or {}).get("verdict")})
+        if unsettled:
+            return self.runtime._reject(WORKFLOW_NODE_UNSETTLED, version, unsettled)
+        if not_completed:
+            return self.runtime._reject(WORKFLOW_NODE_NOT_COMPLETED, version,
+                                        not_completed)
+        if quality_open:
+            return self.runtime._reject(WORKFLOW_QUALITY_UNSETTLED, version,
+                                        quality_open)
+        if checks_open:
+            return self.runtime._reject(WORKFLOW_CHECK_UNSATISFIED, version,
+                                        checks_open)
+        missing = [{"checkId": identifier, "reason": "no passed verdict"}
+                   for identifier in (spec.get("required_checks") or [])
+                   if identifier not in passed_checks]
+        if missing:
+            return self.runtime._reject(WORKFLOW_CHECK_UNSATISFIED, version, missing)
+
+        pending = [row[0] for row in db.execute(
+            "SELECT id FROM workflow_intents WHERE work_id=? AND status='pending'",
+            (work["id"],)).fetchall()]
+        if pending:
+            return self.runtime._reject(WORKFLOW_INTENT_UNSETTLED, version, pending)
+
+        object_count = db.execute(
+            "SELECT COUNT(DISTINCT name) FROM workflow_objects WHERE work_id=?",
+            (work["id"],)).fetchone()[0]
+        if (object_count > MAX_FINALIZATION_OBJECTS
+                or len(latest) > MAX_VIEW_NODES):
+            # A snapshot that does not name every object and every node is
+            # not the snapshot of the accepted workflow: the acceptance is
+            # refused instead of freezing a partial proof.
+            return self.runtime._reject(WORKFLOW_SNAPSHOT_UNBOUNDED, version, [{
+                "objects": object_count, "nodes": len(latest),
+                "maxObjects": MAX_FINALIZATION_OBJECTS,
+                "maxNodes": MAX_VIEW_NODES}])
+        snapshot = self._final_snapshot(db, work, binding, latest, terminal,
+                                        version, actor, operations, requirements)
+        work["workflow_finalization"] = snapshot
+        # The accepted work is closed: no later command may revise, replace,
+        # cancel or reopen it, and no later command may produce an effect.
+        work["status"] = "closed"
+        work["outcome"] = "succeeded"
+        work["completion"] = {"contract": work.get("contract"),
+                              "document_digest": work.get("document_digest"),
+                              "evidence": list(snapshot["evidence"]),
+                              "workflow": {"finalizationId": snapshot["finalizationId"],
+                                           "digest": snapshot["digest"]}}
+        self.runtime._save(db, work, "WorkflowFinalized", {
+            "finalization_id": snapshot["finalizationId"],
+            "digest": snapshot["digest"],
+            "terminal": snapshot["terminal"],
+            "template": snapshot["template"],
+            "contract": snapshot["contract"],
+            "plan_revision": snapshot["plan"]["revision"],
+            "document": snapshot["document"]})
+        return self.runtime._accepted(work, finalization=snapshot)
+
+    def _final_snapshot(self, db, work, binding, latest, terminal, version,
+                        actor, operations, requirements):
+        """The exact final snapshot of the accepted workflow.
+
+        It names the identities the acceptance rests on: the published
+        definition, the bound contract, the plan and the document in force,
+        every named object revision, every node attempt with its judgment,
+        every effect, every obligation and the verified evidence. Bodies are
+        not copied: a snapshot names what was accepted, and the material
+        stays readable as the object revision it names.
+        """
+        objects = []
+        for row in db.execute("SELECT name,revision,digest FROM workflow_objects "
+                              "WHERE work_id=? ORDER BY name,revision",
+                              (work["id"],)).fetchall():
+            reference = {"name": row["name"], "revision": row["revision"],
+                         "digest": row["digest"]}
+            if objects and objects[-1]["name"] == reference["name"]:
+                objects[-1] = reference
+            else:
+                objects.append(reference)
+        nodes = []
+        for node_id in sorted(latest):
+            instance = latest[node_id]
+            nodes.append({
+                "node": node_id,
+                "kind": instance.get("kind"),
+                "attempt": instance.get("attempt"),
+                "state": instance.get("state"),
+                "outcome": instance.get("outcome"),
+                "reason": instance.get("reason"),
+                "actor": instance.get("actor"),
+                "inputs": instance.get("inputs") or [],
+                "subject": instance.get("subject"),
+                "output": instance.get("output"),
+                "quality": instance.get("quality"),
+                "effect": instance.get("effect"),
+                "checks": [{"checkId": entry.get("checkId"),
+                            "verdict": entry.get("verdict"),
+                            "method": entry.get("method")}
+                           for entry in (instance.get("check_results") or [])],
+            })
+        terminal_instance = latest.get(terminal.get("node")) or {}
+        contract = work.get("contract") or {}
+        plan = work.get("plan") or {}
+        proofs = self.runtime._proofs(db, work["id"])
+        snapshot = {
+            "finalizationId": uuid.uuid4().hex,
+            "workId": work["id"],
+            "finalizedBy": actor,
+            "finalizedAt": int(time.time()),
+            "stateVersion": version + 1,
+            "workflowStatus": work.get("workflow_status"),
+            "terminal": {"node": terminal.get("node"),
+                         "attempt": terminal_instance.get("attempt"),
+                         "outcome": terminal.get("outcome"),
+                         "reason": terminal.get("reason")},
+            "template": {"id": binding.get("template_id"),
+                         "version": binding.get("template_version"),
+                         "digest": binding.get("digest"),
+                         "revision": binding.get("revision")},
+            "contract": {"policyId": contract.get("policy_id"),
+                         "policyVersion": contract.get("policy_version"),
+                         "goal": contract.get("goal"),
+                         "revision": contract.get("revision")},
+            "plan": {"revision": work.get("plan_revision"),
+                     "steps": list(plan.get("steps") or []),
+                     "openRequirements": list(plan.get("open_requirements") or []),
+                     "replanWhen": list(plan.get("replan_when") or [])},
+            "document": {"revision": work.get("document_revision"),
+                         "digest": work.get("document_digest")},
+            "objects": objects,
+            "nodes": nodes,
+            "operations": operations,
+            "requirements": requirements,
+            "evidence": sorted(entry["id"] for entry in proofs
+                               if entry.get("status") == "verified"),
+        }
+        snapshot["digest"] = digest(snapshot)
+        return snapshot
+
+    def finalization(self, work_id: str) -> Optional[Dict[str, Any]]:
+        """The stored final snapshot of a finalized workflow.
+
+        A read-only answer: the snapshot was written once, by the
+        finalization that accepted the workflow, and it never changes.
+        """
+        with self.runtime._connection() as db:
+            work = self.runtime._work(db, work_id)
+            return work.get("workflow_finalization")
+
+    def workflow_finalized(self, work: dict) -> bool:
+        """Whether the work carries an accepted, frozen workflow."""
+        return bool(work.get("workflow_finalization"))
 
     def _cancel_workflow(self, work_id: str) -> None:
         """Cancel the workflow of a work that is already cancelling."""

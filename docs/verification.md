@@ -1,6 +1,6 @@
 # Verification coverage
 
-Updated: 2026-10-17 (S15 waves: support-ticket family, support-demo with forward + crash-recovery chapters, installed module+console verifier stages, third-family freeze verdict; S13 demo wave: publication-demo withdrawal chapter, installed verifier publication-stage extension; S13 core wave: published-card withdrawal surface; S12 demo wave: publication-demo harness, CLI entry point incl. the `inspect --policy sop-publish` choice, installed module+console verifier stages; S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
+Updated: 2026-10-22 (S17 slice: the workflow-success acceptance — the atomic `finalize_workflow_success` command, the frozen final snapshot, the immutable completion read and the disclosed "a finished workflow is not routed again" engine fix; S15 waves: support-ticket family, support-demo with forward + crash-recovery chapters, installed module+console verifier stages, third-family freeze verdict; S13 demo wave: publication-demo withdrawal chapter, installed verifier publication-stage extension; S13 core wave: published-card withdrawal surface; S12 demo wave: publication-demo harness, CLI entry point incl. the `inspect --policy sop-publish` choice, installed module+console verifier stages; S12 core wave: governed SOP publication core; S11 demo wave: rotation-demo harness, CLI entry point, installed module+console verifier stages; S11 core: configured source signing-key rotation and authenticated key identity; S9 core: accepted-source operation-id reservation and acceptance-proof collision recovery; S8 demo wave: revocation-demo harness, CLI entry point, installed module+console verifier stages; S8 core: evidence revocation command, permanent revoked status, D-1 unbound closed guard; S5 frontend/CLI slice: GUI sample seed, ui commands, packaged assets; S4 adoption: static SOP lint, file adapter, adoption harness) · Maintained by the contributor waves; behavior evidence lives in the named test files below.
 
 This report states what the local reference prototype actually verifies, and what it explicitly does not. Coverage below refers to the acceptance matrix in [RFC-003 §9](RFC-003-runtime-protocol.md); it is not a claim that RFC-001 or RFC-002 as a whole is implemented.
 
@@ -859,7 +859,14 @@ existing Work/Evidence/Operation/Wait machinery. The language, the engine and
 the bridge are described in [workflow-runtime.md](workflow-runtime.md); this
 section records what is verified and what is not.
 
-### Workflow matrix (W01–W78)
+The **workflow-success acceptance** (`finalize_workflow_success`) is part of
+this wave: the command the trusted platform runner issues when it closes its
+task, the exact final snapshot it freezes and the immutable completion read
+it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
+are byte-unchanged by that slice; the boundary rows are in
+[runtime-boundaries.md](runtime-boundaries.md).
+
+### Workflow matrix (W01–W91)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -941,6 +948,19 @@ section records what is verified and what is not.
 | W76 | A new admission owns a new operation and an exact linkage | covered | `test_an_operation_already_linked_to_another_node_is_refused` — `WORKFLOW_EFFECT_REUSED`; the native context of a business key stays unambiguous |
 | W77 | Both business keys resolve after a restart | covered | `test_both_business_keys_resolve_after_a_restart` — the old key names attempt 1, the new key attempt 2 |
 | W78 | An unknown policy is refused at publication and at binding | covered | `test_an_unknown_policy_is_refused_at_publication`, `test_an_unknown_policy_is_refused_at_binding`, `test_a_pinned_template_cannot_be_changed_under_the_same_version` — `WORKFLOW_SPEC_INVALID`, `WORKFLOW_EFFECT_POLICY_UNKNOWN`, `WORKFLOW_TEMPLATE_IMMUTABLE` |
+| W79 | A successful workflow is accepted and frozen by the trusted runner | covered | `test_a_successful_workflow_is_accepted_and_frozen` — the work is closed as `succeeded`, the event `WorkflowFinalized` is written, the snapshot names the terminal (`tests/test_workflow_finalization.py`) |
+| W80 | The acceptance names the exact identities it accepted | covered | `test_the_snapshot_names_the_exact_identities_it_accepted` — the template digest, the contract revision, the plan revision, the document revision and digest, both object revisions and digests, the node attempts, the operation and the obligation |
+| W81 | The receipt of an acceptance replays after a restart | covered | `test_the_receipt_replays_after_a_restart` — a new runtime over the same store replays the identical receipt; one finalization, one `WorkflowFinalized` event |
+| W82 | A new command key after the freeze creates no second acceptance | covered | `test_a_new_command_key_after_the_freeze_creates_no_second_finalization` — `WORK_NOT_ACTIONABLE`; the snapshot keeps its `finalizationId` |
+| W83 | A stale version is refused before the closure | covered | `test_a_stale_version_is_refused_before_the_closure` — `STATE_VERSION_CONFLICT`; nothing is frozen, no event is written |
+| W84 | Only the trusted runner may accept a workflow | covered | `test_only_the_trusted_runner_may_accept_the_workflow`, `test_a_runtime_without_a_trusted_runner_fails_closed` — `WORKFLOW_RUNNER_MISMATCH` for an agent, the owner and a reviewer; `WORKFLOW_RUNNER_UNCONFIGURED` when no runner is configured |
+| W85 | Only a verifiably successful workflow is frozen | covered | `test_a_failed_terminal_cannot_be_accepted`, `test_an_output_invalid_terminal_cannot_be_accepted`, `test_a_cancelled_workflow_cannot_be_accepted`, `test_an_unknown_effect_cannot_be_accepted`, `test_an_outstanding_requirement_cannot_be_accepted`, `test_a_running_workflow_cannot_be_accepted` — `WORKFLOW_TERMINAL_NOT_COMPLETED`, `WORKFLOW_CANCELLED`, `WORKFLOW_NOT_FINISHED`, `WORKFLOW_REQUIREMENT_UNSATISFIED` |
+| W86 | Nothing may change an accepted workflow | covered | `test_nothing_may_change_the_accepted_workflow` — a revised object, a new result, a revised plan, a revised document, a cancellation and a new effect are all refused; the events, the object rows and the external effect count do not move |
+| W87 | Late evidence and late revocation cannot reopen an accepted workflow | covered | `test_a_late_proof_cannot_reopen_the_accepted_workflow`, `test_a_revocation_cannot_reopen_the_accepted_workflow` — the proof is admitted by the runtime's own correction rule, the snapshot does not change, the workflow is not routed again and no effect is produced |
+| W88 | The acceptance and a competing mutation do not both win | covered | `test_the_acceptance_and_a_mutation_do_not_both_win` — two threads, one version: exactly one command is accepted, the other is `STATE_VERSION_CONFLICT` |
+| W89 | The bridge exposes the acceptance and the immutable completion read | covered | `HttpFinalizationTests` — `POST /v1/workflows/instances/{workId}/finalize` answers the instance view and the snapshot; `GET /v1/workflows/instances/{workId}/completion` answers the same snapshot every time; a stale version is `409`, a foreign actor is `403` |
+| W90 | An unbounded snapshot is refused instead of truncated | covered | `test_an_unbounded_snapshot_is_refused_instead_of_truncated` — 67 named objects, `WORKFLOW_SNAPSHOT_UNBOUNDED`, nothing is frozen |
+| W91 | A finished workflow is not routed again | covered | `test_a_finished_workflow_is_not_routed_again` — the routing pass and the recovery pass find the recorded terminal and write nothing: no new attempt, no new event, the same state version |
 
 ### Bridge, recovery and demonstration
 
@@ -965,6 +985,19 @@ section records what is verified and what is not.
   `WORKFLOW_AUTHORITY_MISMATCH`, a decision for another attempt is
   `WORKFLOW_ATTEMPT_STALE`, a request for more material keeps the node
   waiting, and every mutation answers with the root instance view.
+- **The workflow-success acceptance** (`tests/test_workflow_finalization.py`,
+  21 tests, real `Runtime` and real `WorkflowEngine`): a successful workflow
+  is accepted and frozen by the configured runner only; the snapshot names
+  the exact template digest, contract revision, plan revision, document
+  revision and digest, object revisions and digests, node attempts,
+  operation and obligation it accepted; the receipt replays identically
+  after a restart; a new command key after the freeze creates no second
+  acceptance; a stale version is refused before the closure; a failed, an
+  output-invalid, a cancelled, an unknown-effect, an unsettled-requirement
+  and a running workflow are never frozen; nothing may change an accepted
+  workflow; late evidence and late revocation cannot reopen it; the
+  acceptance and a competing mutation do not both win; and the bridge
+  exposes both routes over a real loopback socket.
 - **Participant assignment and criterion quality**
   (`tests/test_workflow_participants.py`, 16 tests): an assigned authority
   fails closed without a resolver; the resolved assignee may decide and

@@ -80,6 +80,23 @@ STATUS_BY_CODE = {
     "WORKFLOW_CHECK_SHORTFALL": 422,
     "WORKFLOW_ACTOR_MISSING": 422,
     "WORKFLOW_INPUT_STALE": 422,
+    "WORKFLOW_RUNNER_MISMATCH": 403,
+    "WORKFLOW_RUNNER_UNCONFIGURED": 422,
+    "WORKFLOW_NOT_FINALIZED": 404,
+    "WORKFLOW_FINALIZED": 409,
+    "WORKFLOW_NOT_FINISHED": 409,
+    "WORKFLOW_TERMINAL_NOT_COMPLETED": 409,
+    "WORKFLOW_TERMINAL_NOT_DECLARED": 409,
+    "WORKFLOW_NODE_UNSETTLED": 409,
+    "WORKFLOW_NODE_NOT_COMPLETED": 409,
+    "WORKFLOW_QUALITY_UNSETTLED": 409,
+    "WORKFLOW_CHECK_UNSATISFIED": 409,
+    "WORKFLOW_EFFECT_UNRESOLVED": 409,
+    "WORKFLOW_REQUIREMENT_UNSATISFIED": 409,
+    "WORKFLOW_INTENT_UNSETTLED": 409,
+    "WORKFLOW_SNAPSHOT_UNBOUNDED": 409,
+    "WORKFLOW_CANCELLED": 409,
+    "WORK_NOT_ACTIONABLE": 409,
 }
 
 DEFAULT_PLAN = {"steps": [], "open_requirements": [], "replan_when": []}
@@ -606,6 +623,10 @@ class WorkflowService:
         return 200, redact(view)
 
     def submit_result(self, work_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
         payload = {"node": body.get("node"), "attempt": body.get("attempt"),
                    "object": body.get("object"), "result": body.get("result"),
                    "input_digest": body.get("inputDigest")}
@@ -648,6 +669,10 @@ class WorkflowService:
         return 200, redact(view)
 
     def decide(self, work_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
         node_id = body.get("node")
         attempt = body.get("attempt")
         decision = body.get("decision")
@@ -748,6 +773,10 @@ class WorkflowService:
         return 200, redact(view)
 
     def revise_object(self, work_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
         name = body.get("name")
         value = body.get("object")
         if not isinstance(name, str) or not name:
@@ -781,6 +810,61 @@ class WorkflowService:
                           "supersededNodes": receipt.get("superseded_nodes"),
                           "resultStateVersion": receipt.get("result_state_version")}
         return 200, redact(view)
+
+    def finalize(self, work_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Accept a successful workflow and freeze it.
+
+        The request is issued by the trusted runner the engine was
+        configured with: the body may name that runner, but it may never
+        name anybody else. The acceptance is a compare-and-swap against the
+        version the caller observed, and the command id is the caller's own
+        idempotency key.
+        """
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                                "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                                "expectedVersion is required for a compare-and-swap "
+                                "mutation")
+        runner = self.engine.runner
+        if not runner:
+            return 422, _error("WORKFLOW_RUNNER_UNCONFIGURED",
+                                "No trusted runner is configured for this runtime")
+        claimed = body.get("actor")
+        if claimed is not None and claimed != runner:
+            return 403, _error("WORKFLOW_RUNNER_MISMATCH",
+                                "Only the trusted runner may accept the workflow")
+        receipt = self.engine.command(runner, command_id, work_id,
+                                      "finalize_workflow_success", {},
+                                      expected_version, now=self.now())
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
+                                                "The workflow was not accepted",
+                                                receipt.get("blockers"))
+        status, view = self.instance(work_id)
+        view["finalization"] = receipt.get("finalization")
+        return 200, redact(view)
+
+    def completion(self, work_id: str) -> Tuple[int, Dict[str, Any]]:
+        """The immutable completion read of a finalized workflow.
+
+        It answers with the snapshot the acceptance froze: the same bytes
+        for every reader, and no way to change them.
+        """
+        try:
+            finalization = self.engine.finalization(work_id)
+        except Exception:
+            return 404, _error("WORK_UNKNOWN", "No such work")
+        if finalization is None:
+            return 404, _error("WORKFLOW_NOT_FINALIZED",
+                                "The workflow was not accepted")
+        return 200, redact({"workId": work_id, "finalization": finalization})
 
     def object_revision(self, work_id: str, name: str, revision: str,
                         query: Optional[Dict[str, List[str]]] = None
@@ -945,6 +1029,13 @@ class WorkflowService:
         if type(version) is not int:
             raise ValueError("expectedVersion must be an integer")
         return version
+
+    def _finalized(self, work_id: str) -> bool:
+        """Whether the work carries an accepted, frozen workflow."""
+        try:
+            return bool(self.runtime.get_work(work_id).get("workflow_finalization"))
+        except Exception:
+            return False
 
     def _node(self, work_id: str, node_id: str) -> Optional[Dict[str, Any]]:
         try:
@@ -1126,6 +1217,10 @@ class WorkflowRequestHandler(BaseHTTPRequestHandler):
                 return service.decide(work_id, body)
             if method == "POST" and tail == ["objects"]:
                 return service.revise_object(work_id, body)
+            if method == "POST" and tail == ["finalize"]:
+                return service.finalize(work_id, body)
+            if method == "GET" and tail == ["completion"]:
+                return service.completion(work_id)
             if (method == "GET" and len(tail) == 4 and tail[0] == "objects"
                     and tail[2] == "revisions"):
                 return service.object_revision(work_id, tail[1], tail[3], query)

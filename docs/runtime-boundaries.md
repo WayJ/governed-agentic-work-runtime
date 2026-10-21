@@ -79,6 +79,27 @@ New boundaries that the workflow adds:
 | routing | one deterministic pass; a pass that changes nothing writes nothing; rework increments the attempt and invalidates the affected approval by exact version; a late callback is refused | `tests/test_workflow_engine.py` — `RoutingTests` |
 | bridge | a generic `/v1/workflows` surface with bounded read models, durable intent ids, a single-coordinator file lock and a log that never carries a body | `tests/test_workflow_http.py` |
 | creation resume | the bridge owns one `workflow_creates` table in the runtime store; the preparation of every stage is written ahead of the stage in one transaction, so a replay re-issues the identical command instead of recomputing a compare-and-swap version; a command id belongs to one request, and two callers of one creation are serialized | `tests/test_workflow_create_resume.py` — `CreateReplayTests`, `PreparationStoreTests`; `tests/test_workflow_http.py` — `CreateReplayTests` |
+| workflow acceptance | `finalize_workflow_success` is issued by the protected runner only; under one transaction it verifies the recorded terminal, the completed nodes, the validated quality, the passed criteria, the settled effects and the settled obligations, and only then freezes the work and writes the exact final snapshot; a failed, expired, cancelled, output-invalid, unfinished, unsettled or cancelled workflow is never frozen; the frozen work accepts no later revision, cancellation, result, decision or effect, and the frozen workflow is never routed again | `tests/test_workflow_finalization.py` — `SuccessfulAcceptanceTests`, `RefusalTests`, `FrozenStateTests`, `HttpFinalizationTests` |
+| frozen snapshot | the snapshot is written once and never rewritten; it names the template digest, the contract revision, the plan revision, the document revision and digest, every object revision and digest, every node attempt with its judgment, every effect, every obligation and the verified evidence; late evidence and late revocation are still admitted by the runtime's own correction rules, but they can neither change the accepted snapshot nor reopen the accepted workflow, because the routing pass is frozen | `tests/test_workflow_finalization.py` — `test_a_late_proof_cannot_reopen_the_accepted_workflow`, `test_a_revocation_cannot_reopen_the_accepted_workflow` |
+
+### The workflow-success acceptance: no lifecycle edit
+
+The acceptance of a successful workflow (`finalize_workflow_success`) is
+**family-neutral** and needed no change to the frozen lifecycle files:
+`work_runtime/runtime.py` and `work_runtime/adapters.py` are byte-unchanged
+by this slice. The command rides the existing workflow command dispatch
+(`WORKFLOW_COMMANDS`), the existing compare-and-swap, the existing command
+dedup and the existing closed-work rule, and the freeze of an accepted
+workflow is the runtime's own "a closed work accepts no command" rule. The
+engine keeps the acceptance, the snapshot and the routing freeze in
+`work_runtime/workflow.py`, and the bridge keeps the two routes in
+`work_runtime/workflow_server.py`.
+
+One engine behaviour changed with it, and it is disclosed here: **a
+finished workflow is not routed again.** The routing pass used to walk the
+completed chain of a finished workflow and open a fresh attempt of its last
+node, so "finished" was not a fact a reader could rely on. The pass now
+finds the recorded terminal and changes nothing.
 
 ## Third-family command-surface freeze (S15)
 

@@ -334,6 +334,87 @@ the criterion report is malformed.
 
 `200` the instance view with `object: {name, object, supersededNodes, resultStateVersion}`.
 
+### `POST /v1/workflows/instances/{workId}/finalize`
+
+The acceptance of a successful workflow. It is issued by the **trusted
+runner** the bridge was configured with; the body may name that runner, but
+it may never name anybody else.
+
+```json
+{"commandId": "final-1", "expectedVersion": 42, "actor": "workflow-runner"}
+```
+
+* `commandId` is the caller's own idempotency key: a retry with the same id
+  and the same `expectedVersion` replays the identical receipt, across a
+  restart.
+* `expectedVersion` is the `stateVersion` the caller observed. A stale
+  version is `409 STATE_VERSION_CONFLICT`, and nothing is frozen.
+* `actor` is optional; when it is present it must be the configured runner
+  (`403 WORKFLOW_RUNNER_MISMATCH`). When no runner is configured the route
+  answers `422 WORKFLOW_RUNNER_UNCONFIGURED`.
+
+`200` the instance view with `finalization` — the snapshot the acceptance
+froze:
+
+```json
+{"workId": "W-1", "status": "closed", "workflowStatus": "finished",
+ "stateVersion": 43, "currentNode": null, "terminalNode": "n02",
+ "terminalOutcome": "completed",
+ "finalization": {"finalizationId": "…", "workId": "W-1",
+                  "finalizedBy": "workflow-runner", "finalizedAt": 1760000000,
+                  "stateVersion": 43, "workflowStatus": "finished",
+                  "terminal": {"node": "n02", "attempt": 1,
+                               "outcome": "completed", "reason": null},
+                  "template": {"id": "…", "version": "…", "digest": "…",
+                               "revision": 1},
+                  "contract": {"policyId": "workflow-demo",
+                               "policyVersion": "demo-1",
+                               "goal": "workflow.completed", "revision": 1},
+                  "plan": {"revision": 1, "steps": [], "openRequirements": [],
+                           "replanWhen": []},
+                  "document": {"revision": 1, "digest": "…"},
+                  "objects": [{"name": "order", "revision": 1, "digest": "…"}],
+                  "nodes": [{"node": "n02", "attempt": 1, "state": "completed",
+                             "outcome": "completed", "quality": {"…": "…"},
+                             "effect": {"…": "…"},
+                             "checks": [{"checkId": "N02-1",
+                                         "verdict": "passed",
+                                         "method": "PROGRAM"}]}],
+                  "operations": [{"id": "…", "capability": "work.dispatch",
+                                  "businessKey": "…",
+                                  "status": "confirmed_succeeded",
+                                  "dispatchState": "finished",
+                                  "externalId": "EXT-…"}],
+                  "requirements": [{"id": "R01:H-001", "ruleId": "R01",
+                                    "applicability": "applicable",
+                                    "fulfillment": "satisfied"}],
+                  "evidence": ["…"], "digest": "…"}}
+```
+
+The refusal codes are the ones the acceptance gate uses:
+`409 WORKFLOW_NOT_FINISHED` (the routing did not stop), `409
+WORKFLOW_TERMINAL_NOT_COMPLETED` (the terminal failed, expired, was
+cancelled or its output was invalid), `409 WORKFLOW_TERMINAL_NOT_DECLARED`,
+`409 WORKFLOW_EFFECT_UNRESOLVED` (an effect is prepared, dispatched or
+unknown), `409 WORKFLOW_REQUIREMENT_UNSATISFIED` (an obligation is
+outstanding), `409 WORKFLOW_NODE_UNSETTLED`, `409
+WORKFLOW_NODE_NOT_COMPLETED`, `409 WORKFLOW_QUALITY_UNSETTLED`, `409
+WORKFLOW_CHECK_UNSATISFIED`, `409 WORKFLOW_INTENT_UNSETTLED`, `409
+WORKFLOW_CANCELLED`, `403 WORKFLOW_RUNNER_MISMATCH`, `422
+WORKFLOW_RUNNER_UNCONFIGURED`.
+
+### `GET /v1/workflows/instances/{workId}/completion`
+
+The **immutable** read of an accepted workflow.
+
+```json
+{"workId": "W-1", "finalization": {"…": "…"}}
+```
+
+`404 WORKFLOW_NOT_FINALIZED` when the workflow was not accepted. The
+snapshot is written once by the acceptance and never rewritten: every reader
+sees the same bytes, and no route changes them.
+
 ### `GET /v1/workflows/instances/{workId}/objects/{name}/revisions/{revision}`
 
 `200 {"workId", "name", "revision", "digest", "originalDigest", "redacted", "object"}`
@@ -496,7 +577,18 @@ the engine's code verbatim. The status mapping is in
 `WORKFLOW_RESULT_INVALID`, `WORKFLOW_AUTHORITY_MISMATCH`,
 `WORKFLOW_CHECK_RESULT_MISSING`, `WORKFLOW_CHECK_REPORT_INVALID`,
 `WORKFLOW_CHECK_SHORTFALL`, `WORKFLOW_POLICY_MISMATCH`,
-`WORKFLOW_PARTICIPANT_UNKNOWN` (422).
+`WORKFLOW_PARTICIPANT_UNKNOWN` (422), `WORKFLOW_RUNNER_MISMATCH` (403),
+`WORKFLOW_NOT_FINISHED`, `WORKFLOW_TERMINAL_NOT_COMPLETED`,
+`WORKFLOW_TERMINAL_NOT_DECLARED`, `WORKFLOW_EFFECT_UNRESOLVED`,
+`WORKFLOW_REQUIREMENT_UNSATISFIED`, `WORKFLOW_NODE_UNSETTLED`,
+`WORKFLOW_NODE_NOT_COMPLETED`, `WORKFLOW_QUALITY_UNSETTLED`,
+`WORKFLOW_CHECK_UNSATISFIED`, `WORKFLOW_INTENT_UNSETTLED`,
+`WORKFLOW_CANCELLED`, `WORKFLOW_SNAPSHOT_UNBOUNDED`, `WORKFLOW_FINALIZED`
+(409).
+
+A workflow that was accepted is frozen: the bridge answers `409
+WORKFLOW_FINALIZED` to every later mutation of it — a revised object, a new
+result, a new decision — and the core refuses it as well.
 
 ## What the bridge does not do
 

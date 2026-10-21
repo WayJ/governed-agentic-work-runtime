@@ -506,7 +506,7 @@ version bump, no event.
 | the receipt does not match the operation | the operation is quarantined by the runtime (`outcome_unknown`); the node keeps waiting and is never confirmed |
 | the declared output fails its validator or shape | the node fails with `WORKFLOW_OUTPUT_INVALID`; the effect stays recorded as succeeded, no output object is written and the effect is never repeated |
 | predicate unknown | the edge is blocked; the work reports `needs_attention` |
-| last node terminal | the workflow is `finished` — a **precondition**, never an automatic close; `request_completion` and its full gate remain the only success path. "Finished" says the routing stopped: the read model also carries `terminalNode` and `terminalOutcome`, so a caller never reads it as a delivery |
+| last node terminal | the workflow is `finished` — a **precondition**, never an automatic close. "Finished" says the routing stopped: the read model also carries `terminalNode` and `terminalOutcome`, so a caller never reads it as a delivery. A finished workflow is **not routed again**: the next routing pass finds the recorded terminal and changes nothing, so "finished" is a fact a reader may rely on until the [acceptance](#12-the-workflow-success-acceptance) freezes it |
 
 Rework increments the attempt, keeps the old attempt and its evidence on the
 record, and invalidates the affected approval by exact version. A callback
@@ -943,7 +943,123 @@ opt-in: it means "this adapter receives the explicit `action=` and
 section is the *workflow* context of an automatic action. The two never
 meet.
 
-## 12. What is deliberately not here
+## 12. The workflow-success acceptance
+
+`workflowStatus: "finished"` says that the routing stopped. It never says
+that the work was delivered, and it is a **mutable** read: the manager may
+still revise the object, the plan or the document, and the work may still be
+cancelled. A platform that closes its task on such a read closes it on a
+promise, not on a fact.
+
+The acceptance is therefore a **command**: `finalize_workflow_success`. It
+is an ordinary runtime command — a compare-and-swap on `state_version`, a
+durable receipt under `(actor, commandId)`, one transaction — and it is
+issued by the **trusted runner** the engine was configured with
+(`WorkflowEngine(runtime, validators, runner=...)`). The runner is a
+principal in the grants map, exactly like every other principal here; it is
+trusted local configuration, not authentication. An agent, a reviewer or the
+work owner can never issue the acceptance: the command refuses anybody who
+is not the configured runner, and it fails closed when no runner is
+configured at all.
+
+### The gate
+
+One transaction verifies the whole workflow before anything is frozen. Each
+refusal names what is *not* settled, and none of them writes anything:
+
+| the acceptance requires | otherwise |
+|---|---|
+| a bound workflow whose published definition still resolves | `WORKFLOW_NOT_BOUND`, `WORKFLOW_TEMPLATE_UNKNOWN` |
+| a work that is not being cancelled | `WORKFLOW_CANCELLED` |
+| a recorded terminal: the routing stopped, no node is current | `WORKFLOW_NOT_FINISHED` |
+| a terminal whose outcome is `completed` — never failed, expired, cancelled, rejected or output-invalid | `WORKFLOW_TERMINAL_NOT_COMPLETED` |
+| a terminal the published definition declares | `WORKFLOW_TERMINAL_NOT_DECLARED` |
+| every effect settled: no prepared, dispatched or unknown operation | `WORKFLOW_EFFECT_UNRESOLVED` |
+| every obligation settled: nothing unknown, in conflict, applicable and unsatisfied | `WORKFLOW_REQUIREMENT_UNSATISFIED` |
+| every node settled: no running, blocked or submitted instance | `WORKFLOW_NODE_UNSETTLED` |
+| every node completed: no failed, expired or cancelled attempt | `WORKFLOW_NODE_NOT_COMPLETED` |
+| every declared quality validated — a rejected or missing quality is not a pass | `WORKFLOW_QUALITY_UNSETTLED` |
+| every required criterion passed, including the definition's `required_checks` | `WORKFLOW_CHECK_UNSATISFIED` |
+| no durable intent left pending | `WORKFLOW_INTENT_UNSETTLED` |
+| a snapshot that names **every** object and **every** node | `WORKFLOW_SNAPSHOT_UNBOUNDED` — the snapshot is never truncated: a partial proof is not a proof |
+
+The gate never infers success from `finished` alone: the terminal, the
+material, the effects and the obligations are all verified, and the generic
+`request_completion` is **not** used as the acceptance path.
+
+### The freeze
+
+An accepted workflow is frozen. The work is closed as `succeeded`, and the
+runtime's own closed-work rule refuses every later mutation: a revised
+object, a revised plan, a revised document, a cancellation, a new result, a
+new decision, a new effect. The routing pass is frozen too: a finalized
+workflow is never routed again, so no node opens and no effect is produced.
+
+The accepted snapshot is written once and never rewritten. It names the
+identities the acceptance rests on:
+
+```json
+{"finalizationId": "…", "workId": "W-1", "finalizedBy": "workflow-runner",
+ "finalizedAt": 1760000000, "stateVersion": 42, "workflowStatus": "finished",
+ "terminal": {"node": "n02", "attempt": 1, "outcome": "completed", "reason": null},
+ "template": {"id": "…", "version": "…", "digest": "…", "revision": 1},
+ "contract": {"policyId": "workflow-demo", "policyVersion": "demo-1",
+              "goal": "workflow.completed", "revision": 1},
+ "plan": {"revision": 1, "steps": [], "openRequirements": [], "replanWhen": []},
+ "document": {"revision": 1, "digest": "…"},
+ "objects": [{"name": "order", "revision": 1, "digest": "…"}],
+ "nodes": [{"node": "n02", "attempt": 1, "state": "completed",
+            "outcome": "completed", "quality": {"…": "…"},
+            "effect": {"…": "…"}, "checks": [{"checkId": "…", "verdict": "passed"}]}],
+ "operations": [{"id": "…", "capability": "work.dispatch",
+                 "status": "confirmed_succeeded", "externalId": "…"}],
+ "requirements": [{"id": "R01:…", "applicability": "applicable",
+                   "fulfillment": "satisfied"}],
+ "evidence": ["…"], "digest": "…"}
+```
+
+It names revisions and digests, never bodies: the material stays readable as
+the object revision it names. The snapshot's own `digest` covers the
+snapshot.
+
+### The receipt and the replay
+
+The receipt of the acceptance is the runtime's ordinary command receipt, so
+it is durable, work-scoped and readable with
+`GET /v1/workflows/commands/{commandId}?workId=&actor=`. A retry with the
+same command id and the same expected version replays the **identical**
+receipt, across a restart: the acceptance is never performed twice. A
+*different* command key after the freeze creates no second acceptance — the
+frozen work refuses it — and the stored snapshot keeps its identity.
+
+### The two routes
+
+`POST /v1/workflows/instances/{workId}/finalize` issues the acceptance and
+answers with the instance view and the snapshot;
+`GET /v1/workflows/instances/{workId}/completion` answers with the snapshot
+alone and is the **immutable** read: the same bytes for every reader, and no
+way to change them. The exact wire shapes are in
+[workflow-api-contract.md](workflow-api-contract.md).
+
+### What the freeze does not claim
+
+The runtime admits late evidence on a closed work — that is a documented
+correction rule, not an oversight — and it admits a late revocation. The
+freeze is about the **workflow**: a late proof or a late revocation is
+recorded in the evidence ledger, but it can neither change the accepted
+snapshot nor reopen the accepted workflow, because the routing pass is
+frozen and the node instances are not re-settled. The work's own state
+version may still move (the ledger changed); the **accepted workflow proof**
+does not. The snapshot names the evidence that was verified *at the moment
+of the acceptance*, and that set never grows.
+
+So the claim is precise: **the accepted snapshot, the accepted versions it
+names and the accepted workflow proof are immutable after the acceptance**.
+The work's ledger, its state version and its requirement evaluation may
+still change under the runtime's ordinary late-evidence rules, and the
+snapshot does not follow them.
+
+## 13. What is deliberately not here
 
 * No authentication, no tenant isolation, no distributed leases or fencing.
   Principals are trusted local configuration.
