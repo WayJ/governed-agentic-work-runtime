@@ -573,6 +573,15 @@ crash after the command resumes by re-issing it: the runtime recognises
 the identical command and returns its stored receipt. Nothing is reset,
 no second command key is invented, and no effect is hidden.
 
+The record is read and written **inside one transaction**: a stage is
+prepared by a read-or-insert that never overwrites a recorded stage and
+never replaces the row from a stale snapshot, so two callers that create
+the same instance at the same time cannot truncate each other's stages.
+The bridge also serializes the creation of one instance by its command
+id: the second caller waits its turn, finds the finished preparation and
+replays it. The actor and the request digest of a recorded creation are
+immutable — a preparation is never re-bound to another request.
+
 Three rules follow from it:
 
 * **A replay of the same body resumes.** A creation that crashed after the

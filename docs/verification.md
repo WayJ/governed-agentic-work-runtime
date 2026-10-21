@@ -919,6 +919,8 @@ section records what is verified and what is not.
 | W54 | A replay adds no revision, no intent and no event | covered | `test_a_replay_adds_no_revision_no_intent_and_no_event`, `test_a_replay_does_not_issue_an_accepted_stage_again`, `test_the_resume_issues_an_accepted_stage_only_once` — each accepted stage appears exactly once in the event history |
 | W55 | A command id belongs to one request | covered | `test_a_changed_document_conflicts`, `test_a_changed_template_conflicts`, `test_a_changed_instance_conflicts`, `test_a_changed_session_conflicts`, `test_a_changed_plan_conflicts`, `test_a_changed_actor_conflicts`, `test_a_changed_work_conflicts` — `COMMAND_ID_REUSED`, never a silent reuse of the first request's stages |
 | W56 | The binding receipt is the platform's probe point | covered | `test_the_binding_receipt_is_readable_after_a_crash`, `test_the_binding_receipt_is_readable_after_a_replay` — the receipt is absent before the binding and accepted after it |
+| W57 | Two callers of one creation never truncate each other | covered | `test_two_concurrent_creations_of_the_same_body_keep_one_creation`, `test_two_concurrent_creations_with_different_bodies_conflict`, `test_two_concurrent_preparations_keep_every_stage`, `test_two_concurrent_preparations_keep_one_prepared_version` — the second caller waits its turn, one body wins and the other conflicts, every prepared stage survives |
+| W58 | A prepared stage is never re-prepared | covered | `test_a_recorded_stage_is_never_overwritten`, `test_another_request_under_the_same_command_id_conflicts` — the prepared version and the recorded request digest are immutable |
 
 ### Bridge, recovery and demonstration
 

@@ -22,6 +22,7 @@ import os
 import sys
 import threading
 import time
+import weakref
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
@@ -201,14 +202,56 @@ class CreatePreparations:
         return {"actor": row[0], "request_digest": row[1],
                 "stages": json.loads(row[2])}
 
-    def save(self, command_id: str, work_id: str, actor: str,
-             request_digest: str, stages: Dict[str, Any]) -> None:
-        """Record a preparation (written ahead of the stage it prepares)."""
+    def prepare(self, command_id: str, work_id: str, actor: str,
+                request_digest: str, name: str, kind: str,
+                payload: Dict[str, Any],
+                expected_version: Optional[int]) -> Optional[Dict[str, Any]]:
+        """The stage of a creation, prepared inside one transaction.
+
+        The stored preparation is never replaced from a stale snapshot: the
+        row is read and written in the same transaction, a recorded stage
+        is never overwritten, and the actor and the request digest of a
+        recorded creation are immutable. ``None`` means the command id
+        belongs to another request.
+        """
         self._ensure()
         with self.runtime._transaction() as db:
+            row = db.execute("SELECT actor,request_digest,stages FROM workflow_creates "
+                             "WHERE command_id=? AND work_id=?",
+                             (command_id, work_id)).fetchone()
+            if row is None:
+                stages = {}
+            else:
+                if row[0] != actor or row[1] != request_digest:
+                    return None  # The command id belongs to another request.
+                stages = json.loads(row[2])
+            recorded = stages.get(name)
+            if recorded is not None:
+                return recorded
+            entry = {"kind": kind,
+                     "command_id": command_id + ":" + name,
+                     "payload": payload,
+                     "expected_version": expected_version}
+            stages[name] = entry
             db.execute("INSERT OR REPLACE INTO workflow_creates VALUES (?,?,?,?,?)",
                        (command_id, work_id, actor, request_digest,
                         canonical(stages)))
+            return entry
+
+
+class _CreationLock:
+    """A lock the collector may take when nobody waits for it."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    def __enter__(self):
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exception):
+        self._lock.release()
+        return False
 
 
 class WorkflowService:
@@ -224,10 +267,27 @@ class WorkflowService:
         self.engine = engine
         self.adapter = adapter
         self.preparations = CreatePreparations(runtime)
+        self._creation_locks = weakref.WeakValueDictionary()
+        self._creation_locks_guard = threading.Lock()
         self._now = now
         self._actor_for = actor_for or (lambda work_id: "coordinator")
 
     # -- helpers ---------------------------------------------------------
+    def _creation_lock(self, key):
+        """The lock of one creation.
+
+        Two callers that create the same instance at the same time take
+        turns instead of interleaving: the second one finds the finished
+        preparation and replays it, so the durable stages are never
+        written from a stale snapshot.
+        """
+        with self._creation_locks_guard:
+            lock = self._creation_locks.get(key)
+            if lock is None:
+                lock = _CreationLock()
+                self._creation_locks[key] = lock
+            return lock
+
     def now(self) -> int:
         return int(time.time()) if self._now is None else int(self._now)
 
@@ -383,79 +443,82 @@ class WorkflowService:
             "plan": normalized_plan,
             "instance": snapshot,
         })
-        preparation = self.preparations.load(command_id, work_id)
-        stages = {}
-        if preparation is not None:
-            if (preparation["actor"] != actor
-                    or preparation["request_digest"] != request_digest):
-                return 409, _error("COMMAND_ID_REUSED",
-                                   "The command id was already used for "
-                                   "another request")
-            stages = preparation["stages"]
-
-        def stage(name, kind, payload):
-            """The recorded stage of the creation, or a newly prepared one.
+        def stage(name, kind, payload, expected_version):
+            """The prepared stage of the creation.
 
             A recorded stage keeps the command identity, the body and the
             compare-and-swap version it was prepared with: a resume issues
-            the very same command, and the runtime recognises it.
+            the very same command, and the runtime recognises it. ``None``
+            means the command id belongs to another request.
             """
-            recorded = stages.get(name)
-            if recorded is not None:
-                return recorded
-            entry = {"kind": kind,
-                     "command_id": command_id + ":" + name,
-                     "payload": payload,
-                     "expected_version": (None if kind == "create_work"
-                                         else self._version(work_id))}
-            stages[name] = entry
-            # Written ahead of the stage: a crash between the record and
-            # the command resumes with the same command.
-            self.preparations.save(command_id, work_id, actor, request_digest,
-                                   stages)
-            return entry
+            return self.preparations.prepare(command_id, work_id, actor,
+                                              request_digest, name, kind,
+                                              payload, expected_version)
 
-        created = stage("create", "create_work", {"document": document})
-        try:
-            receipt = self.runtime.command(actor, created["command_id"], work_id,
-                                           created["kind"], created["payload"],
-                                           created["expected_version"])
-        except CommandError as error:
-            return 400, _error("DOCUMENT_INVALID", str(error))
-        if receipt.get("decision") != "accepted":
-            return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
-                                                "The work was not created")
-        contract = {"policy_id": policy.id, "policy_version": policy.version,
-                    "goal": policy.goal}
-        bound = stage("contract", "bind_contract", contract)
-        receipt = self.runtime.command(actor, bound["command_id"], work_id,
-                                       bound["kind"], bound["payload"],
-                                       bound["expected_version"])
-        if receipt.get("decision") != "accepted":
-            return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
-                                                "The contract was not bound")
-        revised = stage("plan", "revise_plan", plan)
-        receipt = self.runtime.command(actor, revised["command_id"], work_id,
-                                       revised["kind"], revised["payload"],
-                                       revised["expected_version"])
-        if receipt.get("decision") != "accepted":
-            return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
-                                                "The plan was not revised")
-        payload = {"template_id": template_id, "template_version": template_version,
-                   "parameters": parameters}
-        if session_id is not None:
-            payload["session_id"] = session_id
-        if participants is not None:
-            payload["participants"] = participants
-        binding = stage("bind", "bind_workflow", payload)
-        receipt = self.engine.command(actor, binding["command_id"], work_id,
-                                      binding["kind"], binding["payload"],
-                                      binding["expected_version"], now=self.now())
-        if receipt.get("decision") != "accepted":
-            return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
-                                                "The workflow was not bound",
-                                                receipt.get("blockers"))
-        self._settle(work_id)
+        def conflict():
+            return 409, _error("COMMAND_ID_REUSED",
+                               "The command id was already used for "
+                               "another request")
+
+        # The creation of one instance is serialized: two callers that
+        # create it at the same time take turns, and the second one finds
+        # the finished preparation and replays it.
+        with self._creation_lock((command_id, work_id)):
+            created = stage("create", "create_work", {"document": document},
+                            None)
+            if created is None:
+                return conflict()
+            try:
+                receipt = self.runtime.command(actor, created["command_id"],
+                                               work_id, created["kind"],
+                                               created["payload"],
+                                               created["expected_version"])
+            except CommandError as error:
+                return 400, _error("DOCUMENT_INVALID", str(error))
+            if receipt.get("decision") != "accepted":
+                return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
+                                                    "The work was not created")
+            contract = {"policy_id": policy.id, "policy_version": policy.version,
+                        "goal": policy.goal}
+            bound = stage("contract", "bind_contract", contract,
+                          self._version(work_id))
+            if bound is None:
+                return conflict()
+            receipt = self.runtime.command(actor, bound["command_id"], work_id,
+                                           bound["kind"], bound["payload"],
+                                           bound["expected_version"])
+            if receipt.get("decision") != "accepted":
+                return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
+                                                    "The contract was not bound")
+            revised = stage("plan", "revise_plan", plan, self._version(work_id))
+            if revised is None:
+                return conflict()
+            receipt = self.runtime.command(actor, revised["command_id"], work_id,
+                                           revised["kind"], revised["payload"],
+                                           revised["expected_version"])
+            if receipt.get("decision") != "accepted":
+                return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
+                                                    "The plan was not revised")
+            payload = {"template_id": template_id,
+                       "template_version": template_version,
+                       "parameters": parameters}
+            if session_id is not None:
+                payload["session_id"] = session_id
+            if participants is not None:
+                payload["participants"] = participants
+            binding = stage("bind", "bind_workflow", payload,
+                            self._version(work_id))
+            if binding is None:
+                return conflict()
+            receipt = self.engine.command(actor, binding["command_id"], work_id,
+                                          binding["kind"], binding["payload"],
+                                          binding["expected_version"],
+                                          now=self.now())
+            if receipt.get("decision") != "accepted":
+                return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
+                                                    "The workflow was not bound",
+                                                    receipt.get("blockers"))
+            self._settle(work_id)
         status, view = self.instance(work_id)
         view["commandId"] = command_id
         view["commandIds"] = {"create": command_id + ":create",

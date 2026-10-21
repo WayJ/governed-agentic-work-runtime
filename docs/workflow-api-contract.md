@@ -194,6 +194,10 @@ and `:bind` — and it is **resumable**:
 * **A refused request creates nothing.** The plan, the pinned
   `templateDigest` and the submitted `policy` are checked before the first
   command, so a `400` or a `422` leaves no half-created work behind.
+* **A concurrent duplicate is serialized.** Two requests with the same
+  `commandId` take turns: the second one waits for the first to finish and
+  then replays the finished creation, so both answer `201` with the same
+  instance view and the durable preparation keeps every stage.
 
 The **binding** receipt is `<commandId>:bind`; the response returns it as
 `bindingCommandId` and lists the four ids under `commandIds`. A platform

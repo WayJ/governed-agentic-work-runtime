@@ -12,6 +12,8 @@ These tests pin the preparation record and the resume it makes possible.
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 
 try:
@@ -59,21 +61,84 @@ class CreateResumeTestCase(unittest.TestCase):
 
 class PreparationStoreTests(CreateResumeTestCase):
     def test_a_preparation_survives_a_restart(self):
-        stages = {"create": {"kind": "create_work",
-                             "command_id": "create-1:create",
-                             "payload": {"document": document()},
-                             "expected_version": None}}
-        self.service.preparations.save("create-1", "W-1", "coordinator",
-                                        "digest-1", stages)
+        entry = self.service.preparations.prepare(
+            "create-1", "W-1", "coordinator", "digest-1", "create",
+            "create_work", {"document": document()}, None)
+        self.assertEqual(entry["command_id"], "create-1:create")
         reopened = self.reopen()
         record = reopened.preparations.load("create-1", "W-1")
         self.assertIsNotNone(record)
         self.assertEqual(record["actor"], "coordinator")
         self.assertEqual(record["request_digest"], "digest-1")
-        self.assertEqual(record["stages"], stages)
+        self.assertEqual(sorted(record["stages"]), ["create"])
+
+    def prepare_concurrently(self, calls):
+        """Prepare several stages of one creation at the same time."""
+        barrier = threading.Barrier(len(calls))
+        answers = []
+
+        def prepare(name, kind, version):
+            barrier.wait(timeout=20)
+            answers.append(self.service.preparations.prepare(
+                "create-1", "W-1", "coordinator", "digest-1", name, kind,
+                {"stage": name}, version))
+
+        threads = [threading.Thread(target=prepare, args=call)
+                   for call in calls]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        return answers
+
+    def test_two_concurrent_preparations_keep_every_stage(self):
+        self.prepare_concurrently([("create", "create_work", None),
+                                   ("contract", "bind_contract", 1)])
+        record = self.service.preparations.load("create-1", "W-1")
+        self.assertIsNotNone(record)
+        self.assertEqual(sorted(record["stages"]), ["contract", "create"])
+
+    def test_two_concurrent_preparations_keep_one_prepared_version(self):
+        answers = self.prepare_concurrently([("contract", "bind_contract", 1),
+                                             ("contract", "bind_contract", 7)])
+        self.assertEqual(len(answers), 2)
+        versions = [entry["expected_version"] for entry in answers]
+        # Whichever preparation lands first is the prepared one; the other
+        # caller is given the prepared version, never its own.
+        self.assertEqual(versions[0], versions[1])
+        record = self.service.preparations.load("create-1", "W-1")
+        self.assertEqual(record["stages"]["contract"]["expected_version"],
+                         versions[0])
 
     def test_an_unknown_preparation_is_absent(self):
         self.assertIsNone(self.service.preparations.load("create-9", "W-9"))
+
+    def test_a_recorded_stage_is_never_overwritten(self):
+        first = self.service.preparations.prepare(
+            "create-1", "W-1", "coordinator", "digest-1", "contract",
+            "bind_contract", {"policy_id": "workflow-demo"}, 1)
+        self.assertEqual(first["expected_version"], 1)
+        again = self.service.preparations.prepare(
+            "create-1", "W-1", "coordinator", "digest-1", "contract",
+            "bind_contract", {"policy_id": "workflow-demo"}, 7)
+        self.assertEqual(again["expected_version"], 1)
+        record = self.service.preparations.load("create-1", "W-1")
+        self.assertEqual(record["stages"]["contract"]["expected_version"], 1)
+
+    def test_another_request_under_the_same_command_id_conflicts(self):
+        self.service.preparations.prepare(
+            "create-1", "W-1", "coordinator", "digest-1", "create",
+            "create_work", {"document": document()}, None)
+        other = self.service.preparations.prepare(
+            "create-1", "W-1", "coordinator", "digest-2", "create",
+            "create_work", {"document": document()}, None)
+        self.assertIsNone(other)
+        other_actor = self.service.preparations.prepare(
+            "create-1", "W-1", "other-coordinator", "digest-1", "create",
+            "create_work", {"document": document()}, None)
+        self.assertIsNone(other_actor)
+        record = self.service.preparations.load("create-1", "W-1")
+        self.assertEqual(record["request_digest"], "digest-1")
 
 
 class CreateReplayTests(CreateResumeTestCase):
@@ -217,6 +282,83 @@ class CreateReplayTests(CreateResumeTestCase):
         self.assertEqual(receipt["decision"], "accepted")
 
     # -- a changed request conflicts -------------------------------------
+    def run_two_at_once(self, first_body=None, second_body=None):
+        """Two callers create at the same time.
+
+        The first caller is held at its command until the second one has
+        finished the whole creation, so the two callers overlap exactly
+        the way a lost response and a retry overlap.
+        """
+        original = self.runtime.command
+        held = threading.Event()
+        release = threading.Event()
+
+        def blocking(actor, command_id, work_id, kind, payload=None,
+                     expected_version=None):
+            if not held.is_set():
+                held.set()
+                release.wait(timeout=20)
+            return original(actor, command_id, work_id, kind, payload,
+                            expected_version)
+
+        self.runtime.command = blocking
+        answers = {}
+
+        def run(name, payload):
+            try:
+                answers[name] = self.service.create_instance(payload)
+            except BaseException as error:  # noqa: BLE001 - reported below
+                answers[name] = error
+
+        first = threading.Thread(target=run,
+                                  args=("first", first_body or self.body()))
+        first.start()
+        self.assertTrue(held.wait(timeout=20),
+                        "the first caller never reached the command")
+        second = threading.Thread(target=run,
+                                   args=("second", second_body or self.body()))
+        second.start()
+        time.sleep(0.5)
+        # The second caller waits its turn: two callers never interleave
+        # the stages of one creation.
+        self.assertNotIn("second", answers,
+                         "the second caller did not wait its turn")
+        release.set()
+        first.join(timeout=30)
+        second.join(timeout=30)
+        self.runtime.command = original
+        return answers
+
+    def test_two_concurrent_creations_of_the_same_body_keep_one_creation(self):
+        answers = self.run_two_at_once()
+        for name in ("first", "second"):
+            self.assertIsInstance(answers[name], tuple, (name, answers[name]))
+            self.assertEqual(answers[name][0], 201, (name, answers[name]))
+        # The preparation keeps every stage: a truncated preparation would
+        # make the next replay recompute a version and refuse the command.
+        record = self.service.preparations.load("create-1", "W-1")
+        self.assertIsNotNone(record)
+        self.assertEqual(sorted(record["stages"]),
+                         ["bind", "contract", "create", "plan"])
+        status, body = self.create()
+        self.assertEqual(status, 201, body)
+        types = self.event_types()
+        for name in ("WorkCreated", "ContractBound", "PlanRevised",
+                     "WorkflowBound"):
+            self.assertEqual(types.count(name), 1, name)
+
+    def test_two_concurrent_creations_with_different_bodies_conflict(self):
+        answers = self.run_two_at_once(
+            second_body=self.body(document=document("H-002")))
+        codes = []
+        for name in ("first", "second"):
+            self.assertIsInstance(answers[name], tuple, (name, answers[name]))
+            codes.append((answers[name][0], answers[name][1]))
+        self.assertEqual(sorted(status for status, _ in codes), [201, 409],
+                         codes)
+        conflict = [payload for status, payload in codes if status == 409][0]
+        self.assertEqual(conflict["error"]["code"], "COMMAND_ID_REUSED")
+
     def test_a_refused_command_is_answered_not_raised(self):
         # The actor is not a principal name: the command refuses itself and
         # the bridge answers 400 instead of raising.

@@ -77,7 +77,7 @@ New boundaries that the workflow adds:
 | superseded material | a new revision of the inputs, the subject or the candidate a node pinned supersedes that node, so a review of a superseded candidate cannot complete it | `tests/test_workflow_node_quality.py` — `SupersedeTests` |
 | routing | one deterministic pass; a pass that changes nothing writes nothing; rework increments the attempt and invalidates the affected approval by exact version; a late callback is refused | `tests/test_workflow_engine.py` — `RoutingTests` |
 | bridge | a generic `/v1/workflows` surface with bounded read models, durable intent ids, a single-coordinator file lock and a log that never carries a body | `tests/test_workflow_http.py` |
-| creation resume | the bridge owns one `workflow_creates` table in the runtime store; the preparation of every stage is written ahead of the stage, so a replay re-issues the identical command instead of recomputing a compare-and-swap version; a command id belongs to one request | `tests/test_workflow_create_resume.py` — `CreateReplayTests`; `tests/test_workflow_http.py` — `CreateReplayTests` |
+| creation resume | the bridge owns one `workflow_creates` table in the runtime store; the preparation of every stage is written ahead of the stage in one transaction, so a replay re-issues the identical command instead of recomputing a compare-and-swap version; a command id belongs to one request, and two callers of one creation are serialized | `tests/test_workflow_create_resume.py` — `CreateReplayTests`, `PreparationStoreTests`; `tests/test_workflow_http.py` — `CreateReplayTests` |
 
 ## Third-family command-surface freeze (S15)
 
