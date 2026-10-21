@@ -27,9 +27,17 @@ from .workflow_spec import (ValidatorRegistry, eval_predicate, lint_template,
 
 # Command kinds the runtime routes to the engine. They are ordinary runtime
 # commands: CAS-guarded, deduplicated and receipt-bearing like every other.
-WORKFLOW_COMMANDS = ("bind_workflow", "revise_object", "submit_node_result")
+WORKFLOW_COMMANDS = ("bind_workflow", "revise_object", "submit_node_result",
+                     "record_decision")
 
 TERMINAL_NODE_STATES = ("completed", "failed", "expired", "cancelled")
+
+# The verdicts a criterion report may carry.
+CRITERION_VERDICTS = ("passed", "failed", "insufficient", "conflict",
+                       "not_applicable")
+
+# The methods that may produce a criterion report.
+REPORT_METHODS = ("PROGRAM", "AGENT", "HUMAN")
 MAX_FINDINGS = 32
 MAX_VIEW_NODES = 64
 MAX_VIEW_INTENTS = 32
@@ -41,6 +49,21 @@ DEFAULT_MAX_ATTEMPTS = 1
 
 class WorkflowError(Exception):
     """Local API misuse raised by the engine (never a persisted rejection)."""
+
+
+class ParticipantResolver:
+    """The trusted port that answers "who currently holds this assignment?".
+
+    The core never learns a workspace role id, a membership rule or a
+    department rule: it knows a *principal* per node and asks the host who
+    currently holds it. An enterprise adapter resolves only from the trusted
+    create snapshot plus the platform's current check; the default is no
+    resolver at all, and an assigned authority then fails closed.
+    """
+
+    def resolve(self, work, node_id, member_id) -> Optional[str]:
+        """The principal of the member, or None when it may not act now."""
+        return None
 
 
 def _bounded(findings: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -115,10 +138,14 @@ class WorkflowEngine:
     """
 
     def __init__(self, runtime, validators: Optional[ValidatorRegistry] = None,
-                 runner: Optional[str] = None):
+                 runner: Optional[str] = None,
+                 resolver: Optional[ParticipantResolver] = None):
         self.runtime = runtime
         self.validators = validators if validators is not None else ValidatorRegistry()
         self.runner = runner
+        # The trusted participant port. None means an assigned authority can
+        # never be resolved, so it fails closed.
+        self.resolver = resolver
         runtime.workflow = self
 
     # ------------------------------------------------------------------
@@ -235,18 +262,42 @@ class WorkflowEngine:
             self._record_advance_failure(work_id, type(error).__name__)
         return receipt
 
-    def replay_allowed(self, actor: str, work: dict, kind: str) -> bool:
-        """Replay re-authorization for workflow command kinds."""
-        if kind == "bind_workflow":
-            return self.runtime._manager(actor, work)
-        if kind == "revise_object":
+    def replay_allowed(self, actor: str, work: dict, kind: str,
+                       payload: Optional[dict] = None) -> bool:
+        """Replay re-authorization for workflow command kinds.
+
+        A stored receipt is replayed only while the authority that decided
+        it still holds: for a decision, the ingress source must still be
+        the configured source and the actor must still hold the assignment.
+        """
+        if kind in ("bind_workflow", "revise_object"):
             return self.runtime._manager(actor, work)
         if kind == "submit_node_result":
             return "workflow.execute" in self.runtime.grants.get(actor, set())
+        if kind == "record_decision":
+            return self._decision_authority_holds(actor, work, payload or {})
         return False
 
+    def _decision_authority_holds(self, actor: str, work: dict,
+                                   payload: dict) -> bool:
+        """The ingress source and the actor of a decision, re-checked."""
+        node_id = payload.get("node")
+        if not isinstance(node_id, str):
+            return False
+        spec = self.spec_for(work)
+        if spec is None:
+            return False
+        node = (spec.get("nodes") or {}).get(node_id)
+        if not isinstance(node, dict) or node.get("kind") != "human":
+            return False
+        kind = node.get("evidence_kind")
+        if self.runtime._policy_for(work).evidence_sources.get(kind) != actor:
+            return False
+        effective = self._effective_authority(work, node_id, node)
+        return effective is not None and effective == payload.get("actor")
+
     def apply_command(self, db, actor: str, work: dict, kind: str, payload: dict,
-                      version: int) -> dict:
+                      version: int, command_id: Optional[str] = None) -> dict:
         """Dispatch one workflow command kind (called by the runtime)."""
         if kind == "bind_workflow":
             return self._bind(db, actor, work, payload, version)
@@ -254,6 +305,9 @@ class WorkflowEngine:
             return self._revise_object(db, actor, work, payload, version)
         if kind == "submit_node_result":
             return self._submit_result(db, actor, work, payload, version)
+        if kind == "record_decision":
+            return self._record_decision(db, actor, work, payload, version,
+                                         command_id)
         return self.runtime._reject("COMMAND_UNSUPPORTED", version)
 
     # ------------------------------------------------------------------
@@ -261,12 +315,13 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     def _bind(self, db, actor, work, payload, version):
-        allowed = {"template_id", "template_version", "parameters", "session_id"}
+        allowed = {"template_id", "template_version", "parameters", "session_id",
+                   "participants"}
         if not set(payload) <= allowed or not {"template_id", "template_version",
                                                "parameters"} <= set(payload):
             raise WorkflowError("bind_workflow requires exactly template_id, "
                                 "template_version and parameters, and may carry "
-                                "an optional session_id")
+                                "an optional session_id and participants map")
         if work.get("workflow"):
             return self.runtime._reject("WORKFLOW_ALREADY_BOUND", version)
         if not work.get("contract"):
@@ -312,9 +367,13 @@ class WorkflowEngine:
         session_id = payload.get("session_id")
         if session_id is not None and (not isinstance(session_id, str) or not session_id):
             raise WorkflowError("session_id must be a nonempty string or absent")
+        participants = self._validated_participants(spec, payload.get("participants"))
+        if participants is None:
+            return self.runtime._reject("WORKFLOW_PARTICIPANT_UNKNOWN", version)
         work["workflow"] = {"template_id": template_id, "template_version": template_version,
                             "digest": stored["digest"], "revision": 1,
-                            "parameters": parameters, "session_id": session_id}
+                            "parameters": parameters, "session_id": session_id,
+                            "participants": participants}
         work["workflow_status"] = "active"
         work["workflow_current"] = None
         self.runtime._save(db, work, "WorkflowBound", {
@@ -323,6 +382,73 @@ class WorkflowEngine:
         return self.runtime._accepted(work, template_id=template_id,
                                       template_version=template_version,
                                       workflow_digest=stored["digest"])
+
+    @staticmethod
+    def _validated_participants(spec, participants) -> Optional[Dict[str, str]]:
+        """The trusted assignment snapshot of an instance.
+
+        Every key must be a node the pinned definition declares: an
+        assignment to an unknown node is a mistake that would silently leave
+        a node unassigned, so it is refused.
+        """
+        if participants is None:
+            return {}
+        if not isinstance(participants, dict):
+            return None
+        declared = set(spec.get("nodes") or {})
+        cleaned = {}
+        for node_id, member_id in participants.items():
+            if not isinstance(node_id, str) or node_id not in declared:
+                return None
+            if not isinstance(member_id, str) or not member_id:
+                return None
+            cleaned[node_id] = member_id
+        return cleaned
+
+    def _effective_authority(self, work: dict, node_id: str,
+                             node: Dict[str, Any]) -> Optional[str]:
+        """The principal that may currently decide a node.
+
+        A static authority is the principal itself. An assigned authority is
+        whoever the platform currently assigns to this node, resolved
+        through the trusted participant port; with no resolver it fails
+        closed and nobody may decide.
+        """
+        authority = node.get("authority")
+        if isinstance(authority, str) and authority:
+            return authority
+        if not (isinstance(authority, dict) and authority.get("assigned") is True):
+            return None
+        participants = (work.get("workflow") or {}).get("participants") or {}
+        member_id = participants.get(node_id)
+        if not isinstance(member_id, str) or not member_id:
+            return None
+        if self.resolver is None:
+            return None
+        try:
+            resolved = self.resolver.resolve(work, node_id, member_id)
+        except Exception:  # pragma: no cover - a failing resolver decides nobody
+            return None
+        if not isinstance(resolved, str) or not resolved:
+            return None
+        return resolved
+
+    def effective_authority(self, work_id: str, node_id: str) -> Optional[str]:
+        """The principal that may currently decide a node, if any.
+
+        A static authority is the principal itself; an assigned authority is
+        resolved through the trusted participant port and fails closed when
+        no resolver is configured.
+        """
+        work = self.runtime.get_work(work_id)
+        with self.runtime._connection() as db:
+            spec = self._spec_in(db, work)
+        if spec is None:
+            return None
+        node = (spec.get("nodes") or {}).get(node_id)
+        if not isinstance(node, dict):
+            return None
+        return self._effective_authority(work, node_id, node)
 
     def _unknown_authorities(self, spec, policy) -> List[Dict[str, str]]:
         missing = []
@@ -817,6 +943,29 @@ class WorkflowEngine:
         instance["intent_id"] = self._write_intent(
             db, work["id"], node_id, instance["attempt"], "agent_task", body)
 
+    def _start_review(self, db, work, spec, node_id, instance, now):
+        """The durable review intent of a node that declares a review.
+
+        It pins the rubric, the criteria, the candidate revision and the
+        input digest, and names the independent producer. It follows the
+        same dedup, recovery and acknowledgement discipline as the agent
+        and human intents.
+        """
+        node = spec["nodes"][node_id]
+        review = node.get("review") or {}
+        body = {"node": node_id, "attempt": instance["attempt"],
+                "evidence_kind": review.get("evidence_kind"),
+                "reviewer": review.get("reviewer"),
+                "rubric": review.get("rubric"),
+                "criteria": self._check_declarations(node),
+                "candidate": instance.get("output"),
+                "input_digest": instance.get("input_digest"),
+                "inputs": instance.get("inputs") or [],
+                "deadline_at": instance.get("deadline_at"),
+                "created_at": now}
+        instance["intent_id"] = self._write_intent(
+            db, work["id"], node_id, instance["attempt"], "review_task", body)
+
     def _start_human(self, db, work, spec, node_id, instance, now):
         node = spec["nodes"][node_id]
         body = {"session_id": (work.get("workflow") or {}).get("session_id"),
@@ -913,17 +1062,18 @@ class WorkflowEngine:
         if not admitted:
             return self._block_with_finding(db, work, instance, violation,
                                            "WorkflowNodeIsolationViolation")
-        authority = node.get("authority")
+        effective = self._effective_authority(work, node_id, node)
         authorized = [entry for entry in admitted
-                      if authority is None
-                      or (entry[0].get("data") or {}).get("actor") == authority]
+                      if effective is not None
+                      and (entry[0].get("data") or {}).get("actor") == effective]
         if not authorized:
             return self._block_with_finding(
                 db, work, instance,
                 _finding("WORKFLOW_AUTHORITY_MISMATCH",
-                         "The decision did not come from the declared authority"),
+                         "The decision did not come from the assigned authority"),
                 "WorkflowNodeAuthorityViolation")
-        proof, verdict = authorized[0]
+        # The latest decision is the current position.
+        proof, verdict = authorized[-1]
         data = proof.get("data") or {}
         actor = data.get("actor")
         if not isinstance(actor, str) or not actor:
@@ -932,7 +1082,10 @@ class WorkflowEngine:
                 _finding("WORKFLOW_ACTOR_MISSING",
                          "The decision does not name the actor who made it"),
                 "WorkflowNodeActorViolation")
-        report = self._check_report_from_items(node, data.get("items") or [], actor)
+        report = self._check_report_from_items(
+            node, data.get("items") or [], actor,
+            instance.get("input_digest"),
+            (subject or {}).get("digest"), now)
         missing = self._missing_check_results(node, report)
         if missing:
             return self._block_with_finding(
@@ -941,6 +1094,18 @@ class WorkflowEngine:
                          "A declared criterion has no verdict in the decision",
                          checks=missing),
                 "WorkflowNodeCheckResultsMissing")
+        shortfalls = self._criterion_shortfalls(node, data.get("items") or [])
+        if verdict == "approved" and shortfalls:
+            # An approval that carries a failing required criterion does not
+            # complete the node. The shortage is kept, exactly as reported.
+            instance["check_results"] = report
+            instance["actor"] = actor
+            return self._block_with_finding(
+                db, work, instance,
+                _finding("WORKFLOW_CHECK_SHORTFALL",
+                         "A required criterion is not satisfied by the approval",
+                         shortfalls=shortfalls),
+                "WorkflowNodeCheckShortfall")
         if verdict == "request_material":
             # A request for more material keeps the node waiting. It is
             # neither an approval nor a rejection: it does not complete the
@@ -964,14 +1129,97 @@ class WorkflowEngine:
                             {"outcome": verdict})
         return True
 
-    def _check_report_from_items(self, node, items, actor) -> List[Dict[str, Any]]:
-        """The persisted criterion report of a human decision.
+    def _criterion_findings(self, node, items) -> List[Dict[str, Any]]:
+        """The quality of a criterion report, checked at the core boundary.
 
-        The verdict is the human's; the bound validator records the review
-        configuration the protected definition named for that criterion.
+        An item that names an undeclared criterion, repeats one, carries a
+        blank reason or empty evidence, or a verdict outside the closed set
+        is refused. A report is never accepted on the strength of its
+        verdict alone.
+        """
+        findings = []
+        declared = {declaration["id"]: declaration
+                    for declaration in self._check_declarations(node)}
+        seen = set()
+        for index, item in enumerate(items or []):
+            where = "items[" + str(index) + "]"
+            if not isinstance(item, dict):
+                findings.append(_finding("WORKFLOW_CHECK_REPORT_INVALID",
+                                         "A criterion report item must be an object",
+                                         location=where))
+                continue
+            check = item.get("check")
+            if not isinstance(check, str) or check not in declared:
+                findings.append(_finding("WORKFLOW_CHECK_REPORT_INVALID",
+                                         "The report names a criterion the node "
+                                         "does not declare", location=where))
+                continue
+            if check in seen:
+                findings.append(_finding("WORKFLOW_CHECK_REPORT_INVALID",
+                                         "The report names a criterion twice",
+                                         location=where))
+                continue
+            seen.add(check)
+            if item.get("verdict") not in CRITERION_VERDICTS:
+                findings.append(_finding("WORKFLOW_CHECK_REPORT_INVALID",
+                                         "The verdict is not one of the allowed ones",
+                                         location=where))
+            reason = item.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                findings.append(_finding("WORKFLOW_CHECK_REPORT_INVALID",
+                                         "The verdict needs a reason", location=where))
+            evidence = item.get("evidence")
+            if (not isinstance(evidence, list) or not evidence
+                    or not all(isinstance(entry, str) and entry.strip()
+                               for entry in evidence)):
+                findings.append(_finding("WORKFLOW_CHECK_REPORT_INVALID",
+                                         "The verdict needs its evidence",
+                                         location=where))
+        return findings
+
+    def _criterion_shortfalls(self, node, items) -> List[Dict[str, Any]]:
+        """The required criteria that the report does not satisfy.
+
+        A required criterion needs a verdict; a not-applicable verdict
+        counts only when the protected declaration allows it.
+        """
+        reported = {}
+        for item in items or []:
+            if isinstance(item, dict) and isinstance(item.get("check"), str):
+                reported[item["check"]] = item
+        shortfalls = []
+        for declaration in self._check_declarations(node):
+            if declaration.get("required") is False:
+                continue
+            item = reported.get(declaration["id"])
+            if item is None:
+                shortfalls.append({"checkId": declaration["id"], "verdict": None,
+                                   "reason": "NO_VERDICT"})
+                continue
+            verdict = item.get("verdict")
+            if verdict == "passed":
+                continue
+            if verdict == "not_applicable" and declaration.get("allow_not_applicable"):
+                continue
+            shortfalls.append({"checkId": declaration["id"], "verdict": verdict,
+                               "reason": item.get("reason")})
+        return shortfalls
+
+    def _check_report_from_items(self, node, items, actor, input_digest=None,
+                                 output_digest=None, at=None, method="HUMAN",
+                                 validator_id=None, validator_version=None
+                                 ) -> List[Dict[str, Any]]:
+        """The persisted criterion report of a judgment.
+
+        The report keeps what was actually judged, at judgment time: the
+        method that produced it, the criterion version, the validator that
+        was bound, the digests the judgment was made against, the real
+        verdict, the reason, the evidence and the actor. A historical
+        judgment is therefore reconstructible from the stored record and
+        not from the current state of the node.
         """
         report = []
-        for item in items:
+        for item in items or []:
             if not isinstance(item, dict):
                 continue
             bound = self._bound_validator_for(node, item.get("check"))
@@ -980,10 +1228,16 @@ class WorkflowEngine:
                 "verdict": item.get("verdict"),
                 "reason": item.get("reason"),
                 "evidence": item.get("evidence") or [],
-                "source": "decision",
+                "method": method,
+                "criterionVersion": (bound or {}).get("criterion_version"),
+                "validator": (validator_id if validator_id is not None
+                              else ((bound or {}).get("validator"))),
+                "validatorVersion": (validator_version if validator_version is not None
+                                     else ((bound or {}).get("validator_version"))),
+                "reviewedInputDigest": input_digest,
+                "reviewedOutputDigest": output_digest,
                 "decidedBy": actor,
-                "validator": bound.get("validator") if bound else None,
-                "validatorVersion": bound.get("validator_version") if bound else None,
+                "at": at,
             })
         return report
 
@@ -1071,22 +1325,64 @@ class WorkflowEngine:
         if not isinstance(review, dict) or not review.get("evidence_kind"):
             return False
         result = instance["result"]
-        covered = False
+        accepted = None
         for proof in self.runtime._proofs(db, work["id"]):
             if proof["status"] != "verified" or proof["kind"] != review["evidence_kind"]:
                 continue
             data = proof.get("data") or {}
-            if data.get("digest") != result["digest"]:
+            # The review binds the exact instance: the node, the attempt and
+            # both digests. A review of an earlier attempt never satisfies
+            # the current one, even when the candidate is identical.
+            if data.get("node") != node_id:
                 continue
-            covered = True
+            if data.get("attempt") != instance["attempt"]:
+                continue
+            if data.get("input_digest") != instance.get("input_digest"):
+                continue
+            if data.get("output_digest") != result["digest"]:
+                continue
+            producer = data.get("producer")
+            if not isinstance(producer, str) or not producer:
+                continue
+            if producer == node.get("executor"):
+                # The executor may never review its own candidate.
+                continue
+            if review.get("reviewer") and producer != review["reviewer"]:
+                continue
+            accepted = (proof, data, producer)
             break
-        if not covered:
+        if accepted is None:
             return self._expire_if_due(db, work, instance, now)
+        proof, data, producer = accepted
+        items = data.get("items") or []
+        findings = self._criterion_findings(node, items)
+        if findings:
+            instance["findings"] = _bounded(findings)
+            instance["blockers"] = [{"code": "WORKFLOW_CHECK_REPORT_INVALID",
+                                     "detail": "The review report is malformed"}]
+            self._save_instance(db, work, instance, "WorkflowReviewReportInvalid")
+            return False
+        shortfalls = self._criterion_shortfalls(node, items)
+        report = self._check_report_from_items(
+            node, items, producer, instance.get("input_digest"),
+            result["digest"], now, method="AGENT",
+            validator_id=(review.get("rubric") or {}).get("validator"),
+            validator_version=(review.get("rubric") or {}).get("validator_version"))
+        instance["check_results"] = (instance.get("check_results") or []) + report
+        if data.get("verdict") != "passed" or shortfalls:
+            instance["state"] = "failed"
+            instance["outcome"] = "failed"
+            instance["reason"] = "WORKFLOW_RESULT_INVALID"
+            instance["review_shortfalls"] = shortfalls
+            self._finish_intent(db, work, instance)
+            self._save_instance(db, work, instance, "WorkflowReviewRejected",
+                                {"producer": producer, "shortfalls": shortfalls})
+            return True
         instance["state"] = "completed"
         instance["outcome"] = "completed"
         self._finish_intent(db, work, instance)
         self._save_instance(db, work, instance, "WorkflowNodeCompleted",
-                            {"outcome": "completed"})
+                            {"outcome": "completed", "producer": producer})
         return True
 
     def _settle_action(self, db, work, spec, node_id, instance, now) -> bool:
@@ -1268,7 +1564,8 @@ class WorkflowEngine:
                                          problem.get("message", "The validator rejected the candidate"),
                                          location=problem.get("location", "")))
             check_report = self._check_report_from_validator(
-                node, raw_checks, validator_id, validator_version)
+                node, raw_checks, validator_id, validator_version,
+                instance.get("input_digest"), None, int(time.time()))
             missing = self._missing_check_results(node, check_report)
             if missing:
                 findings.append(_finding("WORKFLOW_CHECK_RESULT_MISSING",
@@ -1302,7 +1599,10 @@ class WorkflowEngine:
         instance["validator"] = {"id": validator_id, "version": validator_version}
         review = node.get("review")
         if isinstance(review, dict) and review.get("evidence_kind"):
+            # The candidate is produced; the independent review is now due.
+            self._finish_intent(db, work, instance)
             instance["state"] = "submitted"
+            self._start_review(db, work, spec, node_id, instance, int(time.time()))
             self._save_instance(db, work, instance, "WorkflowResultSubmitted", {
                 "validator": validator_id, "validator_version": validator_version,
                 "output": reference})
@@ -1354,21 +1654,28 @@ class WorkflowEngine:
         return (list(reported or []), [])
 
     def _check_report_from_validator(self, node, raw_checks, validator_id,
-                                     validator_version) -> List[Dict[str, Any]]:
+                                     validator_version, input_digest=None,
+                                     output_digest=None, at=None
+                                     ) -> List[Dict[str, Any]]:
         """The persisted criterion report of a validated candidate."""
         report = []
         for entry in raw_checks:
             if not isinstance(entry, dict):
                 continue
+            bound = self._bound_validator_for(node, entry.get("check"))
             report.append({
                 "checkId": entry.get("check"),
                 "verdict": entry.get("verdict"),
                 "reason": entry.get("reason"),
                 "evidence": entry.get("evidence") or [],
-                "source": "validator",
+                "method": "PROGRAM",
+                "criterionVersion": (bound or {}).get("criterion_version"),
                 "decidedBy": None,
                 "validator": validator_id,
                 "validatorVersion": validator_version,
+                "reviewedInputDigest": input_digest,
+                "reviewedOutputDigest": output_digest,
+                "at": at,
             })
         return report
 
@@ -1379,6 +1686,62 @@ class WorkflowEngine:
             if declaration.get("id") == check_id and declaration.get("validator"):
                 return declaration
         return None
+
+    def _record_decision(self, db, actor, work, payload, version,
+                         command_id=None) -> dict:
+        """Admit one human decision.
+
+        The command's actor is the *ingress source* — the platform channel
+        configured for this node's evidence kind. The actual decider is in
+        the payload and is checked against the resolved assignment. The
+        write happens in the runtime's command transaction, so the caller's
+        compare-and-swap version, the evidence intake and the decision
+        admission are one atomic step.
+        """
+        required = {"node", "attempt", "decision", "digest", "revision",
+                    "actor", "items"}
+        if (not required <= set(payload)
+                or set(payload) - required - {"event_id"}):
+            raise WorkflowError("record_decision requires exactly node, attempt, "
+                                "decision, digest, revision, actor and items")
+        node_id = payload["node"]
+        attempt = payload["attempt"]
+        if not isinstance(node_id, str) or type(attempt) is not int:
+            raise WorkflowError("record_decision requires a node id and an attempt")
+        if payload["decision"] not in ("approved", "rejected", "request_material"):
+            raise WorkflowError("record_decision requires a known decision")
+        if not isinstance(payload["actor"], str) or not payload["actor"]:
+            raise WorkflowError("record_decision requires the actor who decided")
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        node = spec["nodes"].get(node_id)
+        if node is None or node.get("kind") != "human":
+            return self.runtime._reject("WORKFLOW_NODE_UNKNOWN", version, [str(node_id)])
+        kind = node.get("evidence_kind")
+        if self.runtime._policy_for(work).evidence_sources.get(kind) != actor:
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        instance = self._latest_instance(db, work["id"], node_id)
+        if (instance is None or instance["attempt"] != attempt
+                or instance["state"] != "running"):
+            return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        subject = instance.get("subject")
+        if (subject is None or subject["digest"] != payload["digest"]
+                or subject["revision"] != payload["revision"]):
+            return self.runtime._reject("WORKFLOW_DECISION_STALE", version)
+        effective = self._effective_authority(work, node_id, node)
+        if effective is None or effective != payload["actor"]:
+            return self.runtime._reject("WORKFLOW_AUTHORITY_MISMATCH", version)
+        findings = self._criterion_findings(node, payload["items"])
+        if findings:
+            return self.runtime._reject("WORKFLOW_CHECK_REPORT_INVALID", version,
+                                        _bounded(findings))
+        data = {"decision": payload["decision"], "digest": payload["digest"],
+                "revision": payload["revision"], "node": node_id, "attempt": attempt,
+                "actor": payload["actor"], "items": payload["items"]}
+        event_id = payload.get("event_id") or command_id or uuid.uuid4().hex
+        return self.runtime._receive(db, actor, work,
+                                     {"event_id": event_id, "kind": kind, "data": data})
 
     def _cancel_workflow(self, work_id: str) -> None:
         """Cancel the workflow of a work that is already cancelling."""
@@ -1553,7 +1916,9 @@ class WorkflowEngine:
                              "templateVersion": binding["template_version"],
                              "digest": binding["digest"],
                              "revision": binding["revision"],
-                             "parameters": binding["parameters"]},
+                             "parameters": binding["parameters"],
+                             "sessionId": binding.get("session_id"),
+                             "participants": binding.get("participants") or {}},
                 "nodes": nodes,
                 "checks": checks[:MAX_VIEW_NODES],
                 "allowedActions": allowed,

@@ -71,6 +71,12 @@ STATUS_BY_CODE = {
     "WORKFLOW_AUTHORITY_MISMATCH": 422,
     "WORKFLOW_NOT_BOUND": 422,
     "WORKFLOW_ENGINE_UNAVAILABLE": 503,
+    "WORKFLOW_POLICY_MISMATCH": 422,
+    "WORKFLOW_PARTICIPANT_UNKNOWN": 422,
+    "WORKFLOW_CHECK_REPORT_INVALID": 422,
+    "WORKFLOW_CHECK_SHORTFALL": 422,
+    "WORKFLOW_ACTOR_MISSING": 422,
+    "WORKFLOW_INPUT_STALE": 422,
 }
 
 DEFAULT_PLAN = {"steps": [], "open_requirements": [], "replan_when": []}
@@ -172,23 +178,20 @@ class WorkflowService:
     def _policy(self):
         return self.runtime.policy
 
-    def _authority_for(self, work, node_id):
-        """The principal that may decide a human node.
+    def _evidence_kind_for(self, work, node_id):
+        """The evidence kind of a human node, from the published definition.
 
-        The principal comes from the published node and the policy's source
-        registry — never from the request body.
+        The kind selects the trusted ingress source; it never comes from
+        the request body.
         """
         with self.runtime._connection() as db:
             spec = self.engine._spec_in(db, work)
         if spec is None:
-            return None, None
+            return None
         node = (spec.get("nodes") or {}).get(node_id)
         if not isinstance(node, dict) or node.get("kind") != "human":
-            return None, None
-        kind = node.get("evidence_kind")
-        source = self._policy().evidence_sources.get(kind)
-        authority = node.get("authority") or source
-        return kind, authority
+            return None
+        return node.get("evidence_kind")
 
     # -- endpoints -------------------------------------------------------
     def list_templates(self) -> Tuple[int, Dict[str, Any]]:
@@ -247,6 +250,22 @@ class WorkflowService:
                                "commandId is required and must be stable")
         actor = body.get("actor") or self._actor_for(work_id)
         policy = self._policy()
+        submitted = body.get("policy")
+        if submitted is not None:
+            # The contract is the registered, immutable policy. A submitted
+            # contract is checked against it, never silently replaced.
+            if (not isinstance(submitted, dict)
+                    or submitted.get("policyId") != policy.id
+                    or submitted.get("policyVersion") != policy.version
+                    or submitted.get("goal") != policy.goal):
+                return 422, _error("WORKFLOW_POLICY_MISMATCH",
+                                   "The submitted contract is not the registered "
+                                   "policy")
+        snapshot = body.get("instance")
+        parameters, session_id, participants = self._trusted_snapshot(body, snapshot)
+        if parameters is None:
+            return 400, _error("INSTANCE_INVALID",
+                               "The instance snapshot is malformed")
         try:
             created = self.runtime.command(actor, command_id + ":create", work_id,
                                            "create_work", {"document": document})
@@ -263,13 +282,17 @@ class WorkflowService:
         if bound.get("decision") != "accepted":
             return _status_for(bound), _error(bound.get("code", "REJECTED"),
                                               "The contract was not bound")
-        plan = body.get("plan") or dict(DEFAULT_PLAN)
-        if not isinstance(plan, dict) or not all(isinstance(plan.get(key), list)
-                                                 for key in
-                                                 ("steps", "open_requirements",
-                                                  "replan_when")):
+        plan = body.get("plan")
+        if plan is None:
+            plan = self._default_plan(template_id, template_version)
+        else:
+            plan = self._normalized_plan(plan)
+        if plan is None or not all(isinstance(plan.get(key), list)
+                                   for key in ("steps", "open_requirements",
+                                               "replan_when")):
             return 400, _error("PLAN_INVALID",
-                               "plan requires steps, open_requirements and replan_when lists")
+                               "plan requires steps, open_requirements and "
+                               "replan_when lists")
         revised = self.runtime.command(actor, command_id + ":plan", work_id,
                                        "revise_plan", plan,
                                        self.runtime.get_work(work_id)["state_version"])
@@ -280,6 +303,8 @@ class WorkflowService:
                    "parameters": parameters}
         if session_id is not None:
             payload["session_id"] = session_id
+        if participants is not None:
+            payload["participants"] = participants
         receipt = self.engine.command(actor, command_id + ":bind", work_id,
                                       "bind_workflow", payload,
                                       self.runtime.get_work(work_id)["state_version"],
@@ -290,6 +315,73 @@ class WorkflowService:
                                                 receipt.get("blockers"))
         self._settle(work_id)
         return 201, self.instance(work_id)[1]
+
+    def _trusted_snapshot(self, body, snapshot):
+        """The trusted platform create snapshot.
+
+        The platform's own create path produces it; it is not arbitrary
+        caller input. It carries the session, the instance parameters and
+        the participant assignment the protected definition resolves
+        against.
+        """
+        if snapshot is None:
+            parameters = body.get("parameters")
+            if parameters is None:
+                parameters = {}
+            if not isinstance(parameters, dict):
+                return None, None, None
+            session_id = body.get("sessionId")
+            if session_id is not None and (not isinstance(session_id, str)
+                                           or not session_id):
+                return None, None, None
+            return parameters, session_id, None
+        if not isinstance(snapshot, dict):
+            return None, None, None
+        required = {"workspaceId", "taskId", "ownerUserId", "sessionId",
+                    "parameters", "participants"}
+        if not required <= set(snapshot):
+            return None, None, None
+        for name in ("workspaceId", "taskId", "ownerUserId", "sessionId"):
+            if not isinstance(snapshot[name], str) or not snapshot[name]:
+                return None, None, None
+        parameters = snapshot["parameters"]
+        participants = snapshot["participants"]
+        if not isinstance(parameters, dict) or not isinstance(participants, dict):
+            return None, None, None
+        for member_id in participants.values():
+            if not isinstance(member_id, str) or not member_id:
+                return None, None, None
+        return parameters, snapshot["sessionId"], participants
+
+    @staticmethod
+    def _normalized_plan(plan):
+        """The plan in the runtime's field names.
+
+        The wire shape accepts both spellings; the stored plan always uses
+        the runtime's own field names.
+        """
+        if not isinstance(plan, dict):
+            return None
+        allowed = {"steps", "open_requirements", "openRequirements",
+                   "replan_when", "replanWhen"}
+        if set(plan) - allowed:
+            return None
+        normalized = {"steps": plan.get("steps"),
+                      "open_requirements": plan.get("open_requirements",
+                                                    plan.get("openRequirements")),
+                      "replan_when": plan.get("replan_when",
+                                              plan.get("replanWhen"))}
+        return normalized
+
+    def _default_plan(self, template_id, template_version):
+        """The plan of an instance that did not submit one."""
+        stored = self.engine.template(template_id, template_version)
+        if stored is None:
+            return dict(DEFAULT_PLAN)
+        spec = stored.get("spec") or {}
+        return {"steps": sorted(spec.get("nodes") or {}),
+                "open_requirements": list(spec.get("required_checks") or []),
+                "replan_when": []}
 
     def instance(self, work_id: str) -> Tuple[int, Dict[str, Any]]:
         try:
@@ -375,14 +467,30 @@ class WorkflowService:
         if command_id is None:
             return 400, _error("COMMAND_ID_REQUIRED",
                                "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required: the decision is "
+                               "admitted against the version the caller observed")
         work = self.runtime.get_work(work_id)
-        kind, authority = self._authority_for(work, node_id)
-        if kind is None or authority is None:
+        kind = self._evidence_kind_for(work, node_id)
+        if kind is None:
             return 404, _error("WORKFLOW_NODE_UNKNOWN", "No such human node")
-        if actor_id != authority:
-            # The decision must come from the principal the protected
-            # definition assigned to this node. The ingress source is the
-            # platform channel; it is never the actor.
+        # The command's actor is the platform ingress configured for this
+        # node's evidence kind; the actual decider is in the payload and the
+        # core checks it against the resolved assignment.
+        source = self._policy().evidence_sources.get(kind)
+        if not source:
+            return 422, _error("WORKFLOW_AUTHORITY_UNKNOWN",
+                               "No trusted source is configured for this kind")
+        effective = self.engine.effective_authority(work_id, node_id)
+        if effective is None or effective != actor_id:
+            # The actor must be the principal the protected definition
+            # assigned to this node, resolved against the platform's current
+            # assignment. The ingress source is never the actor.
             return 403, _error("WORKFLOW_AUTHORITY_MISMATCH",
                                "The decision did not come from the assigned authority")
         node = self._node(work_id, node_id)
@@ -396,16 +504,17 @@ class WorkflowService:
                                     or current["revision"] != revision):
             return 409, _error("WORKFLOW_DECISION_STALE",
                                "The decision does not cover the current version")
-        data = {"decision": decision, "digest": digest_value, "revision": revision,
-                "node": node_id, "attempt": attempt, "actor": actor_id,
-                "items": items}
-        receipt = self.runtime.command(authority, event_id or command_id,
-                                       work_id, "record_evidence",
-                                       {"event_id": event_id or command_id,
-                                        "kind": kind, "data": data})
+        payload = {"node": node_id, "attempt": attempt, "decision": decision,
+                   "digest": digest_value, "revision": revision, "actor": actor_id,
+                   "items": items}
+        if event_id is not None:
+            payload["event_id"] = event_id
+        receipt = self.engine.command(source, command_id, work_id, "record_decision",
+                                      payload, expected_version, now=self.now())
         if receipt.get("decision") != "accepted":
             return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
-                                                "The decision was not recorded")
+                                                "The decision was not recorded",
+                                                receipt.get("blockers"))
         self.runtime.verify_pending(work_id)
         self._settle(work_id)
         status, view = self.instance(work_id)

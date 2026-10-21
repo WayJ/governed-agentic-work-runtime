@@ -440,9 +440,8 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
     if "evidence_kind" in node and not _is_identifier(node["evidence_kind"]):
         findings.append(_finding("NODE_FIELD_TYPE", path + ".evidence_kind",
                                  "Evidence kind must be an identifier"))
-    if "authority" in node and not _is_identifier(node["authority"]):
-        findings.append(_finding("NODE_FIELD_TYPE", path + ".authority",
-                                 "Authority must be a principal identifier"))
+    if "authority" in node:
+        _lint_authority(node["authority"], path + ".authority", findings)
     if "max_attempts" in node and (not _is_int(node["max_attempts"])
                                    or node["max_attempts"] < 1):
         findings.append(_finding("NODE_FIELD_TYPE", path + ".max_attempts",
@@ -483,12 +482,35 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
         _lint_subject(node["subject"], path + ".subject", findings)
     if "review" in node:
         review = node["review"]
-        if not isinstance(review, dict) or set(review) != {"evidence_kind"}:
+        allowed_review = {"evidence_kind", "reviewer", "rubric"}
+        if not isinstance(review, dict):
             findings.append(_finding("SPEC_FIELD_TYPE", path + ".review",
-                                     "review requires exactly an evidence_kind"))
-        elif not _is_identifier(review["evidence_kind"]):
-            findings.append(_finding("SPEC_FIELD_TYPE", path + ".review.evidence_kind",
-                                     "Review evidence kind must be an identifier"))
+                                     "review must be an object"))
+        else:
+            for name in review:
+                if name not in allowed_review:
+                    findings.append(_finding("SPEC_FIELD_UNKNOWN",
+                                             path + ".review." + name,
+                                             "Review field is not supported"))
+            if "evidence_kind" not in review:
+                findings.append(_finding("SPEC_FIELD_MISSING",
+                                         path + ".review.evidence_kind",
+                                         "A review requires an evidence kind"))
+            elif not _is_identifier(review["evidence_kind"]):
+                findings.append(_finding("SPEC_FIELD_TYPE",
+                                         path + ".review.evidence_kind",
+                                         "Review evidence kind must be an identifier"))
+            if "reviewer" not in review:
+                findings.append(_finding("SPEC_FIELD_MISSING", path + ".review.reviewer",
+                                         "A review requires the independent reviewer"))
+            elif not _is_identifier(review["reviewer"]):
+                findings.append(_finding("SPEC_FIELD_TYPE", path + ".review.reviewer",
+                                         "A reviewer must be a principal identifier"))
+            if "rubric" not in review:
+                findings.append(_finding("SPEC_FIELD_MISSING", path + ".review.rubric",
+                                         "A review requires its pinned rubric"))
+            else:
+                _lint_validation(review["rubric"], path + ".review.rubric", findings)
     if "distinct_from" in node:
         entries = node["distinct_from"]
         if (not isinstance(entries, list)
@@ -524,6 +546,27 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
                                          "Wait match node must be an identifier"))
 
 
+def _lint_authority(authority: Any, path: str, findings: List[Dict[str, str]]) -> None:
+    """The principal that may decide a node.
+
+    Two closed forms: a static principal name, or ``{"assigned": true}``,
+    which means "whoever the platform currently assigns to this node". The
+    core never sees a workspace role id: the assignment is resolved through
+    a trusted, injected participant resolver, and it fails closed when no
+    resolver is configured.
+    """
+    if _is_identifier(authority):
+        return
+    if isinstance(authority, dict) and set(authority) == {"assigned"}:
+        if authority.get("assigned") is not True:
+            findings.append(_finding("SPEC_FIELD_TYPE", path + ".assigned",
+                                     "An assigned authority must be true"))
+        return
+    findings.append(_finding("SPEC_FIELD_TYPE", path,
+                             "Authority must be a principal identifier or an "
+                             "assigned authority"))
+
+
 def _lint_check(entry: Any, path: str, findings: List[Dict[str, str]]) -> None:
     """One declared criterion: an identifier, its text and an optional validator.
 
@@ -535,7 +578,8 @@ def _lint_check(entry: Any, path: str, findings: List[Dict[str, str]]) -> None:
         findings.append(_finding("SPEC_FIELD_TYPE", path,
                                  "A check declaration must be an object"))
         return
-    allowed = {"id", "criterion", "validator", "validator_version"}
+    allowed = {"id", "criterion", "criterion_version", "validator",
+               "validator_version", "required", "allow_not_applicable"}
     for name in entry:
         if name not in allowed:
             findings.append(_finding("SPEC_FIELD_UNKNOWN", path + "." + name,
@@ -552,6 +596,9 @@ def _lint_check(entry: Any, path: str, findings: List[Dict[str, str]]) -> None:
     elif not _is_text(entry["criterion"]):
         findings.append(_finding("SPEC_FIELD_TYPE", path + ".criterion",
                                  "A criterion must be a nonempty string"))
+    if "criterion_version" in entry and not _is_text(entry["criterion_version"]):
+        findings.append(_finding("SPEC_FIELD_TYPE", path + ".criterion_version",
+                                 "A criterion version must be a nonempty string"))
     if "validator" in entry and not _is_identifier(entry["validator"]):
         findings.append(_finding("SPEC_FIELD_TYPE", path + ".validator",
                                  "Validator must be an identifier"))
@@ -561,6 +608,10 @@ def _lint_check(entry: Any, path: str, findings: List[Dict[str, str]]) -> None:
     if ("validator" in entry) != ("validator_version" in entry):
         findings.append(_finding("SPEC_FIELD_MISSING", path,
                                  "A check validator binds an id and a version together"))
+    for flag in ("required", "allow_not_applicable"):
+        if flag in entry and not isinstance(entry[flag], bool):
+            findings.append(_finding("SPEC_FIELD_TYPE", path + "." + flag,
+                                     flag + " must be a boolean"))
 
 
 def _lint_validation(validation: Any, path: str, findings: List[Dict[str, str]]) -> None:

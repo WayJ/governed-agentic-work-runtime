@@ -309,7 +309,7 @@ class Runtime:
                 elif work["status"] == "closed":
                     receipt = self._reject("WORK_NOT_ACTIONABLE", version)
                 else:
-                    receipt = self._apply(db, actor, work, kind, payload)
+                    receipt = self._apply(db, actor, work, kind, payload, command_id)
             receipt = {"command_id": command_id, **receipt}
             db.execute("INSERT INTO commands VALUES (?,?,?,?,?)",
                        (actor, command_id, request_hash, work_id, canonical(receipt)))
@@ -359,7 +359,7 @@ class Runtime:
             ok = self._manager(actor, work)
         elif kind in WORKFLOW_COMMANDS:
             engine = getattr(self, "workflow", None)
-            ok = bool(engine) and engine.replay_allowed(actor, work, kind)
+            ok = bool(engine) and engine.replay_allowed(actor, work, kind, payload)
         else:
             ok = True  # Unsupported kinds replay exactly as they were decided.
         return None if ok else self._reject("AUTHORITY_DENIED", version)
@@ -390,13 +390,14 @@ class Runtime:
         db.execute("UPDATE works SET state=? WHERE id=?", (canonical(work), work_id))
         return self._accepted(work)
 
-    def _apply(self, db, actor, work, kind, payload):
+    def _apply(self, db, actor, work, kind, payload, command_id=None):
         version = work["state_version"]
         if kind in WORKFLOW_COMMANDS:
             engine = getattr(self, "workflow", None)
             if engine is None:
                 return self._reject("WORKFLOW_ENGINE_UNAVAILABLE", version)
-            return engine.apply_command(db, actor, work, kind, payload, version)
+            return engine.apply_command(db, actor, work, kind, payload, version,
+                                        command_id)
         if kind == "propose_action":
             return self._propose(db, actor, work, payload)
         if kind == "request_cancel":

@@ -164,7 +164,7 @@ class DecisionBindingTests(AuthorityTestCase):
         self.assertEqual(entry["reason"], "the proposal covers every requirement")
         self.assertEqual(entry["evidence"], ["proposal#revision-1"])
         self.assertEqual(entry["decidedBy"], "reviewer-a")
-        self.assertEqual(entry["source"], "decision")
+        self.assertEqual(entry["method"], "HUMAN")
 
 
 class InputBindingTests(AuthorityTestCase):

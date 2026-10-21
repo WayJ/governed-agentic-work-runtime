@@ -33,11 +33,13 @@ PROPOSAL_SHAPE = None
 REPORT_SHAPE = None
 
 
-def build(path, policy=None, grants=None, validators=None, runner=None):
+def build(path, policy=None, grants=None, validators=None, runner=None,
+          resolver=None):
     """A runtime with a workflow engine attached."""
     runtime = Runtime(path, policy or DemoPolicy(), grants or demo_grants())
     engine = WorkflowEngine(runtime, validators if validators is not None
-                            else demo_validators(), runner=runner)
+                            else demo_validators(), runner=runner,
+                            resolver=resolver)
     return runtime, engine
 
 
@@ -58,7 +60,7 @@ def send(runtime, actor, work_id, kind, payload=None, command_id=None,
 
 
 def instantiate(runtime, engine, work_id="W-1", template=None, parameters=None,
-                actor="coordinator"):
+                actor="coordinator", participants=None):
     """Create the work, bind the contract, plan and published template."""
     spec = template or scenario_template()
     send(runtime, actor, work_id, "create_work", {"document": document()})
@@ -69,11 +71,13 @@ def instantiate(runtime, engine, work_id="W-1", template=None, parameters=None,
          {"steps": ["n01", "n02", "n03", "n04", "n05", "n06", "n07", "n08",
                     "n09", "n10"],
           "open_requirements": ["R01"], "replan_when": ["review rejects"]})
+    payload = {"template_id": spec["id"],
+               "template_version": spec["version"],
+               "parameters": parameters or {"subject": "east parapet"}}
+    if participants is not None:
+        payload["participants"] = participants
     receipt = engine.command(actor, uuid.uuid4().hex, work_id, "bind_workflow",
-                              {"template_id": spec["id"],
-                               "template_version": spec["version"],
-                               "parameters": parameters or {"subject": "east parapet"}},
-                              version_of(runtime, work_id))
+                              payload, version_of(runtime, work_id))
     return receipt
 
 
@@ -139,6 +143,33 @@ def default_items(node, verdict="passed", reason="reviewed against the criterion
         items.append({"check": identifier, "verdict": verdict, "reason": reason,
                       "evidence": evidence or ["document#revision-1"]})
     return items
+
+
+def decide_command(engine, runtime, work_id, kind, source, decision, digest_value,
+                   revision, node=None, attempt=None, actor=None, items=None,
+                   command_id=None, expected_version=None):
+    """Admit a decision through the workflow command (CAS + dedup).
+
+    The command's actor is the ingress source; the actual decider is the
+    asserted actor in the payload.
+    """
+    if node is None:
+        node = NODE_BY_EVIDENCE_KIND.get(kind)
+    if attempt is None and node is not None:
+        attempt = current_attempt(engine, runtime, work_id, node)
+    if items is None and node is not None:
+        items = default_items(node)
+    payload = {"node": node, "attempt": attempt, "decision": decision,
+               "digest": digest_value, "revision": revision,
+               "actor": actor or source, "items": items or []}
+    if expected_version is None:
+        expected_version = version_of(runtime, work_id)
+    receipt = engine.command(source, command_id or uuid.uuid4().hex, work_id,
+                             "record_decision", payload, expected_version)
+    if receipt.get("decision") == "accepted":
+        runtime.verify_pending(work_id)
+        engine.advance(work_id, 1_000_000)
+    return receipt
 
 
 def instance_of(engine, runtime, work_id, node):

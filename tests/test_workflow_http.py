@@ -67,18 +67,44 @@ class HttpBridgeTestCase(unittest.TestCase):
         self.assertEqual(status, 201, body)
         return body
 
-    def create(self, work_id="W-1", session_id="sess-1", command_id=None):
-        status, body = self.call("POST", API_PREFIX + "/instances", {
+    def create(self, work_id="W-1", session_id="sess-1", command_id=None,
+               extra=None, participants=None, plan=None, policy=None):
+        body = {
             "workId": work_id,
             "document": {"id": "H-001", "subject": "east parapet"},
             "templateId": scenario_template()["id"],
             "templateVersion": scenario_template()["version"],
-            "parameters": {"subject": "east parapet"},
-            "sessionId": session_id,
             "commandId": command_id or self.next_id("create"),
-        })
-        self.assertEqual(status, 201, body)
-        return body
+        }
+        if participants is not None:
+            body["instance"] = {"workspaceId": "ws-1", "taskId": "task-1",
+                                "ownerUserId": "user-1", "sessionId": session_id,
+                                "parameters": {"subject": "east parapet"},
+                                "participants": participants}
+        else:
+            body["parameters"] = {"subject": "east parapet"}
+            body["sessionId"] = session_id
+        if plan is not None:
+            body["plan"] = plan
+        if policy is not None:
+            body["policy"] = policy
+        if extra:
+            body.update(extra)
+        status, response = self.call("POST", API_PREFIX + "/instances", body)
+        self.assertEqual(status, 201, response)
+        return response
+
+    def drive_agents(self, work_id="W-1"):
+        for node, name, result in (
+                ("n01", "intake", {"records": [{"id": "R-1", "source": "s"}],
+                                   "standard": "STD"}),
+                ("n02", "analysis", {"findings": [{"issueId": "H-001", "clause": "C-1",
+                                                   "finding": "gap"}]}),
+                ("n03", "proposal", {"measures": [{"issueId": "H-001", "measureId": "M-1",
+                                                    "measure": "guard"}]})):
+            attempt = self.node(work_id, node)["attempt"]
+            status, body = self.submit(node, attempt, name, result, work_id=work_id)
+            self.assertEqual(status, 200, body)
 
     def view(self, work_id="W-1"):
         status, body = self.call("GET", API_PREFIX + "/instances/" + work_id)
@@ -105,15 +131,18 @@ class HttpBridgeTestCase(unittest.TestCase):
             "expectedVersion": expected_version})
 
     def decide(self, node, attempt, decision, digest, revision, actor_id,
-               items=None, work_id="W-1", command_id=None):
+               items=None, work_id="W-1", command_id=None, expected_version=None):
         if items is None:
             items = [{"check": "N04-2", "verdict": "passed",
                       "reason": "the proposal covers every requirement",
                       "evidence": ["proposal#revision-1"]}]
+        if expected_version is None:
+            expected_version = self.view(work_id)["stateVersion"]
         return self.call("POST", API_PREFIX + "/instances/" + work_id + "/decisions", {
             "node": node, "attempt": attempt, "decision": decision, "digest": digest,
             "revision": revision, "actorId": actor_id, "items": items,
-            "commandId": command_id or self.next_id("decide")})
+            "commandId": command_id or self.next_id("decide"),
+            "expectedVersion": expected_version})
 
 
 class RouteTests(HttpBridgeTestCase):
@@ -260,6 +289,130 @@ class MutationContractTests(HttpBridgeTestCase):
         self.assertIn("allowedActions", body)
 
 
+class CreateContractTests(HttpBridgeTestCase):
+    def test_a_policy_that_is_not_the_registered_one_is_refused(self):
+        self.publish()
+        status, body = self.call("POST", API_PREFIX + "/instances", {
+            "workId": "W-1", "document": {"id": "H-001", "subject": "east"},
+            "templateId": scenario_template()["id"],
+            "templateVersion": scenario_template()["version"],
+            "commandId": "create-1",
+            "policy": {"policyId": "workflow-demo", "policyVersion": "demo-9",
+                       "goal": "workflow.completed"}})
+        self.assertEqual(status, 422)
+        self.assertEqual(body["error"]["code"], "WORKFLOW_POLICY_MISMATCH")
+
+    def test_the_registered_policy_is_accepted(self):
+        self.publish()
+        status, body = self.call("POST", API_PREFIX + "/instances", {
+            "workId": "W-1", "document": {"id": "H-001", "subject": "east"},
+            "templateId": scenario_template()["id"],
+            "templateVersion": scenario_template()["version"],
+            "commandId": "create-1",
+            "parameters": {"subject": "east parapet"},
+            "policy": {"policyId": "workflow-demo", "policyVersion": "demo-1",
+                       "goal": "workflow.completed"}})
+        self.assertEqual(status, 201, body)
+
+    def test_the_submitted_plan_is_used(self):
+        self.publish()
+        plan = {"steps": ["n01", "n02"], "openRequirements": ["R01"],
+                "replanWhen": ["a reviewer rejects"]}
+        self.create(plan=plan)
+        status, body = self.call("GET", API_PREFIX + "/instances/W-1")
+        self.assertEqual(status, 200, body)
+        # The plan is part of the stored work, not silently replaced.
+        work = self.runtime.get_work("W-1")
+        self.assertEqual(work["plan"]["steps"], plan["steps"])
+
+    def test_a_malformed_plan_is_refused(self):
+        self.publish()
+        status, body = self.call("POST", API_PREFIX + "/instances", {
+            "workId": "W-1", "document": {"id": "H-001", "subject": "east"},
+            "templateId": scenario_template()["id"],
+            "templateVersion": scenario_template()["version"],
+            "commandId": "create-1",
+            "plan": {"steps": "n01"}})
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "PLAN_INVALID")
+
+    def test_the_trusted_snapshot_carries_the_session_and_the_participants(self):
+        self.publish()
+        self.create(participants={"n04": "member-123", "n05": "member-456"})
+        status, body = self.call("GET", API_PREFIX + "/instances/W-1")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["workflow"]["sessionId"], "sess-1")
+        self.assertEqual(body["workflow"]["participants"],
+                         {"n04": "member-123", "n05": "member-456"})
+        self.assertEqual(body["workflow"]["parameters"], {"subject": "east parapet"})
+
+    def test_a_participant_must_name_a_declared_node(self):
+        self.publish()
+        status, body = self.call("POST", API_PREFIX + "/instances", {
+            "workId": "W-1", "document": {"id": "H-001", "subject": "east"},
+            "templateId": scenario_template()["id"],
+            "templateVersion": scenario_template()["version"],
+            "commandId": "create-1",
+            "instance": {"workspaceId": "ws-1", "taskId": "task-1",
+                         "ownerUserId": "user-1", "sessionId": "sess-1",
+                         "parameters": {"subject": "east parapet"},
+                         "participants": {"n99": "member-123"}}})
+        self.assertEqual(status, 422)
+        self.assertEqual(body["error"]["code"], "WORKFLOW_PARTICIPANT_UNKNOWN")
+
+
+class DecisionContractTests(HttpBridgeTestCase):
+    def test_a_decision_without_an_expected_version_is_refused(self):
+        self.publish()
+        self.create()
+        status, body = self.call("POST", API_PREFIX + "/instances/W-1/decisions", {
+            "node": "n04", "attempt": 1, "decision": "approved", "digest": "0" * 64,
+            "revision": 1, "actorId": "reviewer-a",
+            "items": [{"check": "N04-2", "verdict": "passed", "reason": "r",
+                       "evidence": ["x"]}],
+            "commandId": "d-1"})
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "EXPECTED_VERSION_REQUIRED")
+
+    def test_a_stale_expected_version_is_refused(self):
+        self.publish()
+        self.create()
+        self.drive_agents()
+        subject = self.node("W-1", "n04")["subject"]
+        status, body = self.decide("n04", 1, "approved", subject["digest"],
+                                   subject["revision"], "reviewer-a",
+                                   expected_version=999)
+        self.assertEqual(status, 409)
+        self.assertEqual(body["error"]["code"], "STATE_VERSION_CONFLICT")
+
+    def test_a_malformed_criterion_report_is_refused(self):
+        self.publish()
+        self.create()
+        self.drive_agents()
+        subject = self.node("W-1", "n04")["subject"]
+        status, body = self.decide("n04", 1, "approved", subject["digest"],
+                                   subject["revision"], "reviewer-a",
+                                   items=[{"check": "N04-2", "verdict": "passed",
+                                           "reason": "", "evidence": []}])
+        self.assertEqual(status, 422)
+        self.assertEqual(body["error"]["code"], "WORKFLOW_CHECK_REPORT_INVALID")
+
+    def test_an_approval_with_a_failing_criterion_does_not_complete_the_node(self):
+        self.publish()
+        self.create()
+        self.drive_agents()
+        subject = self.node("W-1", "n04")["subject"]
+        status, body = self.decide("n04", 1, "approved", subject["digest"],
+                                   subject["revision"], "reviewer-a",
+                                   items=[{"check": "N04-2", "verdict": "failed",
+                                           "reason": "the guard is not covered",
+                                           "evidence": ["proposal#measure-2"]}])
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.node("W-1", "n04")["state"], "running")
+        self.assertEqual(self.node("W-1", "n04")["checkResults"][0]["verdict"],
+                         "failed")
+
+
 class InstanceTests(HttpBridgeTestCase):
     def test_an_instance_is_created_and_read_back(self):
         self.publish()
@@ -377,19 +530,6 @@ class InstanceTests(HttpBridgeTestCase):
         })
         for line in self.server.log:
             self.assertNotIn("super-secret-token", line)
-
-    def drive_agents(self, work_id="W-1"):
-        for node, name, result in (
-                ("n01", "intake", {"records": [{"id": "R-1", "source": "s"}],
-                                   "standard": "STD"}),
-                ("n02", "analysis", {"findings": [{"issueId": "H-001", "clause": "C-1",
-                                                   "finding": "gap"}]}),
-                ("n03", "proposal", {"measures": [{"issueId": "H-001", "measureId": "M-1",
-                                                    "measure": "guard"}]})):
-            attempt = self.node(work_id, node)["attempt"]
-            status, body = self.submit(node, attempt, name, result, work_id=work_id)
-            self.assertEqual(status, 200, body)
-
 
 class ProgressTests(HttpBridgeTestCase):
     def test_progress_continues_without_a_client_poll(self):

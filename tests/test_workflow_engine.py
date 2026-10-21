@@ -232,10 +232,16 @@ class RoutingTests(WorkflowTestCase):
         self.assertEqual(receipt["decision"], "accepted")
         self.assertEqual(self.node_state("n09")["state"], "submitted")
         reference = self.object_rows("report")[0]
+        node = self.node_state("n09")
         send(self.runtime, "reviewer-v", self.work_id, "record_evidence",
              {"event_id": uuid.uuid4().hex, "kind": "agent_review",
-              "data": {"digest": reference[3], "verdict": "passed",
-                       "items": [{"check": "N09-2", "result": "passed"}]}})
+              "data": {"node": "n09", "attempt": node["attempt"],
+                       "input_digest": node["inputDigest"],
+                       "output_digest": reference[3], "producer": "reviewer-v",
+                       "verdict": "passed",
+                       "items": [{"check": "N09-2", "verdict": "passed",
+                                  "reason": "the report follows the record",
+                                  "evidence": ["proposal#revision-1"]}]}})
         self.runtime.verify_pending(self.work_id)
         self.engine.advance(self.work_id, 1000)
         self.assertEqual(self.node_state("n09")["state"], "completed")
