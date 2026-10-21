@@ -13,8 +13,12 @@ import unittest
 from pathlib import Path
 
 from work_runtime.workflow_demo import (DemoBusinessSystem, build_demo_runtime,
-                                         run_workflow_demo,
-                                         workflow_demo_template)
+                                         run_workflow_demo, workflow_demo_template)
+
+try:
+    from workflow_support import decide, send, submit_valid, version_of
+except ImportError:  # pragma: no cover - repository-root import style
+    from tests.workflow_support import decide, send, submit_valid, version_of
 
 
 class WorkflowDemoTests(unittest.TestCase):
@@ -51,6 +55,15 @@ class WorkflowDemoTests(unittest.TestCase):
         for operation in operations:
             self.assertEqual(operation["status"], "confirmed_succeeded")
             self.assertEqual(len(operation["attempts"]), 1)
+        # Every human node carries the criterion report of its decision.
+        for node in ("n04", "n05", "n07", "n08"):
+            entry = [item for item in engine.instance("W-001")["nodes"]
+                     if item["node"] == node][0]
+            self.assertTrue(entry["checkResults"], node)
+            for criterion in entry["checkResults"]:
+                self.assertTrue(criterion["verdict"])
+                self.assertTrue(criterion["reason"])
+                self.assertTrue(criterion["decidedBy"])
 
     def test_a_human_decision_needs_the_current_version(self):
         self.engine.publish_template("coordinator", workflow_demo_template())
@@ -72,52 +85,29 @@ class WorkflowDemoTests(unittest.TestCase):
                                       self.runtime.get_work("W-1")["state_version"])
         self.assertEqual(receipt["decision"], "accepted")
         self.engine.advance("W-1", 1000)
-        attempt = engine_attempt(self.engine, "W-1", "n01")
-        submitted = self.engine.command("agent-executor", "c1", "W-1",
-                                        "submit_node_result",
-                                        {"node": "n01", "attempt": attempt,
-                                         "object": "intake",
-                                         "result": {"records": [{"id": "REC-1",
-                                                                 "source": "log"}],
-                                                    "standard": "STD"}},
-                                        self.runtime.get_work("W-1")["state_version"])
-        self.assertEqual(submitted["decision"], "accepted")
-        for node, name, result in (
-                ("n02", "analysis", {"findings": [{"issueId": "H-001", "clause": "C-1",
-                                                    "finding": "gap"}]}),
-                ("n03", "proposal", {"measures": [{"issueId": "H-001", "measureId": "M-1",
-                                                   "measure": "guard"}]})):
-            attempt = engine_attempt(self.engine, "W-1", node)
-            submitted = self.engine.command("agent-executor", "c-" + node, "W-1",
-                                            "submit_node_result",
-                                            {"node": node, "attempt": attempt,
-                                             "object": name, "result": result},
-                                            self.runtime.get_work("W-1")["state_version"])
-            self.assertEqual(submitted["decision"] == "accepted", True, submitted)
+        for node, name in (("n01", "intake"), ("n02", "analysis"), ("n03", "proposal")):
+            submitted = submit_valid(self.engine, self.runtime, "W-1", node, name)
+            self.assertEqual(submitted["decision"], "accepted", submitted)
         db = sqlite3.connect(self.runtime_path)
         try:
             row = db.execute("SELECT revision,digest FROM workflow_objects "
                              "WHERE work_id='W-1' AND name='proposal'").fetchone()
         finally:
             db.close()
-        stale = self.runtime.command("reviewer-a", "d1", "W-1", "record_evidence",
-                                     {"event_id": "d1", "kind": "safety_review",
-                                      "data": {"decision": "approved",
-                                               "digest": row[1], "revision": row[0] + 5}},
-                                     None)
-        self.assertEqual(stale["decision"], "accepted")
-        self.runtime.verify_pending("W-1")
-        self.engine.advance("W-1", 1000)
+        # A decision that names another revision never advances the node.
+        decide(self.runtime, self.engine, "W-1", "safety_review", "reviewer-a",
+               "approved", row[1], row[0] + 5)
         node = [entry for entry in self.engine.instance("W-1")["nodes"]
                 if entry["node"] == "n04"][0]
         self.assertNotEqual(node["state"], "completed")
-
-
-def engine_attempt(engine, work_id, node):
-    for entry in engine.instance(work_id)["nodes"]:
-        if entry["node"] == node:
-            return entry["attempt"]
-    return 0
+        # The decision that covers the current version does.
+        decide(self.runtime, self.engine, "W-1", "safety_review", "reviewer-a",
+               "approved", row[1], row[0])
+        node = [entry for entry in self.engine.instance("W-1")["nodes"]
+                if entry["node"] == "n04"][0]
+        self.assertEqual(node["state"], "completed")
+        self.assertEqual(node["checkResults"][0]["checkId"], "N04-2")
+        self.assertEqual(node["checkResults"][0]["decidedBy"], "reviewer-a")
 
 
 if __name__ == "__main__":

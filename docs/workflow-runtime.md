@@ -139,6 +139,31 @@ There is no negation, no user expression and no natural-language predicate.
 
 ## 3. Nodes
 
+### Declared criteria
+
+A node's `checks` are **declarations**, not identifiers:
+
+```json
+{"id": "N04-2",
+ "criterion": "The proposal covers every applicable requirement.",
+ "validator": "safety-review", "validator_version": "1"}
+```
+
+The criterion text is part of the protected definition: a binding pins the
+digest, so the text a reviewer read is the text that is enforced. The
+optional `validator` binding names the judge of that criterion and must
+resolve at its exact version, or the definition is not publishable
+(`WORKFLOW_VALIDATOR_UNKNOWN`).
+
+Every declared criterion needs a **verdict**, a reason and its evidence,
+and the verdict is persisted on the node instance — the read model returns
+the full report (`checkResults`), never only the identifier:
+
+| source | who judged it | where the verdict comes from |
+|---|---|---|
+| `validator` | the configured, version-pinned validator | the validator's per-criterion report; a declared criterion without a verdict refuses the candidate (`WORKFLOW_CHECK_RESULT_MISSING`) |
+| `decision` | the human who decided | the decision's `items`; a declared criterion without a verdict leaves the node waiting (`WORKFLOW_CHECK_RESULT_MISSING`) |
+
 ### Agent nodes
 
 An agent node delegates execution to the configured `executor`. The engine
@@ -147,6 +172,9 @@ submits a candidate with `submit_node_result {node, attempt, object, result}`:
 
 * the actor must hold `workflow.execute` **and** be the node's `executor`;
 * the attempt must be the node's current attempt (`WORKFLOW_ATTEMPT_STALE`);
+* the candidate must be bound to the **input digest** the node currently
+  pins (`WORKFLOW_INPUT_STALE`): a candidate produced from a superseded
+  input is refused;
 * the payload's `object` must be the node's declared output object
   (`WORKFLOW_OBJECT_MISMATCH`);
 * the result is validated by the shape descriptor and by the registered
@@ -172,11 +200,20 @@ pretends to have proved a model's semantic judgement.
 A human node waits for a decision proof:
 
 * the proof must be `verified`, of the node's `evidence_kind`, and carry
-  `decision` (`approved` / `rejected`), the **exact digest and revision of
-  the subject object**;
-* the source must be the node's `authority` (or the policy's source for the
-  kind). A decision from anyone else is refused
+  `decision` (`approved` / `rejected` / `request_material`), the **exact
+  digest and revision of the subject object**, the **node and attempt** it
+  was made for, the **actor** who decided, and the itemized `items`;
+* a decision of an earlier attempt never satisfies a later one, even when
+  the content digest is identical: the attempt is part of the binding;
+* the **actor** must be the node's `authority` (or the policy's source for
+  the kind). A decision from anyone else is refused
   (`WORKFLOW_AUTHORITY_MISMATCH`);
+* the proof's **source** is the platform ingress. It is never the actor:
+  the source says which channel carried the decision, and the separation
+  rules are checked against the actor;
+* a decision of `request_material` keeps the node waiting. It is neither an
+  approval nor a rejection: it does not complete the node and it opens no
+  rework attempt. The request is persisted on the instance;
 * an **executor may never approve** (`WORKFLOW_EXECUTOR_MAY_NOT_APPROVE`) and
   a reviewer may not repeat another reviewer's role
   (`WORKFLOW_ROLE_ISOLATION`, declared per node with `distinct_from`). A
@@ -275,6 +312,9 @@ surface. It is separate from any product-specific delivery route: the
 existing `/v1/deliveries` contract of the embedding platform is untouched,
 and the bridge never becomes a task-delivery shortcut.
 
+The exact wire contract, with the request and response fixtures, is
+[workflow-api-contract.md](workflow-api-contract.md).
+
 | method | path | purpose |
 |---|---|---|
 | `GET` | `/v1/workflows` | health: the coordinator model and the workflow count |
@@ -285,6 +325,7 @@ and the bridge never becomes a task-delivery shortcut.
 | `POST` | `/v1/workflows/instances/{workId}/results` | submit an agent candidate |
 | `POST` | `/v1/workflows/instances/{workId}/decisions` | record a human decision |
 | `POST` | `/v1/workflows/instances/{workId}/objects` | revise a named object |
+| `GET` | `/v1/workflows/instances/{workId}/objects/{name}/revisions/{revision}` | read one exact object revision |
 | `GET` | `/v1/workflows/instances/{workId}/intents` | the durable intents |
 | `GET` | `/v1/workflows/instances/{workId}/events` | the event history |
 | `POST` | `/v1/workflows/intents/{intentId}/ack` | acknowledge an intent |
@@ -298,8 +339,12 @@ Two properties matter to a client:
 
 * **the bridge never trusts the body about identity.** The approving
   principal is resolved from the published node and the policy's source
-  registry. A request may state the authority, but only to be checked
-  against it.
+  registry, and the decision's `actorId` is checked against it. The body
+  says who acted; the protected definition says who was allowed to.
+* **every mutation carries a stable `commandId`** and, on an existing work,
+  the `expectedVersion` the client observed. The bridge never substitutes
+  its own current version for the caller's, and it never invents a command
+  id.
 * **progress does not need a client to poll.** Every mutating call settles
   the workflow before it answers, and a background ticker advances and
   recovers the store on its own schedule. The bridge logs the method and the
@@ -372,8 +417,13 @@ consciously, never silently.
 
 ## 11. What is deliberately not here
 
-* No authentication, no tenant isolation, no distributed leases or fencing,
-  no distributed exactly-once. Principals are trusted local configuration.
+* No authentication, no tenant isolation, no distributed leases or fencing.
+  Principals are trusted local configuration.
+* No distributed exactly-once. The bridge offers **stable idempotent
+  effects** (a stable operation business key, an adapter-level idempotency
+  key and a lookup) and **unknown-effect reconciliation** (an unknown
+  outcome is looked up, never repeated). It does not claim exactly-once
+  delivery between GAWR and an external system.
 * No arbitrary dynamic graph at instance time, no workflow revision command,
   no `migrate`/`revise` shortcut for a running instance: a changed
   definition is a new published version, and a running instance keeps the

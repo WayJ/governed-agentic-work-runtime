@@ -217,14 +217,18 @@ class RoutingTests(WorkflowTestCase):
                "reviewer-b", "approved", self.proposal_reference()["digest"],
                self.proposal_reference()["revision"])
         self.assertEqual(self.node_state("n06")["state"], "running")
-        # Drive on to the reviewed agent node.
+        # The action is dispatched; the next human node opens.
+        self.engine.pump(self.adapter, 1000)
+        self.assertEqual(self.node_state("n07")["state"], "running")
+        # A decision binds the attempt it was made for, so it is recorded
+        # once the node is open.
         decide(self.runtime, self.engine, self.work_id, "field_report",
                "responsible-c", "approved", self.proposal_reference()["digest"],
                self.proposal_reference()["revision"])
+        self.assertEqual(self.node_state("n07")["state"], "completed")
         decide(self.runtime, self.engine, self.work_id, "independent_review",
                "reviewer-d", "approved", self.proposal_reference()["digest"],
                self.proposal_reference()["revision"])
-        self.engine.pump(self.adapter, 1000)
         self.assertEqual(self.node_state("n08")["state"], "completed")
         receipt = submit_valid(self.engine, self.runtime, self.work_id, "n09", "report")
         self.assertEqual(receipt["decision"], "accepted")
@@ -305,7 +309,9 @@ class RoutingTests(WorkflowTestCase):
         self.engine.advance(self.work_id, 1000)
         payload = {"node": "n01", "attempt": 1, "object": "intake",
                    "result": {"records": [{"id": "R-1", "source": "s"}],
-                              "standard": "STD"}}
+                              "standard": "STD"},
+                   "input_digest": instance_of(self.engine, self.runtime,
+                                               self.work_id, "n01")["inputDigest"]}
         sent_version = version_of(self.runtime, self.work_id)
         first = self.runtime.command("agent-executor", "cmd-1", self.work_id,
                                      "submit_node_result", payload, sent_version)
@@ -370,7 +376,10 @@ class RoleIsolationTests(WorkflowTestCase):
         digest_value = proposal["outputs"][0]["digest"]
         send(runtime, "agent-executor", self.work_id, "record_evidence",
              {"event_id": uuid.uuid4().hex, "kind": "safety_review",
-              "data": {"decision": "approved", "digest": digest_value, "revision": 1}})
+              "data": {"decision": "approved", "digest": digest_value, "revision": 1,
+                       "node": "n04", "attempt": 1, "actor": "agent-executor",
+                       "items": [{"check": "N04-2", "verdict": "passed",
+                                  "reason": "reviewed", "evidence": ["doc-1"]}]}})
         runtime.verify_pending(self.work_id)
         engine.advance(self.work_id, 1000)
         node = [entry for entry in engine.instance(self.work_id)["nodes"]
@@ -396,11 +405,14 @@ class RoleIsolationTests(WorkflowTestCase):
         proposal = [entry for entry in engine.instance(self.work_id)["nodes"]
                     if entry["node"] == "n03"][0]
         digest_value = proposal["outputs"][0]["digest"]
-        for kind in ("safety_review", "project_approval"):
+        for kind, node in (("safety_review", "n04"), ("project_approval", "n05")):
             send(runtime, "reviewer-a", self.work_id, "record_evidence",
                  {"event_id": uuid.uuid4().hex, "kind": kind,
                   "data": {"decision": "approved", "digest": digest_value,
-                           "revision": 1}})
+                           "revision": 1, "node": node, "attempt": 1,
+                           "actor": "reviewer-a",
+                           "items": [{"check": "N04-2", "verdict": "passed",
+                                      "reason": "reviewed", "evidence": ["doc-1"]}]}})
         runtime.verify_pending(self.work_id)
         engine.advance(self.work_id, 1000)
         node = [entry for entry in engine.instance(self.work_id)["nodes"]

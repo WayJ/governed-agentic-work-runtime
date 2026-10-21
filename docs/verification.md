@@ -879,18 +879,47 @@ section records what is verified and what is not.
 | W14 | An approval dispatches exactly one external action | covered | `test_an_approval_creates_exactly_one_external_action` — one operation, one effect, still one after a second pump |
 | W15 | An unknown effect is looked up, never repeated | covered | `test_an_unknown_effect_is_looked_up_and_never_repeated` — a real crash between the effect and the record, then one effect and a confirmed operation |
 | W16 | Publication and binding fail closed | covered | `PublicationAndBindingTests` — an immutable definition, an unknown validator version, a family mismatch, an incomplete required check, a double binding |
+| W17 | A decision binds the node and the attempt | covered | `test_a_decision_must_name_the_node_and_the_attempt`, `test_a_same_digest_approval_of_an_earlier_attempt_is_refused` — an approval of attempt 1 never satisfies attempt 2, even with the identical digest |
+| W18 | The actor is the asserted principal, not the ingress source | covered | `test_the_actor_of_a_decision_is_not_the_ingress_source` — `WORKFLOW_AUTHORITY_MISMATCH`; the isolation rules in `test_an_executor_may_not_approve` and `test_a_reviewer_may_not_repeat_another_reviewers_role` compare the actor |
+| W19 | A request for more material keeps the node waiting | covered | `test_a_request_for_more_material_keeps_the_node_waiting` — the node stays running, no outcome, the request is on the record |
+| W20 | Every declared criterion carries a verdict, a reason and its evidence | covered | `test_every_declared_criterion_carries_a_verdict`, `test_the_check_report_is_persisted_and_readable` — `WORKFLOW_CHECK_RESULT_MISSING`; the persisted report is readable |
+| W21 | A candidate is bound to the input digest | covered | `test_a_candidate_must_be_bound_to_the_current_input_digest`, `test_the_input_digest_follows_the_pinned_input` — `WORKFLOW_INPUT_STALE` |
+| W22 | The published definition carries the criterion text and its validator | covered | `test_the_published_definition_carries_the_criterion_text`, `test_a_criterion_validator_must_resolve_at_publication` — `WORKFLOW_VALIDATOR_UNKNOWN` |
 
 ### Bridge, recovery and demonstration
 
-- **HTTP bridge** (`tests/test_workflow_http.py`, 11 tests, real loopback
+- **HTTP bridge** (`tests/test_workflow_http.py`, 24 tests, real loopback
   socket): the route whitelist (the product's `/v1/deliveries` route is not
   part of this surface and answers 404 here), a published template read
-  back, an instance created and read back, the bounded read model (≤64
-  nodes, ≤32 intents, ≤16 findings per node), a candidate accepted and a bad
-  one refused with findings, a stale decision refused `409`, the durable
-  intent ids and their acknowledgement, a body carrying a credential absent
-  from the log, and **progress without a client poll** — the ticker
-  dispatches the authorized action on its own.
+  back including every criterion's text, an instance created and read back,
+  the bounded read model (≤64 nodes, ≤32 intents, ≤16 findings and ≤16
+  check results per node), a candidate accepted and a bad one refused with
+  findings, the exact content of one object revision readable, the durable
+  intent ids and their acknowledgement, the global intent listing scoped by
+  `workIds`, a body carrying a credential absent from the log, and
+  **progress without a client poll** — the ticker dispatches the authorized
+  action on its own.
+- **The mutation contract** (same file): a mutation without a stable
+  `commandId` is refused, a mutation without the `expectedVersion` the
+  client observed is refused, a stale `expectedVersion` is a
+  `STATE_VERSION_CONFLICT`, a result without an `inputDigest` is refused, a
+  result bound to a stale input digest is `WORKFLOW_INPUT_STALE`, a
+  decision without an `actorId` or without per-criterion items is refused, a
+  decision from an actor who is not the assigned authority is
+  `WORKFLOW_AUTHORITY_MISMATCH`, a decision for another attempt is
+  `WORKFLOW_ATTEMPT_STALE`, a request for more material keeps the node
+  waiting, and every mutation answers with the root instance view.
+- **Authority, attempt binding and criterion reports**
+  (`tests/test_workflow_authority.py`, 11 tests): a decision without a node
+  and attempt binding never matches; a same-digest approval of an earlier
+  attempt is refused; the actor is checked against the assigned authority
+  while the ingress source is never used as the actor; a request for more
+  material keeps the node waiting; a decision without a verdict for every
+  declared criterion is refused; the criterion report is persisted and
+  readable; a candidate is bound to the input digest it was produced from;
+  the published definition carries the criterion text and its validator
+  binding, and a criterion validator that does not resolve fails closed at
+  publication.
 - **Recovery** (`tests/test_workflow_recovery.py`, 7 tests): a prepared
   action dispatched once after a restart, an effect committed before a real
   crash looked up rather than repeated, a restart that resumes without

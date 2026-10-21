@@ -19,6 +19,7 @@ for progress.
 
 import json
 import os
+import sys
 import threading
 import time
 import uuid
@@ -241,10 +242,14 @@ class WorkflowService:
         if session_id is not None and (not isinstance(session_id, str) or not session_id):
             return 400, _error("SESSION_ID_INVALID",
                                "sessionId must be a nonempty string or absent")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
         actor = body.get("actor") or self._actor_for(work_id)
         policy = self._policy()
         try:
-            created = self.runtime.command(actor, "create:" + work_id, work_id,
+            created = self.runtime.command(actor, command_id + ":create", work_id,
                                            "create_work", {"document": document})
         except CommandError as error:
             return 400, _error("DOCUMENT_INVALID", str(error))
@@ -253,7 +258,7 @@ class WorkflowService:
                                                 "The work was not created")
         contract = {"policy_id": policy.id, "policy_version": policy.version,
                     "goal": policy.goal}
-        bound = self.runtime.command(actor, "contract:" + work_id, work_id,
+        bound = self.runtime.command(actor, command_id + ":contract", work_id,
                                      "bind_contract", contract,
                                      self.runtime.get_work(work_id)["state_version"])
         if bound.get("decision") != "accepted":
@@ -266,7 +271,7 @@ class WorkflowService:
                                                   "replan_when")):
             return 400, _error("PLAN_INVALID",
                                "plan requires steps, open_requirements and replan_when lists")
-        revised = self.runtime.command(actor, "plan:" + work_id, work_id,
+        revised = self.runtime.command(actor, command_id + ":plan", work_id,
                                        "revise_plan", plan,
                                        self.runtime.get_work(work_id)["state_version"])
         if revised.get("decision") != "accepted":
@@ -276,7 +281,7 @@ class WorkflowService:
                    "parameters": parameters}
         if session_id is not None:
             payload["session_id"] = session_id
-        receipt = self.engine.command(actor, "bind:" + work_id, work_id,
+        receipt = self.engine.command(actor, command_id + ":bind", work_id,
                                       "bind_workflow", payload,
                                       self.runtime.get_work(work_id)["state_version"],
                                       now=self.now())
@@ -296,18 +301,34 @@ class WorkflowService:
 
     def submit_result(self, work_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         payload = {"node": body.get("node"), "attempt": body.get("attempt"),
-                   "object": body.get("object"), "result": body.get("result")}
+                   "object": body.get("object"), "result": body.get("result"),
+                   "input_digest": body.get("inputDigest")}
         if not isinstance(payload["node"], str) or type(payload["attempt"]) is not int:
             return 400, _error("SUBMISSION_INVALID",
                                "node and attempt are required")
         if not isinstance(payload["result"], dict):
             return 400, _error("SUBMISSION_INVALID", "result must be an object")
+        if not isinstance(payload["input_digest"], str) or not payload["input_digest"]:
+            return 400, _error("SUBMISSION_INVALID",
+                               "inputDigest is required: the candidate is bound "
+                               "to the inputs it was produced from")
         actor = body.get("actor")
         if not isinstance(actor, str) or not actor:
             return 400, _error("ACTOR_REQUIRED", "actor is required")
-        receipt = self.engine.command(actor, body.get("commandId") or uuid.uuid4().hex,
-                                      work_id, "submit_node_result", payload,
-                                      self._version(work_id), now=self.now())
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        receipt = self.engine.command(actor, command_id, work_id, "submit_node_result",
+                                      payload, expected_version, now=self.now())
         if receipt.get("decision") != "accepted":
             return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
                                                 "The candidate was not accepted",
@@ -322,15 +343,20 @@ class WorkflowService:
 
     def decide(self, work_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         node_id = body.get("node")
+        attempt = body.get("attempt")
         decision = body.get("decision")
         digest_value = body.get("digest")
         revision = body.get("revision")
         event_id = body.get("eventId")
+        actor_id = body.get("actorId")
+        items = body.get("items")
         if not isinstance(node_id, str) or not node_id:
             return 400, _error("DECISION_INVALID", "node is required")
-        if decision not in ("approved", "rejected"):
+        if type(attempt) is not int:
+            return 400, _error("DECISION_INVALID", "attempt is required")
+        if decision not in ("approved", "rejected", "request_material"):
             return 400, _error("DECISION_INVALID",
-                               "decision must be approved or rejected")
+                               "decision must be approved, rejected or request_material")
         if not isinstance(digest_value, str) or not digest_value:
             return 400, _error("DECISION_INVALID", "digest is required")
         if type(revision) is not int:
@@ -338,34 +364,57 @@ class WorkflowService:
         if event_id is not None and (not isinstance(event_id, str) or not event_id):
             return 400, _error("DECISION_INVALID",
                                "eventId must be a nonempty string or absent")
+        if not isinstance(actor_id, str) or not actor_id:
+            return 400, _error("ACTOR_ID_REQUIRED",
+                               "actorId is required: the decision names the "
+                               "authenticated actor")
+        if not isinstance(items, list) or not items:
+            return 400, _error("DECISION_INVALID",
+                               "items are required: every declared criterion "
+                               "needs a verdict, a reason and its evidence")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
         work = self.runtime.get_work(work_id)
         kind, authority = self._authority_for(work, node_id)
         if kind is None or authority is None:
             return 404, _error("WORKFLOW_NODE_UNKNOWN", "No such human node")
-        if authority != body.get("authority", authority):
+        if actor_id != authority:
+            # The decision must come from the principal the protected
+            # definition assigned to this node. The ingress source is the
+            # platform channel; it is never the actor.
             return 403, _error("WORKFLOW_AUTHORITY_MISMATCH",
-                               "The decision did not come from the declared authority")
-        current = self._node_subject(work_id, node_id)
+                               "The decision did not come from the assigned authority")
+        node = self._node(work_id, node_id)
+        if node is None:
+            return 404, _error("WORKFLOW_NODE_UNKNOWN", "No such human node")
+        if node.get("attempt") != attempt:
+            return 409, _error("WORKFLOW_ATTEMPT_STALE",
+                               "The decision names another attempt of the node")
+        current = node.get("subject")
         if current is not None and (current["digest"] != digest_value
                                     or current["revision"] != revision):
             return 409, _error("WORKFLOW_DECISION_STALE",
                                "The decision does not cover the current version")
-        data = {"decision": decision, "digest": digest_value, "revision": revision}
-        receipt = self.runtime.command(authority, event_id or uuid.uuid4().hex,
+        data = {"decision": decision, "digest": digest_value, "revision": revision,
+                "node": node_id, "attempt": attempt, "actor": actor_id,
+                "items": items}
+        receipt = self.runtime.command(authority, event_id or command_id,
                                        work_id, "record_evidence",
-                                       {"event_id": event_id or uuid.uuid4().hex,
+                                       {"event_id": event_id or command_id,
                                         "kind": kind, "data": data})
         if receipt.get("decision") != "accepted":
             return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
                                                 "The decision was not recorded")
         self.runtime.verify_pending(work_id)
         self._settle(work_id)
-        node = self._node(work_id, node_id)
-        return 200, {"node": node_id, "outcome": (node or {}).get("outcome"),
-                     "state": (node or {}).get("state"),
-                     "workflowStatus": self.runtime.get_work(work_id).get("workflow_status"),
-                     "currentNode": self.runtime.get_work(work_id).get("workflow_current"),
-                     "resultStateVersion": self.runtime.get_work(work_id)["state_version"]}
+        status, view = self.instance(work_id)
+        view["decision"] = {"node": node_id, "attempt": attempt,
+                            "outcome": (self._node(work_id, node_id) or {}).get("outcome"),
+                            "actorId": actor_id,
+                            "resultStateVersion": self.runtime.get_work(work_id)["state_version"]}
+        return 200, redact(view)
 
     def revise_object(self, work_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         name = body.get("name")
@@ -377,32 +426,72 @@ class WorkflowService:
         actor = body.get("actor")
         if not isinstance(actor, str) or not actor:
             return 400, _error("ACTOR_REQUIRED", "actor is required")
-        receipt = self.engine.command(actor, body.get("commandId") or uuid.uuid4().hex,
-                                      work_id, "revise_object",
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        receipt = self.engine.command(actor, command_id, work_id, "revise_object",
                                       {"name": name, "object": value},
-                                      self._version(work_id), now=self.now())
+                                      expected_version, now=self.now())
         if receipt.get("decision") != "accepted":
             return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
                                                 "The object was not revised")
         self._settle(work_id)
-        return 200, {"decision": "accepted", "object": receipt.get("object"),
-                     "supersededNodes": receipt.get("superseded_nodes"),
-                     "resultStateVersion": receipt.get("result_state_version")}
+        status, view = self.instance(work_id)
+        view["object"] = {"name": name, "object": receipt.get("object"),
+                          "supersededNodes": receipt.get("superseded_nodes"),
+                          "resultStateVersion": receipt.get("result_state_version")}
+        return 200, redact(view)
+
+    def object_revision(self, work_id: str, name: str,
+                        revision: str) -> Tuple[int, Dict[str, Any]]:
+        """The exact stored content of one object revision."""
+        try:
+            number = int(revision)
+        except ValueError:
+            return 400, _error("REVISION_INVALID", "revision must be an integer")
+        with self.runtime._connection() as db:
+            row = db.execute(
+                "SELECT name,revision,digest,body FROM workflow_objects "
+                "WHERE work_id=? AND name=? AND revision=?",
+                (work_id, name, number)).fetchone()
+        if row is None:
+            return 404, _error("WORKFLOW_OBJECT_UNKNOWN", "No such object revision")
+        body = json.loads(row[3])
+        return 200, {"workId": work_id, "name": row[0], "revision": row[1],
+                     "digest": row[2], "object": redact(body)}
 
     def list_intents(self, work_id: str, query: Dict[str, List[str]]) -> Tuple[int, Dict[str, Any]]:
         kind = _first(query, "kind")
         session_id = _first(query, "sessionId")
         status = _first(query, "status")
         limit = _first(query, "limit")
+        work_ids = _first(query, "workIds")
         try:
             limit_value = int(limit) if limit else MAX_LIST_LIMIT
         except ValueError:
             return 400, _error("LIMIT_INVALID", "limit must be an integer")
-        intents = self.engine.intents(kind=kind, session_id=session_id,
-                                       status=status, work_id=work_id,
-                                       limit=limit_value)
-        return 200, {"intents": [redact(_intent_view(intent))
-                                 for intent in intents]}
+        wanted = None
+        if work_ids:
+            wanted = [entry for entry in work_ids.split(",") if entry]
+            if work_id and work_id not in wanted:
+                wanted.append(work_id)
+        if work_id:
+            wanted = [work_id]
+        found = []
+        for identifier in (wanted or [None]):
+            found.extend(self.engine.intents(kind=kind, session_id=session_id,
+                                             status=status, work_id=identifier,
+                                             limit=limit_value))
+        return 200, {"intents": [redact(_intent_view(intent)) for intent in found]}
 
     def acknowledge_intent(self, intent_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         actor = body.get("actor")
@@ -439,6 +528,28 @@ class WorkflowService:
     # -- internals -------------------------------------------------------
     def _version(self, work_id: str) -> int:
         return self.runtime.get_work(work_id)["state_version"]
+
+    @staticmethod
+    def _command_id(body: Dict[str, Any]) -> Optional[str]:
+        """The stable command id of a mutation.
+
+        Every mutation carries one: the id is the client's own idempotency
+        key, so a retry returns the original receipt instead of acting twice.
+        """
+        command_id = body.get("commandId")
+        if not isinstance(command_id, str) or not command_id:
+            return None
+        return command_id
+
+    @staticmethod
+    def _expected_version(body: Dict[str, Any]) -> Optional[int]:
+        """The compare-and-swap version the client observed."""
+        version = body.get("expectedVersion")
+        if version is None:
+            return None
+        if type(version) is not int:
+            raise ValueError("expectedVersion must be an integer")
+        return version
 
     def _node(self, work_id: str, node_id: str) -> Optional[Dict[str, Any]]:
         try:
@@ -598,6 +709,9 @@ class WorkflowRequestHandler(BaseHTTPRequestHandler):
                 return service.decide(work_id, body)
             if method == "POST" and tail == ["objects"]:
                 return service.revise_object(work_id, body)
+            if (method == "GET" and len(tail) == 4 and tail[0] == "objects"
+                    and tail[2] == "revisions"):
+                return service.object_revision(work_id, tail[1], tail[3])
             if method == "POST" and tail == ["advance"]:
                 return service.advance(work_id)
             return 404, _error("ROUTE_UNKNOWN", "No such route")
@@ -620,6 +734,13 @@ class WorkflowHTTPServer(ThreadingHTTPServer):
         super().__init__(address, WorkflowRequestHandler)
         self.service = service
         self.log: List[str] = []
+
+    def handle_error(self, request, client_address):
+        """A client that hangs up is not a server fault."""
+        kind = sys.exc_info()[0]
+        if kind is not None and issubclass(kind, (ConnectionError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
 
 
 class WorkflowTicker:

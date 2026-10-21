@@ -118,6 +118,7 @@ green throughout.
 ## RED/GREEN evidence
 
 | step | RED | GREEN |
+| the second round (the coordinator's corrections) | `test_workflow_authority.py` — 11 tests written first; the first RED run showed 3 failures (a decision without a node/attempt binding still matched, a candidate without an input digest was accepted, a stale input reported the wrong code) | `PYTHONPATH=.:tests python3 -m unittest test_workflow_authority` → 11 tests, OK; the whole suite → 1234 tests, OK (2 skipped) |
 |---|---|---|
 | the definition language | `test_workflow_spec.py` — 31 tests, written before `work_runtime/workflow_spec.py` existed | `python3 -m unittest discover -s tests` → 1163 tests, OK |
 | the engine | `test_workflow_engine.py` — 26 tests; the first RED was `AssertionError: 'rejected' != 'accepted'` because the lint rejected the `authority` node field (`NODE_FIELD_UNKNOWN`), then 4 failures and 3 errors as the authority selection, the change-detection of a routing pass, the decision-selection and the action actor were implemented | `PYTHONPATH=.:tests python3 -m unittest test_workflow_engine` → 26 tests, OK |
@@ -164,6 +165,29 @@ verbatim; the status mapping lives in `work_runtime/workflow_server.py`.
 The durable intent id is `wf:<workId>:<node>:<attempt>:<kind>` and is stable
 across restarts; it is the request id a bridge uses for the original
 session.
+
+## Second round — the coordinator's corrections
+
+The coordinator reviewed the first slice and required corrections before
+the surface could be frozen. They are implemented here; the RED evidence is
+in `tests/test_workflow_authority.py` (11 tests) and in the new mutation
+contract cases of `tests/test_workflow_http.py`.
+
+| correction | implementation | evidence |
+|---|---|---|
+| a decision must bind the node **and** the attempt, so a same-digest approval of an earlier attempt is refused | the decision evidence carries `node` and `attempt`; the lookup matches both | `test_a_same_digest_approval_of_an_earlier_attempt_is_refused` |
+| the **actor** is the asserted principal; the ingress source is not the actor | the decision evidence carries `actor`; the authority check and the separation rules compare the actor | `test_the_actor_of_a_decision_is_not_the_ingress_source` |
+| every declared criterion needs a persisted verdict, a reason and its evidence | a node's `checks` are declarations (`id`, `criterion`, optional `validator`/`validator_version`); the validator's per-criterion report and the decision's `items` are persisted as `checkResults` and returned by the read model | `test_the_check_report_is_persisted_and_readable`, `test_every_declared_criterion_carries_a_verdict` |
+| asynchronous review evidence, not self-certification | unchanged and extended: the candidate's declared criteria are judged by the registered validator, the agent node waits for the review proof, and the decision's items are the human's verdicts | `test_a_review_evidence_is_required_before_an_agent_node_completes` |
+| `REQUEST_MATERIAL` as waiting evidence | a third decision value: the node keeps waiting, no outcome, no rework attempt, the request persisted | `test_a_request_for_more_material_keeps_the_node_waiting` |
+| a candidate binds the current `inputDigest` | the node instance pins the digest of its inputs; a mismatch is `WORKFLOW_INPUT_STALE` | `test_the_input_digest_follows_the_pinned_input` |
+| a stable `commandId` and `expectedVersion` on every mutation | the bridge refuses a mutation without them and passes the caller's version through; it never invents an id or substitutes a version | `test_a_mutation_without_a_command_id_is_refused`, `test_a_result_without_an_expected_version_is_refused`, `test_a_stale_expected_version_is_refused` |
+| the exact content of one object revision is readable | `GET /v1/workflows/instances/{workId}/objects/{name}/revisions/{revision}` | `test_an_object_revision_is_readable` |
+| the global intent listing is scoped | `GET /v1/workflows/intents?workIds=…` | `test_the_global_intent_listing_is_scoped_by_work` |
+| the root instance view is returned | every mutation answers with the instance view | `test_a_mutation_returns_the_root_instance_view` |
+| the protected template carries the criterion text and the validator version | the criterion declaration is part of the definition, and its validator must resolve at publication | `test_the_published_definition_carries_the_criterion_text` |
+| the participant and authority mapping | documented in [docs/workflow-api-contract.md](../../workflow-api-contract.md): GAWR knows a principal per node, the platform maps a node to a workspace role and asserts the actor id, and the core enforces the assigned actor per node and attempt |
+| no exactly-once across systems | the docs now say *stable idempotent effects and unknown-effect reconciliation* |
 
 ## Deviations from the plan, and the open items
 

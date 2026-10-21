@@ -32,6 +32,8 @@ from .runtime import Runtime
 from .workflow import WorkflowEngine
 from .workflow_spec import ValidatorRegistry
 
+CHECK_VERDICTS = ("passed", "failed", "insufficient", "conflict", "not_applicable")
+
 POLICY_ID = "workflow-demo"
 POLICY_VERSION = "demo-1"
 POLICY_GOAL = "workflow.completed"
@@ -71,10 +73,21 @@ class WorkflowDemoPolicy:
         kind = candidate["kind"]
         if kind in ("safety_review", "project_approval", "field_report",
                     "independent_review"):
-            return (set(data) == {"decision", "digest", "revision"}
-                    and data["decision"] in ("approved", "rejected")
+            return (set(data) == {"decision", "digest", "revision", "node",
+                                  "attempt", "actor", "items"}
+                    and data["decision"] in ("approved", "rejected", "request_material")
                     and isinstance(data["digest"], str) and bool(data["digest"])
-                    and type(data["revision"]) is int and data["revision"] >= 1)
+                    and type(data["revision"]) is int and data["revision"] >= 1
+                    and isinstance(data["node"], str) and bool(data["node"])
+                    and type(data["attempt"]) is int and data["attempt"] >= 1
+                    and isinstance(data["actor"], str) and bool(data["actor"])
+                    and isinstance(data["items"], list)
+                    and all(set(item) == {"check", "verdict", "reason", "evidence"}
+                            and isinstance(item["check"], str) and bool(item["check"])
+                            and item["verdict"] in CHECK_VERDICTS
+                            and isinstance(item["reason"], str)
+                            and isinstance(item["evidence"], list)
+                            for item in data["items"]))
         if kind == "agent_review":
             return (set(data) == {"digest", "verdict", "items"}
                     and isinstance(data["digest"], str) and bool(data["digest"])
@@ -203,11 +216,19 @@ def _require_entries(result, key, code):
     return []
 
 
+def _verdicts(node_ref, reason):
+    """A passed verdict for every declared criterion of the node."""
+    return [{"check": check, "verdict": "passed", "reason": reason,
+             "evidence": []} for check in (node_ref.get("checks") or [])]
+
+
 def workflow_demo_validators() -> ValidatorRegistry:
     """Host-registered, version-pinned business validators.
 
     Registering a validator is a host trust decision. The registry never
-    runs anything until both the id and the version resolve.
+    runs anything until both the id and the version resolve. A validator
+    answers with the findings it found and a verdict for every criterion
+    the protected definition declared for the node.
     """
     registry = ValidatorRegistry()
 
@@ -218,7 +239,8 @@ def workflow_demo_validators() -> ValidatorRegistry:
                 findings.append({"code": "INTAKE_UNSOURCED",
                                  "message": "Every extracted record needs a source",
                                  "location": "records[" + str(index) + "]"})
-        return findings
+        return {"findings": findings,
+                "checks": _verdicts(node_ref, "every record names its source")}
 
     def analysis(work, node_ref, result):
         findings = _require_entries(result, "findings", "ANALYSIS_EMPTY")
@@ -227,7 +249,8 @@ def workflow_demo_validators() -> ValidatorRegistry:
                 findings.append({"code": "ANALYSIS_UNCITED",
                                  "message": "Every finding needs a clause reference",
                                  "location": "findings[" + str(index) + "]"})
-        return findings
+        return {"findings": findings,
+                "checks": _verdicts(node_ref, "every finding cites a clause")}
 
     def proposal(work, node_ref, result):
         findings = _require_entries(result, "measures", "PROPOSAL_EMPTY")
@@ -244,15 +267,30 @@ def workflow_demo_validators() -> ValidatorRegistry:
                                  "message": "Measure identifiers must be unique",
                                  "location": "measures[" + str(index) + "]"})
             seen.add(entry.get("measureId"))
-        return findings
+        return {"findings": findings,
+                "checks": _verdicts(node_ref, "every issue has an identified measure")}
 
     def report(work, node_ref, result):
-        return _require_entries(result, "sections", "REPORT_EMPTY")
+        findings = _require_entries(result, "sections", "REPORT_EMPTY")
+        return {"findings": findings,
+                "checks": _verdicts(node_ref, "the report covers the signed record")}
+
+    def review_specification(work, node_ref, result):
+        """The review configuration a human criterion is bound to.
+
+        It judges nothing by itself: the human decision carries the verdict.
+        It exists so the protected definition can pin the review rules'
+        version and fail closed when that version is not loadable.
+        """
+        return {"findings": [], "checks": []}
 
     registry.register("intake", "1", intake)
     registry.register("analysis", "1", analysis)
     registry.register("proposal", "1", proposal)
     registry.register("report", "1", report)
+    for name in ("safety-review", "project-approval", "field-report",
+                 "independent-review"):
+        registry.register(name, "1", review_specification)
     return registry
 
 
@@ -281,44 +319,80 @@ def workflow_demo_template(template_id="inspection-review-delivery",
                                "validation": {"shape": INTAKE_SHAPE,
                                               "validator": "intake",
                                               "validator_version": "1"}},
-                    "checks": ["N01-1"]},
+                    "checks": [{"id": "N01-1",
+                                "criterion": "Every extracted record names the "
+                                            "source it came from.",
+                                "validator": "intake",
+                                "validator_version": "1"}]},
             "n02": {"kind": "agent", "executor": "agent-executor", "max_attempts": 2,
                     "inputs": [{"object": "intake"}],
                     "output": {"object": "analysis",
                                "validation": {"shape": ANALYSIS_SHAPE,
                                               "validator": "analysis",
                                               "validator_version": "1"}},
-                    "checks": ["N02-1"]},
+                    "checks": [{"id": "N02-1",
+                                "criterion": "Every finding cites a clause of "
+                                            "the adopted standard.",
+                                "validator": "analysis",
+                                "validator_version": "1"}]},
             "n03": {"kind": "agent", "executor": "agent-executor", "max_attempts": 2,
                     "inputs": [{"object": "analysis"}],
                     "output": {"object": "proposal",
                                "validation": {"shape": PROPOSAL_SHAPE,
                                               "validator": "proposal",
                                               "validator_version": "1"}},
-                    "checks": ["N03-1"]},
+                    "checks": [{"id": "N03-1",
+                                "criterion": "Every issue has a measure with a "
+                                            "stable identifier.",
+                                "validator": "proposal",
+                                "validator_version": "1"}]},
             "n04": {"kind": "human", "evidence_kind": "safety_review",
                     "authority": "reviewer-a", "subject": {"object": "proposal"},
-                    "on_reject": "n03", "max_attempts": 3, "checks": ["N04-2"]},
+                    "on_reject": "n03", "max_attempts": 3,
+                    "checks": [{"id": "N04-2",
+                                "criterion": "The proposal covers every applicable "
+                                            "requirement and cites its doubt.",
+                                "validator": "safety-review",
+                                "validator_version": "1"}]},
             "n05": {"kind": "human", "evidence_kind": "project_approval",
                     "authority": "reviewer-b", "subject": {"object": "proposal"},
                     "on_reject": "n03", "max_attempts": 3,
-                    "distinct_from": ["n04"], "checks": ["N05-3"]},
+                    "distinct_from": ["n04"],
+                    "checks": [{"id": "N05-3",
+                                "criterion": "The arrangement names a responsible "
+                                            "party, a deadline and its basis.",
+                                "validator": "project-approval",
+                                "validator_version": "1"}]},
             "n06": {"kind": "action", "capability": "work.dispatch",
                     "subject": {"object": "proposal"}},
             "n07": {"kind": "human", "evidence_kind": "field_report",
                     "authority": "responsible-c", "subject": {"object": "proposal"},
-                    "max_attempts": 3, "checks": ["N07-1"]},
+                    "max_attempts": 3,
+                    "checks": [{"id": "N07-1",
+                                "criterion": "Every measure has a result and the "
+                                            "material of this round.",
+                                "validator": "field-report",
+                                "validator_version": "1"}]},
             "n08": {"kind": "human", "evidence_kind": "independent_review",
                     "authority": "reviewer-d", "subject": {"object": "proposal"},
                     "on_reject": "n07", "max_attempts": 3,
-                    "distinct_from": ["n07"], "checks": ["N08-3"]},
+                    "distinct_from": ["n07"],
+                    "checks": [{"id": "N08-3",
+                                "criterion": "Every applicable requirement has an "
+                                            "independent conclusion.",
+                                "validator": "independent-review",
+                                "validator_version": "1"}]},
             "n09": {"kind": "agent", "executor": "agent-executor", "max_attempts": 2,
                     "review": {"evidence_kind": "agent_review"},
                     "output": {"object": "report",
                                "validation": {"shape": REPORT_SHAPE,
                                               "validator": "report",
                                               "validator_version": "1"}},
-                    "checks": ["N09-2"]},
+                    "checks": [{"id": "N09-2",
+                                "criterion": "The report covers the signed record "
+                                            "without changing it.",
+                                "validator": "report",
+                                "validator_version": "1"}]},
             "n10": {"kind": "action", "capability": "work.deliver",
                     "subject": {"object": "report"}},
         },
@@ -447,15 +521,32 @@ def _send(runtime, actor, work_id, kind, payload, command_id=None):
 
 
 def _record_decision(runtime, engine, work_id, kind, source, decision,
-                     digest_value, revision, event_id=None):
+                     digest_value, revision, event_id=None, node=None, attempt=None,
+                     actor=None, items=None):
+    """Record a human decision: the node, the attempt, the actor and the
+    itemized verdict for every criterion the node declared."""
+    if attempt is None and node is not None:
+        attempt = _attempt(engine, work_id, node)
+    if items is None and node is not None:
+        items = _decision_items(node)
+    data = {"decision": decision, "digest": digest_value, "revision": revision,
+            "node": node, "attempt": attempt, "actor": actor or source,
+            "items": items or []}
     receipt = runtime.command(source, event_id or uuid.uuid4().hex, work_id,
                               "record_evidence",
                               {"event_id": event_id or uuid.uuid4().hex, "kind": kind,
-                               "data": {"decision": decision, "digest": digest_value,
-                                        "revision": revision}})
+                               "data": data})
     runtime.verify_pending(work_id)
     engine.advance(work_id, int(__import__("time").time()))
     return receipt
+
+
+def _decision_items(node, verdict="passed", reason="reviewed against the criterion"):
+    template = workflow_demo_template()
+    declaration = (template.get("nodes") or {}).get(node) or {}
+    return [{"check": check["id"], "verdict": verdict, "reason": reason,
+             "evidence": ["proposal#revision-1"]}
+            for check in declaration.get("checks") or []]
 
 
 def _object_reference(runtime, work_id, name):
@@ -510,7 +601,8 @@ def run_workflow_demo(directory=None):
         receipt = engine.command("agent-executor", uuid.uuid4().hex, work_id,
                                  "submit_node_result",
                                  {"node": node, "attempt": attempt, "object": name,
-                                  "result": CANONICAL_RESULTS[name]},
+                                  "result": CANONICAL_RESULTS[name],
+                                  "input_digest": _input_digest(engine, work_id, node)},
                                  _version(runtime, work_id))
         assert receipt["decision"] == "accepted", receipt
     proposal = _object_reference(runtime, work_id, "proposal")
@@ -519,7 +611,8 @@ def run_workflow_demo(directory=None):
 
     # -- N04: the safety reviewer approves --------------------------------
     _record_decision(runtime, engine, work_id, "safety_review", "reviewer-a",
-                     "approved", proposal["digest"], proposal["revision"])
+                     "approved", proposal["digest"], proposal["revision"],
+                     node="n04")
     pending = engine.intents(kind="human_task")
     assert [entry["node"] for entry in pending] == ["n05"], pending
     print(f"3. N04 approved → GAWR created the N05 task {pending[0]['id']} "
@@ -527,7 +620,8 @@ def run_workflow_demo(directory=None):
 
     # -- N05: the project approver approves; the runtime dispatches -------
     _record_decision(runtime, engine, work_id, "project_approval", "reviewer-b",
-                     "approved", proposal["digest"], proposal["revision"])
+                     "approved", proposal["digest"], proposal["revision"],
+                     node="n05")
     operations = _operations(runtime, work_id)
     assert len(operations) == 1, operations
     operation = operations[0]
@@ -558,9 +652,11 @@ def run_workflow_demo(directory=None):
     # -- N07 to N08: the responsible person and the independent reviewer --
     engine.advance(work_id, int(__import__("time").time()))
     _record_decision(runtime, engine, work_id, "field_report", "responsible-c",
-                     "approved", proposal["digest"], proposal["revision"])
+                     "approved", proposal["digest"], proposal["revision"],
+                     node="n07")
     _record_decision(runtime, engine, work_id, "independent_review", "reviewer-d",
-                     "approved", proposal["digest"], proposal["revision"])
+                     "approved", proposal["digest"], proposal["revision"],
+                     node="n08")
     agent_intents = engine.intents(kind="agent_task", status="pending")
     assert len(agent_intents) == 1, agent_intents
     assert agent_intents[0]["session_id"] == session_id, agent_intents
@@ -572,7 +668,8 @@ def run_workflow_demo(directory=None):
     receipt = engine.command("agent-executor", uuid.uuid4().hex, work_id,
                              "submit_node_result",
                              {"node": "n09", "attempt": attempt, "object": "report",
-                              "result": CANONICAL_RESULTS["report"]},
+                              "result": CANONICAL_RESULTS["report"],
+                              "input_digest": _input_digest(engine, work_id, "n09")},
                              _version(runtime, work_id))
     assert receipt["decision"] == "accepted", receipt
     report = _object_reference(runtime, work_id, "report")
@@ -613,6 +710,14 @@ def _attempt(engine, work_id, node):
         if entry["node"] == node:
             return entry["attempt"]
     return 0
+
+
+def _input_digest(engine, work_id, node):
+    """The digest of the inputs the node currently pins."""
+    for entry in engine.instance(work_id)["nodes"]:
+        if entry["node"] == node:
+            return entry.get("inputDigest")
+    return None
 
 
 def _operations(runtime, work_id):

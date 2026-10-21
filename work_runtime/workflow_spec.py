@@ -497,9 +497,12 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
                                      "distinct_from must be a list of node identifiers"))
     if "checks" in node:
         entries = node["checks"]
-        if not isinstance(entries, list) or not all(_is_identifier(entry) for entry in entries):
+        if not isinstance(entries, list):
             findings.append(_finding("SPEC_FIELD_TYPE", path + ".checks",
-                                     "checks must be a list of check identifiers"))
+                                     "checks must be a list of check declarations"))
+        else:
+            for index, entry in enumerate(entries):
+                _lint_check(entry, path + ".checks[" + str(index) + "]", findings)
     if kind == "wait" and "match" in node:
         match = node["match"]
         if not isinstance(match, dict):
@@ -519,6 +522,45 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
             if "node_completed" in match and not _is_identifier(match["node_completed"]):
                 findings.append(_finding("SPEC_FIELD_TYPE", path + ".match.node_completed",
                                          "Wait match node must be an identifier"))
+
+
+def _lint_check(entry: Any, path: str, findings: List[Dict[str, str]]) -> None:
+    """One declared criterion: an identifier, its text and an optional validator.
+
+    The criterion text is part of the protected definition: a binding pins
+    the digest of the definition, so the text a reviewer read is the text
+    that is enforced.
+    """
+    if not isinstance(entry, dict):
+        findings.append(_finding("SPEC_FIELD_TYPE", path,
+                                 "A check declaration must be an object"))
+        return
+    allowed = {"id", "criterion", "validator", "validator_version"}
+    for name in entry:
+        if name not in allowed:
+            findings.append(_finding("SPEC_FIELD_UNKNOWN", path + "." + name,
+                                     "Check declaration field is not supported"))
+    if "id" not in entry:
+        findings.append(_finding("SPEC_FIELD_MISSING", path + ".id",
+                                 "A check declaration requires an identifier"))
+    elif not _is_identifier(entry["id"]):
+        findings.append(_finding("SPEC_FIELD_TYPE", path + ".id",
+                                 "Check identifier must be a nonempty identifier"))
+    if "criterion" not in entry:
+        findings.append(_finding("SPEC_FIELD_MISSING", path + ".criterion",
+                                 "A check declaration requires its criterion text"))
+    elif not _is_text(entry["criterion"]):
+        findings.append(_finding("SPEC_FIELD_TYPE", path + ".criterion",
+                                 "A criterion must be a nonempty string"))
+    if "validator" in entry and not _is_identifier(entry["validator"]):
+        findings.append(_finding("SPEC_FIELD_TYPE", path + ".validator",
+                                 "Validator must be an identifier"))
+    if "validator_version" in entry and not _is_text(entry["validator_version"]):
+        findings.append(_finding("SPEC_FIELD_TYPE", path + ".validator_version",
+                                 "Validator version must be a nonempty string"))
+    if ("validator" in entry) != ("validator_version" in entry):
+        findings.append(_finding("SPEC_FIELD_MISSING", path,
+                                 "A check validator binds an id and a version together"))
 
 
 def _lint_validation(validation: Any, path: str, findings: List[Dict[str, str]]) -> None:
