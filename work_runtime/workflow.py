@@ -3018,7 +3018,7 @@ class WorkflowEngine:
             "attempt": attempt,
             "actor": operation.get("actor"),
             "capability": operation.get("capability"),
-            "contract": {**historical_contract, "source": contract_source},
+            "contract": historical_contract,
             "contractRevision": operation_revision,
             "planRevision": operation.get("plan_revision"),
             "inputDigest": input_digest,
@@ -3030,7 +3030,6 @@ class WorkflowEngine:
             "envelope": {"sessionId": binding.get("session_id"),
                          "participants": binding.get("participants") or {},
                          "parameters": binding.get("parameters") or {},
-                         "owner": work.get("owner"),
                          "runner": instance.get("runner")},
         }
         current = {
@@ -3045,7 +3044,10 @@ class WorkflowEngine:
             "stateVersion": work.get("state_version"),
             "contract": current_contract,
             "contractRevision": contract.get("revision"),
+            "contractProvenance": {"source": contract_source,
+                                   "revision": operation_revision},
             "planRevision": work.get("plan_revision"),
+            "owner": work.get("owner"),
             "cancelled": bool(work.get("cancellation")),
             "cancellation": work.get("cancellation"),
             "task": {"document": work.get("document"),

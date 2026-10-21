@@ -736,14 +736,13 @@ not change when the work moves on. `current` is what may still change.
   "businessKey": "…", "operationId": "…", "workId": "…",
   "node": "n06", "attempt": 1,
   "actor": "coordinator", "capability": "work.dispatch",
-  "contract": {"policyId": "…", "policyVersion": "…", "goal": "…",
-               "revision": 1, "source": "current"},
+  "contract": {"policyId": "…", "policyVersion": "…", "goal": "…", "revision": 1},
   "contractRevision": 1, "planRevision": 1,
   "inputDigest": "…",
   "template": {"id": "…", "version": "…", "digest": "…"},
   "subject": {"name": "proposal", "revision": 1, "digest": "…", "body": {}},
   "envelope": {"sessionId": "…", "participants": {}, "parameters": {},
-               "owner": "coordinator", "runner": "workflow-runner"}
+               "runner": "workflow-runner"}
 },
 "current": {
   "operationStatus": "confirmed_succeeded", "dispatchState": "…",
@@ -751,16 +750,31 @@ not change when the work moves on. `current` is what may still change.
   "nodeState": "completed", "nodeOutcome": "completed", "nodeReason": null,
   "workStatus": "active", "workflowStatus": "active", "stateVersion": 17,
   "contract": {"policyId": "…", "policyVersion": "…", "goal": "…", "revision": 2},
-  "contractRevision": 2, "planRevision": 1,
+  "contractRevision": 2,
+  "contractProvenance": {"source": "ledger", "revision": 1},
+  "planRevision": 1,
+  "owner": "coordinator-2",
   "cancelled": false, "cancellation": null,
   "task": {"document": {}, "documentDigest": "…", "documentRevision": 1}
 }
 ```
 
+Every field of `context` is a fact about the action that does not move.
+Everything that *can* move is in `current`: the operation status, the node
+state, the work's state version, the contract and the plan in force now,
+the owner of the work, the cancellation and the Work's document. The two
+sections are never mixed, and the **complete** `context` of an action that
+already happened is the same before and after a policy migration or an
+owner transfer.
+
 `envelope` is the **original** session/task envelope of the work: the
 session the work was started in, the trusted participant assignment, the
-pinned parameters, the owner and the configured runner. The *bound subject*
-is the frozen material of the operation.
+pinned parameters and the configured runner. The *bound subject* is the
+frozen material of the operation. The **owner of the work** is not there:
+it is mutable — a `transfer_owner` moves it — so it is an observation
+under `current.owner`. The principal that proposed the action stays in
+`context.actor`: it is the actor of the operation, not the owner of the
+work today.
 
 `current.task` is the Work's own document, and it is reported under
 `current` on purpose: `revise_document` may change it, and the Work's
@@ -809,7 +823,9 @@ is still the truth of the action that was proposed under it. So the stable
 context carries the *historical* contract and `current` carries the one in
 force now; the two are different facts and are never merged.
 
-`context.contract.source` says where the historical contract came from:
+`current.contractProvenance.source` says where the historical contract came
+from. It is a fact about *this read*, not about the action, so it lives in
+the observation and never in `context`:
 
 | source | meaning |
 |---|---|
@@ -832,6 +848,13 @@ store, and the read writes no event and moves no state version.
   result; the context only says which action the key belongs to.
 * It does **not** claim an original compare-and-swap, an original task
   document or an original template that the store does not hold.
+* The stable context is the fact of the **stored operation**. A prepared
+  operation that is *re-admitted* — the runtime deliberately re-admits a
+  prepared operation whose dispatch was cancelled or held — is rewritten in
+  place: its actor and its plan and contract revisions become the ones of
+  the re-admission. The proposal-time values are not persisted separately
+  and are therefore never invented; the context reports what the operation
+  says now.
 
 ### The name clash
 

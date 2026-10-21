@@ -859,7 +859,7 @@ existing Work/Evidence/Operation/Wait machinery. The language, the engine and
 the bridge are described in [workflow-runtime.md](workflow-runtime.md); this
 section records what is verified and what is not.
 
-### Workflow matrix (W01–W68)
+### Workflow matrix (W01–W69)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -931,6 +931,7 @@ section records what is verified and what is not.
 | W66 | A cancelled work keeps its context and grants no execution | covered | `test_a_cancelled_work_keeps_its_context_and_grants_no_execution` — the context still resolves, `current.cancelled` is true, the dispatch state is `cancelled` and the business system records no effect |
 | W67 | A migrated contract keeps the historical action readable | covered | `test_a_migrated_contract_keeps_the_historical_action_readable` — after `migrate_policy` the action still resolves with the contract it was proposed under (`context.contract.source` is `ledger`), and the contract in force now is an observation under `current` |
 | W68 | A row that disagrees with its body is refused | covered | `test_an_operation_row_that_disagrees_with_its_body_is_refused`, `test_a_node_row_that_disagrees_with_its_body_is_refused` — `OPERATION_ROW_INCONSISTENT`, `NODE_ROW_INCONSISTENT`; the answer never carries a self-contradictory relation |
+| W69 | The stable context does not move when the work does | covered | `test_the_stable_context_survives_a_migration_and_an_owner_transfer` — after a real `migrate_policy` **and** a real `transfer_owner` the complete `context` of the action is equal to the one captured before; only `current` moves (the contract in force, the owner, the provenance of the historical contract) |
 
 ### Bridge, recovery and demonstration
 

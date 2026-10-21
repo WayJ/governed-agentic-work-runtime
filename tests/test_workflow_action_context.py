@@ -189,7 +189,7 @@ class ActionContextReadTests(DemoFamilyTestCase):
         self.assertEqual(stable["contract"]["policyId"], POLICY_ID)
         self.assertEqual(stable["contract"]["policyVersion"], POLICY_VERSION)
         self.assertEqual(stable["contract"]["revision"], 1)
-        self.assertEqual(stable["contract"]["source"], "current")
+        self.assertNotIn("source", stable["contract"])
         self.assertIs(context["authorizesExecution"], False)
         instance = self.node_instance("n06")
         self.assertEqual(stable["inputDigest"], instance["input_digest"])
@@ -204,14 +204,17 @@ class ActionContextReadTests(DemoFamilyTestCase):
         self.assertEqual(stable["subject"]["digest"], reference["digest"])
         self.assertIn("measures", stable["subject"]["body"])
         self.assertEqual(stable["envelope"]["sessionId"], "session-original")
-        self.assertEqual(stable["envelope"]["owner"], "coordinator")
         self.assertEqual(stable["envelope"]["runner"], "workflow-runner")
+        self.assertNotIn("owner", stable["envelope"])
         # While the effect is in flight the node is still running: the
         # mutable part says so, the stable part does not change.
         self.assertEqual(context["current"]["nodeState"], "running")
         self.assertEqual(context["current"]["operationStatus"], "dispatched")
         self.assertEqual(context["current"]["contractRevision"], 1)
         self.assertEqual(context["current"]["planRevision"], 1)
+        self.assertEqual(context["current"]["owner"], "coordinator")
+        self.assertEqual(context["current"]["contractProvenance"],
+                         {"source": "current", "revision": 1})
         settled = self.engine.action_context(operation["business_key"])
         self.assertEqual(settled["context"], stable)
         self.assertEqual(settled["current"]["nodeState"], "completed")
@@ -464,20 +467,33 @@ class ContractMigrationTests(DemoFamilyTestCase):
     def build_runtime(self):
         grants = demo_grants()
         grants["platform-admin"] = {"work.intervene"}
+        grants["coordinator-2"] = {"work.manage"}
         return Runtime(self.path, DemoPolicy(), grants,
                        policies={"demo-2": MigratedPolicy()})
 
-    def test_a_migrated_contract_keeps_the_historical_action_readable(self):
-        self.drive_to_dispatch()
-        operation = self.operation()
-        self.engine.pump(self.adapter, 1000)
-        self.assertEqual(self.operation()["status"], "confirmed_succeeded")
+    def migrate(self):
         receipt = self.runtime.command(
             "platform-admin", uuid.uuid4().hex, self.work_id, "migrate_policy",
             {"policy_id": POLICY_ID, "policy_version": "demo-2",
              "reason": "the family published a new policy version"},
             version_of(self.runtime, self.work_id))
         self.assertEqual(receipt["decision"], "accepted", receipt)
+        return receipt
+
+    def transfer_owner(self):
+        receipt = self.runtime.command(
+            "coordinator", uuid.uuid4().hex, self.work_id, "transfer_owner",
+            {"owner": "coordinator-2", "reason": "the work has a new owner"},
+            version_of(self.runtime, self.work_id))
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        return receipt
+
+    def test_a_migrated_contract_keeps_the_historical_action_readable(self):
+        self.drive_to_dispatch()
+        operation = self.operation()
+        self.engine.pump(self.adapter, 1000)
+        self.assertEqual(self.operation()["status"], "confirmed_succeeded")
+        receipt = self.migrate()
         self.assertEqual(receipt["contract_revision"], 2)
         # The action was proposed under the first contract; the work now
         # runs under the second one.
@@ -488,7 +504,6 @@ class ContractMigrationTests(DemoFamilyTestCase):
         self.assertEqual(stable["contract"]["revision"], 1)
         self.assertEqual(stable["contract"]["policyId"], POLICY_ID)
         self.assertEqual(stable["contract"]["policyVersion"], POLICY_VERSION)
-        self.assertEqual(stable["contract"]["source"], "ledger")
         self.assertEqual(stable["node"], "n06")
         self.assertEqual(stable["subject"]["digest"],
                          self.proposal_reference()["digest"])
@@ -496,6 +511,40 @@ class ContractMigrationTests(DemoFamilyTestCase):
         self.assertEqual(context["current"]["contractRevision"], 2)
         self.assertEqual(context["current"]["contract"]["policyVersion"], "demo-2")
         self.assertEqual(context["current"]["contract"]["revision"], 2)
+        # Where the historical contract was recovered from is an observation
+        # of this read, never a part of the stable facts.
+        self.assertEqual(context["current"]["contractProvenance"]["source"], "ledger")
+        self.assertEqual(context["current"]["contractProvenance"]["revision"], 1)
+
+    def test_the_stable_context_survives_a_migration_and_an_owner_transfer(self):
+        """The whole stable context is the same before and after.
+
+        A migration moves the work to a new contract and a transfer moves
+        it to a new owner. Neither may change a single field of the stable
+        context of an action that already happened.
+        """
+        self.drive_to_dispatch()
+        operation = self.operation()
+        self.engine.pump(self.adapter, 1000)
+        self.assertEqual(self.operation()["status"], "confirmed_succeeded")
+        before = self.engine.action_context(operation["business_key"])
+        self.assertTrue(before["present"], before)
+        stable_before = before["context"]
+
+        self.migrate()
+        self.transfer_owner()
+
+        after = self.engine.action_context(operation["business_key"])
+        self.assertTrue(after["present"], after)
+        # The complete ledger of the stable context: not one field moves.
+        self.assertEqual(after["context"], stable_before)
+        # The observations do move, and they are the only thing that does.
+        self.assertEqual(after["current"]["contractRevision"], 2)
+        self.assertEqual(after["current"]["contract"]["policyVersion"], "demo-2")
+        self.assertEqual(after["current"]["owner"], "coordinator-2")
+        self.assertEqual(after["current"]["contractProvenance"]["source"], "ledger")
+        self.assertNotEqual(after["current"], before["current"])
+        self.assertIs(after["authorizesExecution"], False)
 
 
 # --------------------------------------------------------------------------

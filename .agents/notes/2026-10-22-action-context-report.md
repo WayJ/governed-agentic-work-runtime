@@ -11,6 +11,7 @@ Commits (development branch only — nothing was merged or pushed):
 | `87de33d` | `feat: the native action context of an automatic action` — the API and its tests |
 | `1e8b9c4` | `docs: the worker report of the native action context` |
 | `4f89df5` | `fix: the action context is named, historical and self-consistent` — the three items of the coordinator's review |
+| see below | `fix: the stable context does not move when the work does` — the two drifts of the follow-up dispatch |
 
 ## What was built
 
@@ -199,3 +200,90 @@ store is what they are about.
    `present` cannot mistake a refusal for a context: the `context` and
    `current` keys exist only when `present` is true, and every answer says
    `authorizesExecution: false`.
+
+---
+
+# Follow-up dispatch — the stable context correction
+
+Task: `task_8e0f459eb1b6`, dispatch `ctx_827fecda5092`. The follow-up of
+`task_694a38d13eed`.
+
+## The two drifts, reproduced first
+
+Both were reproduced against the committed code, with a real migration and
+a real owner transfer on a really executed action:
+
+| drift | before | after | why it drifted |
+|---|---|---|---|
+| `context.contract.source` | `"current"` | `"ledger"` | the provenance of the *recovery* was stored inside the stable contract, and the recovery path itself depends on whether the work has been migrated |
+| `context.envelope.owner` | `"coordinator"` | `"coordinator-2"` | `envelope.owner` read the mutable `work.owner`, and a `transfer_owner` moves it |
+
+RED, before the fix:
+
+```
+test_a_migrated_contract_keeps_the_historical_action_readable ... ERROR
+    KeyError: 'contractProvenance'
+test_the_stable_context_survives_a_migration_and_an_owner_transfer ... FAIL
+    AssertionError: {… 'source': 'ledger'} != {… 'source': 'current'}
+```
+
+The exact drift, printed field by field:
+
+```
+DRIFT context.contract -> {… "revision": 1, "source": "current"}
+                      => {… "revision": 1, "source": "ledger"}
+DRIFT context.envelope -> {… "owner": "coordinator" …}
+                      => {… "owner": "coordinator-2" …}
+```
+
+## The fix — exactly two fields moved
+
+| moved out of `context` | moved into `current` |
+|---|---|
+| `context.contract.source` — how the historical contract was *retrieved* | `current.contractProvenance` = `{"source": "current" \| "ledger" \| "unknown", "revision": <the historical revision>}` |
+| `context.envelope.owner` — the mutable owner of the work | `current.owner` — the owner of the work now |
+
+Nothing else moved. `context.actor` (the actor of the operation) stays in
+the stable context, `context.contract` keeps the immutable identity of the
+contract the action was proposed under (`policyId`, `policyVersion`,
+`goal`, `revision`), and `current.contract` keeps the contract in force
+now. `authorizesExecution: false` is on every answer.
+
+## The test that holds the line
+
+`test_the_stable_context_survives_a_migration_and_an_owner_transfer`
+(`tests/test_workflow_action_context.py`) captures the **complete** context
+of a successful action, then runs a real `migrate_policy` **and** a real
+`transfer_owner`, and asserts:
+
+* `after["context"] == before["context"]` — the entire stable context, not
+  one field of it;
+* the observations do move: `current.contractRevision` is 2,
+  `current.contract.policyVersion` is `"demo-2"`, `current.owner` is
+  `"coordinator-2"`, `current.contractProvenance.source` is `"ledger"`;
+* `after["current"] != before["current"]`;
+* `after["authorizesExecution"]` is still false.
+
+GREEN: `PYTHONPATH=.:tests python3 -m unittest test_workflow_action_context`
+→ **20 tests, OK**.
+
+## One residual drift, disclosed and NOT fixed in this slice
+
+The stable context is the fact of the **stored operation**, and the
+operation body is not immutable: when a prepared operation whose dispatch
+was cancelled or held is **re-admitted**, the runtime rewrites it in place
+(`actor`, `plan_revision`, `contract_revision`). The proposal-time values
+are not persisted separately, so they cannot be recovered — and inventing
+them is exactly what the brief forbids.
+
+Reachable path, verified in this session: revise the plan (the prepared
+operation is cancelled as `STALE_INTENT`), then propose the same object
+binding again — the operation is re-admitted and `context.planRevision`
+moves from 1 to 2 (and `context.actor` would move with it if another
+principal re-proposed it).
+
+This is **out of scope** for the two named drifts and was therefore left
+alone; it is now stated in [workflow-runtime.md](../../docs/workflow-runtime.md)
+under *What the context is not*. The coordinator should decide whether the
+next slice refuses a re-admitted operation or records the proposal-time
+actor and revisions when the operation is created.
