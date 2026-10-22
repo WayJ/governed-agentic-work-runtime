@@ -1786,6 +1786,85 @@ class WorkflowEngine:
                             {"outcome": "completed", "producer": producer})
         return True
 
+    def _pinned_references(self, instance) -> List[Tuple[str, Dict[str, Any]]]:
+        """The references this node attempt pinned, in a stable order.
+
+        The inputs come first, in the order the node pinned them, and the
+        subject last. A malformed reference is a corrupt instance, never an
+        absent one: it is reported, never skipped.
+        """
+        references: List[Tuple[str, Dict[str, Any]]] = []
+        for entry in instance.get("inputs") or []:
+            if not isinstance(entry, dict):
+                raise WorkflowError("A pinned input of the node is not an object")
+            references.append(("input", entry))
+        subject = instance.get("subject")
+        if subject is not None:
+            if not isinstance(subject, dict):
+                raise WorkflowError("The pinned subject of the node is not an object")
+            references.append(("subject", subject))
+        return references
+
+    def _node_materials(self, db, work, instance) -> List[Dict[str, Any]]:
+        """The exact material this node attempt pinned.
+
+        The entries are resolved from the instance's own references - the
+        inputs it pinned and the subject it decided on - and never from the
+        latest revision of an object: a node judges the material it was
+        given. Every entry carries the exact stored object, verified
+        against the digest its reference names. A missing or corrupt
+        reference fails closed: the list is never partial, never truncated
+        and never silently shortened.
+        """
+        materials: List[Dict[str, Any]] = []
+        for role, reference in self._pinned_references(instance):
+            name = reference.get("name")
+            revision = reference.get("revision")
+            expected = reference.get("digest")
+            if not isinstance(name, str) or not name:
+                raise WorkflowError("A pinned " + role + " of the node names "
+                                    "no object")
+            if type(revision) is not int:
+                raise WorkflowError("The pinned " + role + " of the node names "
+                                    "no revision: " + name)
+            if not isinstance(expected, str) or not expected:
+                raise WorkflowError("The pinned " + role + " of the node names "
+                                    "no digest: " + name)
+            row = self._object_at(db, work["id"], name, revision)
+            if row is None:
+                raise WorkflowError("The pinned " + role + " object is not in "
+                                    "the store: " + name + "#" + str(revision))
+            if row["digest"] != expected:
+                raise WorkflowError("The pinned " + role + " object does not "
+                                    "match its reference: " + name + "#"
+                                    + str(revision))
+            try:
+                body = json.loads(row["body"])
+            except ValueError:
+                raise WorkflowError("The stored " + role + " object is not "
+                                    "readable: " + name + "#" + str(revision))
+            if digest(body) != row["digest"]:
+                raise WorkflowError("The stored " + role + " object does not "
+                                    "match its digest: " + name + "#"
+                                    + str(revision))
+            materials.append({"role": role,
+                              "reference": {"name": name, "revision": revision,
+                                            "digest": expected},
+                              "object": copy.deepcopy(body)})
+        return materials
+
+    def _output_validator_call(self, db, work, instance, node_ref, material,
+                                validator):
+        """Call an output validator with the material this attempt pinned.
+
+        The work is an isolated copy and the materials are deep copies: a
+        validator that changes what it is given cannot change the stored
+        work, the stored instance or a stored object.
+        """
+        context = dict(node_ref)
+        context["materials"] = self._node_materials(db, work, instance)
+        return validator(copy.deepcopy(work), context, material)
+
     def _judge_material(self, work, node_id, instance, name, row, validation,
                         role):
         """Judge one declared material: its shape and its pinned validator.
@@ -1839,8 +1918,8 @@ class WorkflowEngine:
                   "verdict": "failed" if raw_findings else "passed"}
         return findings, report
 
-    def _validate_output_material(self, work, node_id, node, instance, material,
-                                  role, capability=None):
+    def _validate_output_material(self, db, work, node_id, node, instance,
+                                  material, role, capability=None):
         """Judge a material against the node's declared output.
 
         Returns the findings and the per-criterion report. The material is
@@ -1873,9 +1952,11 @@ class WorkflowEngine:
             return findings, check_report
         check_ids = [declaration["id"] for declaration in declarations
                      if declaration.get("method") in (None, "PROGRAM")]
-        reported = validator(work, {"node": node_id, "attempt": instance["attempt"],
-                                    "checks": check_ids, "role": role,
-                                    "capability": capability}, material)
+        reported = self._output_validator_call(
+            db, work, instance,
+            {"node": node_id, "attempt": instance["attempt"],
+             "checks": check_ids, "role": role, "capability": capability},
+            material, validator)
         raw_findings, raw_checks = self._split_validator_report(reported)
         for problem in raw_findings:
             findings.append(_finding(problem.get("code", "VALIDATOR_REJECTED"),
@@ -2003,7 +2084,7 @@ class WorkflowEngine:
         check_report = []
         if payload is not None:
             problems, check_report = self._validate_output_material(
-                work, node_id, node, instance, payload, "output",
+                db, work, node_id, node, instance, payload, "output",
                 operation["capability"])
             findings.extend(problems)
         if findings:
@@ -2245,7 +2326,7 @@ class WorkflowEngine:
                                      "The matched evidence carries no payload"))
             payload = {}
         problems, check_report = self._validate_output_material(
-            work, node_id, node, instance, payload, "output")
+            db, work, node_id, node, instance, payload, "output")
         findings.extend(problems)
         if findings:
             instance["findings"] = _bounded(findings)
@@ -2403,8 +2484,10 @@ class WorkflowEngine:
             check_ids = [declaration["id"]
                          for declaration in self._check_declarations(node)
                          if declaration.get("method") in (None, "PROGRAM")]
-            reported = validator(work, {"node": node_id, "attempt": attempt,
-                                        "checks": check_ids}, result)
+            reported = self._output_validator_call(
+                db, work, instance,
+                {"node": node_id, "attempt": attempt, "checks": check_ids},
+                result, validator)
             raw_findings, raw_checks = self._split_validator_report(reported)
             for problem in raw_findings:
                 findings.append(_finding(problem.get("code", "VALIDATOR_REJECTED"),
@@ -2647,7 +2730,7 @@ class WorkflowEngine:
                                 {"actor": actor})
             return
         findings, check_report = self._validate_output_material(
-            work, node_id, node, instance, result, "decision")
+            db, work, node_id, node, instance, result, "decision")
         validation = output.get("validation") or {}
         if findings:
             instance["output_findings"] = _bounded(findings)

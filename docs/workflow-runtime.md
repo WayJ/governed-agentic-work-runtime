@@ -122,6 +122,57 @@ executes anything and neither accepts user code.
   validator. An unknown id *or* an unknown version fails closed at
   publication and again at binding.
 
+#### The material an output validator is given
+
+A shape proves the *form* of a material. It cannot prove that the material
+covers the input it was produced from: whether every identifier of the
+pinned input appears, exactly once, in the output. That comparison needs
+the input itself, so an **output** validator receives it.
+
+The context (`node_ref`) gains one additive key, `materials`:
+
+```json
+[{"role": "input", "reference": {"name": "intake", "revision": 1,
+                                  "digest": "…"},
+  "object": {"records": [], "standard": "STD-1"}},
+ {"role": "subject", "reference": {"name": "proposal", "revision": 2,
+                                   "digest": "…"},
+  "object": {"measures": []}}]
+```
+
+* `role` is `input` for a declared input and `subject` for the subject the
+  node decides on.
+* `reference` is the exact revision and digest the attempt pinned.
+* `object` is the **exact stored object** of that revision, in full.
+
+The rules the engine keeps:
+
+* The entries are resolved from the **attempt's own references** — the
+  inputs it pinned and the subject it holds — and never from the latest
+  revision of an object. A node judges the material it was given.
+* They are read in the **same transaction** as the judgement, and each
+  stored body is verified against the digest its reference names. A missing
+  or corrupt reference fails closed (`WorkflowError`): the list is never
+  partial, never truncated and never silently shortened.
+* The order is fixed: the inputs in the order the node pinned them, then
+  the subject.
+* The work the callback receives is an **isolated copy** and the materials
+  are **deep copies**: a validator that changes what it is given cannot
+  change the stored work, the stored instance or a stored object.
+* The four output-producing kinds receive it: the agent candidate, the
+  human record, the automatic output and the waited material. The input
+  admission path keeps its current context.
+* The context is **not** exposed in the HTTP read models; it never leaves
+  the callback.
+
+**The limits.** One entry per pinned input plus one for the subject, so at
+most one entry per declared input of the node plus one. The `object` is
+the full stored body: the engine never truncates it, so a node with large
+inputs hands a large context to its validator — the host that registers
+the validator decides what it accepts. The context is rebuilt for every
+output judgement, so a validator that keeps a reference to it must copy
+what it wants to keep.
+
 ### Predicates
 
 Routing edges may carry a `when` predicate. The evaluator is three-valued:

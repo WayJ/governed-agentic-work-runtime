@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W100)
+### Workflow matrix (W01–W109)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -960,6 +960,15 @@ are byte-unchanged by that slice; the boundary rows are in
 | W87 | Late evidence and late revocation cannot reopen an accepted workflow | covered | `test_a_late_proof_cannot_reopen_the_accepted_workflow`, `test_a_revocation_cannot_reopen_the_accepted_workflow` — the proof is admitted by the runtime's own correction rule, the snapshot does not change, the workflow is not routed again and no effect is produced |
 | W88 | The acceptance and a competing mutation do not both win | covered | `test_the_acceptance_and_a_mutation_do_not_both_win` — two threads, one version: exactly one command is accepted, the other is `STATE_VERSION_CONFLICT` |
 | W89 | The bridge exposes the acceptance and the immutable completion read | covered | `HttpFinalizationTests` — `POST /v1/workflows/instances/{workId}/finalize` answers the instance view and the snapshot; `GET /v1/workflows/instances/{workId}/completion` answers the same snapshot every time; a stale version is `409`, a foreign actor is `403` |
+| W101 | An output validator receives the material the attempt pinned | covered | `tests/test_workflow_materials.py` — `CoverageValidationTests`: the agent candidate is judged against the pinned input; an unknown, a missing and a duplicated identifier are each refused with the validator's own code |
+| W102 | The material is the pinned revision, never the latest | covered | `test_the_materials_are_the_pinned_revision_not_the_latest`, `test_a_candidate_covering_the_latest_revision_is_refused` — a newer revision in the store does not change what the attempt pinned |
+| W103 | Every output-producing kind hands over the material | covered | `MaterialsPerKindTests` — the agent candidate, the human record, the automatic output and the waited material each receive the pinned input (and the subject where the node declares one) |
+| W109 | A node that pins no input compares against its protected subject | covered | `SubjectCoverageTests` — the material carries the subject the node decided on, and a record that does not cover it is refused while the decision itself is never lost |
+| W104 | A refused automatic output keeps the real effect | covered | `test_a_rejected_automatic_output_keeps_the_effect` — the effect stays `succeeded`, the node fails with `WORKFLOW_OUTPUT_INVALID`, and no second effect is produced |
+| W105 | A validator cannot change the stored material | covered | `test_a_mutating_validator_cannot_change_the_stored_material` — the stored object, the stored document and the stored requirements are unchanged |
+| W106 | A missing or corrupt pinned object fails closed | covered | `test_a_missing_pinned_object_fails_closed`, `test_a_corrupt_pinned_object_fails_closed` — a specific `WorkflowError`, nothing stored, the node does not complete |
+| W107 | The material survives a restart | covered | `test_the_materials_survive_a_restart` — the settlement after a restart resolves the same pinned material |
+| W108 | An existing validator without the new key still works | covered | `test_an_existing_validator_without_the_materials_still_works` — a validator that ignores the context is unaffected |
 | W94 | The generic completion cannot close an unfinalized workflow | covered | `GenericCompletionGuardTests` — an active workflow and a finished but unfinalized workflow are both refused `WORKFLOW_ACCEPTANCE_REQUIRED`; a bare `Runtime` over the same store, with no engine in the process, refuses it too; the refusal is a stored receipt |
 | W95 | An ordinary work still completes the generic way | covered | `test_an_ordinary_work_still_completes_the_generic_way` — a work without a workflow closes `succeeded` with its completion record |
 | W96 | The generic completion stays refused after the acceptance | covered | `test_the_generic_completion_stays_refused_after_the_acceptance` — `WORK_NOT_ACTIONABLE`, one finalization, one `WorkflowFinalized` event |
