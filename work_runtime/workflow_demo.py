@@ -39,6 +39,12 @@ POLICY_VERSION = "demo-1"
 POLICY_GOAL = "workflow.completed"
 
 
+# The trusted platform runner of this family. It is a principal in the
+# grants map, exactly like the other principals: trusted local
+# configuration, not authentication.
+RUNNER = "workflow-runner"
+
+
 class WorkflowDemoPolicy:
     """A generic demonstration family: one work envelope plus typed evidence.
 
@@ -145,6 +151,9 @@ def workflow_demo_grants() -> Dict[str, set]:
     """Trusted-local principals. Configuration, not authentication."""
     return {
         "coordinator": {"work.manage", "work.dispatch", "work.deliver"},
+        # The trusted platform runner: the only principal that may accept a
+        # successful workflow and freeze it.
+        RUNNER: {"workflow.finalize"},
         "agent-executor": {"workflow.execute"},
         "reviewer-a": {"evidence.write"},
         "reviewer-b": {"evidence.write"},
@@ -751,7 +760,7 @@ CANONICAL_RESULTS = {
 
 def build_demo_runtime(path: str, adapter=None) -> Tuple[Runtime, WorkflowEngine]:
     runtime = Runtime(path, WorkflowDemoPolicy(), workflow_demo_grants())
-    engine = WorkflowEngine(runtime, workflow_demo_validators())
+    engine = WorkflowEngine(runtime, workflow_demo_validators(), runner=RUNNER)
     return runtime, engine
 
 
@@ -984,6 +993,34 @@ def run_workflow_demo(directory=None):
     print(f"10. N10 delivery receipt validated → external effects {counted} "
           f"(one dispatch, one delivery); workflow {view['workflowStatus']}",
           flush=True)
+
+    # -- the acceptance: the runner freezes the successful workflow --------
+    receipt = engine.command(RUNNER, "final-1", work_id,
+                              "finalize_workflow_success", {},
+                              _version(runtime, work_id))
+    assert receipt["decision"] == "accepted", receipt
+    finalization = receipt["finalization"]
+    assert finalization["terminal"]["outcome"] == "completed", finalization
+    assert finalization["finalizedBy"] == RUNNER, finalization
+    # The completion read answers the same snapshot, every time.
+    assert engine.finalization(work_id) == finalization
+    # Nothing may change an accepted workflow: the manager's revision and
+    # the runner's second acceptance are both refused.
+    refused = engine.command("coordinator", "object-after-final", work_id,
+                              "revise_object",
+                              {"name": "proposal", "object": {"measures": []}},
+                              _version(runtime, work_id))
+    assert refused["decision"] == "rejected", refused
+    again = engine.command(RUNNER, "final-2", work_id,
+                            "finalize_workflow_success", {},
+                            _version(runtime, work_id))
+    assert again["decision"] == "rejected", again
+    print(f"11. The trusted runner accepted the successful workflow and froze it "
+          f"(finalization {finalization['finalizationId'][:12]}…, terminal "
+          f"{finalization['terminal']['node']}, snapshot digest "
+          f"{finalization['digest'][:12]}…); a later revision is refused "
+          f"({refused['code']}) and a second acceptance creates no second "
+          f"finalization ({again['code']})", flush=True)
 
     # -- the counts are read back independently ----------------------------
     effects = DemoBusinessSystem(str(effects_path)).effects()

@@ -256,6 +256,14 @@ dispatch, one delivery. An executor can never approve, a candidate is
 accepted only by the registered, version-pinned validator, and a stale
 decision never satisfies a node.
 
+The last chapter is the acceptance: the trusted runner accepts the
+finished workflow, the exact final snapshot of what was accepted is frozen
+— the template digest, the contract and plan revisions, the document and
+object revisions, every node attempt with its judgment, every effect and
+every obligation — and a later revision of the material is refused, because
+an accepted workflow is frozen. A platform closes its task on that
+acceptance, never on the mutable "finished" read.
+
 Every automatic, human and wait node is quality controlled too: the receipt
 the external system really returned is kept with its origin, the business
 payload in it is judged by the declared, version-pinned validator, and only

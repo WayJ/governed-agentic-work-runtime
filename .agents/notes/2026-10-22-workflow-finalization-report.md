@@ -9,7 +9,8 @@ Branch `WayJ/gawr-mixed-node-design`, baseline `457e3be`.
 |---|---|---|
 | F1 | `work_runtime/workflow.py` — the command `finalize_workflow_success`, its gate, the frozen final snapshot and the freeze of the routing pass | shipped |
 | F2 | `work_runtime/workflow_server.py` — `POST /v1/workflows/instances/{workId}/finalize` and the immutable `GET /v1/workflows/instances/{workId}/completion` | shipped |
-| F3 | `tests/test_workflow_finalization.py` — 22 tests, written before the implementation | shipped |
+| F3 | `tests/test_workflow_finalization.py` — 24 tests, written before the implementation | shipped |
+| F3b | `work_runtime/workflow_demo.py` — the acceptance as the demonstration's last chapter | shipped |
 | F4 | docs — `docs/workflow-runtime.md` (§12), `docs/workflow-api-contract.md`, `docs/runtime-boundaries.md`, `docs/verification.md` (W79–W91) | shipped |
 
 ## The behaviour, in one paragraph each
@@ -26,7 +27,9 @@ closed (`WORKFLOW_RUNNER_UNCONFIGURED`).
 
 **The gate verifies before it freezes.** Under one transaction it checks:
 a bound workflow whose definition still resolves; no cancellation; a
-recorded terminal with no current node; a terminal outcome of `completed`;
+recorded terminal with no current node; a terminal node that **completed**
+with a successful verdict (`completed` for an automatic node, `approved` for
+a human one);
 a terminal the published definition declares; every effect settled (no
 prepared, dispatched or unknown operation); every obligation settled; every
 node settled and completed; every declared quality `validated`; every
@@ -62,6 +65,23 @@ instances are not re-settled. The work's state version may still move; the
 **accepted workflow proof** does not, and `snapshot.evidence` is the
 verified set at the moment of the acceptance and never grows.
 
+## What the demonstration shows
+
+The demonstration (`python3 -m work_runtime workflow-demo`) ends with the
+acceptance: the trusted runner accepts the finished workflow, the exact
+final snapshot is frozen, and the demo shows the two consequences — a later
+revision of the material is refused and a second acceptance with a new
+command key creates no second finalization.
+
+The demo also corrected the acceptance itself: a human node that approves
+completes with the verdict of its kind (`approved`), not with the
+`completed` of an automatic node. The acceptance therefore reads the
+**state** of the terminal node and requires a successful verdict
+(`completed` or `approved`); a rejected, failed, expired or cancelled
+terminal is refused. The first version of the gate compared the outcome
+with `completed` and refused the demonstration's own successful workflow —
+the demo caught it, and the fix is covered by `HumanTerminalTests`.
+
 ## The disclosed engine change
 
 A **finished workflow is not routed again.** The routing pass used to walk
@@ -78,14 +98,14 @@ recorded in `docs/runtime-boundaries.md` and in the W-matrix.
 
 | step | RED | GREEN |
 |---|---|---|
-| the new tests | `tests/test_workflow_finalization.py` (22 tests) run against the pre-change core (`git checkout -- work_runtime/workflow.py work_runtime/workflow_server.py`): **19 of 20 failed** — the command was `COMMAND_UNSUPPORTED`, the routes did not exist, and the finished workflow had already been re-opened | `PYTHONPATH=.:tests python3 -m unittest test_workflow_finalization` → **22 tests, OK** |
+| the new tests | `tests/test_workflow_finalization.py` (24 tests) run against the pre-change core (`git show 457e3be:work_runtime/workflow.py`): **23 of 24 failed** — the command was `COMMAND_UNSUPPORTED`, the routes did not exist, and the finished workflow had already been re-opened | `PYTHONPATH=.:tests python3 -m unittest test_workflow_finalization` → **24 tests, OK** |
 | the workflow suites | — | `PYTHONPATH=.:tests python3 -m unittest test_workflow_engine test_workflow_http test_workflow_recovery test_workflow_review test_workflow_effect_policy test_workflow_node_quality test_workflow_action_context test_workflow_authority test_workflow_participants test_workflow_create_resume test_workflow_demo` → **224 tests, OK** |
-| the whole suite | — | `python3 -m unittest discover -s tests` → **1409 tests, OK (skipped=2)** |
+| the whole suite | — | `python3 -m unittest discover -s tests` → **1411 tests, OK (skipped=2)** |
 
 The gates at the end of the slice:
 
 ```
-python3 -m unittest discover -s tests            →  1409 tests, OK (skipped=2)
+python3 -m unittest discover -s tests            →  1411 tests, OK (skipped=2)
 python3 -m compileall -q work_runtime tests scripts   →  clean
 python3 scripts/check_docs.py                    →  127 markdown files, 682 local links, 0 broken
 python3 scripts/check_site.py                    →  2 pages, 0 findings

@@ -726,6 +726,12 @@ is one dispatch and one delivery. The order the dispatch receipt produced is
 the object N07 and N08 judge, and the wait accepts only the proof of the
 attempt that produced it.
 
+The last chapter is the **acceptance**: the trusted runner accepts the
+finished workflow, the exact final snapshot is frozen, and the demo shows
+the two things that follow — a later revision of the material is refused,
+and a second acceptance with a new command key creates no second
+finalization.
+
 The scenario is data: `work_runtime/workflow_demo.py` holds a demonstration
 *family* (policy, validators, template, stand-in system). Replacing it with
 another family does not touch the engine.
@@ -972,12 +978,12 @@ refusal names what is *not* settled, and none of them writes anything:
 | a bound workflow whose published definition still resolves | `WORKFLOW_NOT_BOUND`, `WORKFLOW_TEMPLATE_UNKNOWN` |
 | a work that is not being cancelled | `WORKFLOW_CANCELLED` |
 | a recorded terminal: the routing stopped, no node is current | `WORKFLOW_NOT_FINISHED` |
-| a terminal whose outcome is `completed` — never failed, expired, cancelled, rejected or output-invalid | `WORKFLOW_TERMINAL_NOT_COMPLETED` |
+| a terminal node that **completed** with a successful verdict — `completed` for an automatic node, `approved` for a human one; never failed, expired, cancelled, rejected or output-invalid | `WORKFLOW_TERMINAL_NOT_COMPLETED` |
 | a terminal the published definition declares | `WORKFLOW_TERMINAL_NOT_DECLARED` |
 | every effect settled: no prepared, dispatched or unknown operation | `WORKFLOW_EFFECT_UNRESOLVED` |
 | every obligation settled: nothing unknown, in conflict, applicable and unsatisfied | `WORKFLOW_REQUIREMENT_UNSATISFIED` |
 | every node settled: no running, blocked or submitted instance | `WORKFLOW_NODE_UNSETTLED` |
-| every node completed: no failed, expired or cancelled attempt | `WORKFLOW_NODE_NOT_COMPLETED` |
+| every node completed with a successful verdict: no failed, expired, cancelled or rejected attempt | `WORKFLOW_NODE_NOT_COMPLETED` |
 | every declared quality validated — a rejected or missing quality is not a pass | `WORKFLOW_QUALITY_UNSETTLED` |
 | every required criterion passed, including the definition's `required_checks` | `WORKFLOW_CHECK_UNSATISFIED` |
 | no durable intent left pending | `WORKFLOW_INTENT_UNSETTLED` |
@@ -1001,7 +1007,8 @@ identities the acceptance rests on:
 ```json
 {"finalizationId": "…", "workId": "W-1", "finalizedBy": "workflow-runner",
  "finalizedAt": 1760000000, "stateVersion": 42, "workflowStatus": "finished",
- "terminal": {"node": "n02", "attempt": 1, "outcome": "completed", "reason": null},
+ "terminal": {"node": "n02", "attempt": 1, "state": "completed",
+              "outcome": "completed", "reason": null},
  "template": {"id": "…", "version": "…", "digest": "…", "revision": 1},
  "contract": {"policyId": "workflow-demo", "policyVersion": "demo-1",
               "goal": "workflow.completed", "revision": 1},

@@ -364,6 +364,7 @@ froze:
                   "finalizedBy": "workflow-runner", "finalizedAt": 1760000000,
                   "stateVersion": 43, "workflowStatus": "finished",
                   "terminal": {"node": "n02", "attempt": 1,
+                               "state": "completed",
                                "outcome": "completed", "reason": null},
                   "template": {"id": "…", "version": "…", "digest": "…",
                                "revision": 1},

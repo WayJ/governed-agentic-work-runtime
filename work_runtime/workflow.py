@@ -37,6 +37,12 @@ WORKFLOW_COMMANDS = ("bind_workflow", "revise_object", "submit_node_result",
 
 TERMINAL_NODE_STATES = ("completed", "failed", "expired", "cancelled")
 
+# The verdicts a node may complete with. An automatic node completes with
+# "completed"; a human node completes with the verdict of its kind,
+# "approved". Every other verdict (a rejection, a failure, an expiry, a
+# cancellation) is not a success, whatever the node's state says.
+SUCCESSFUL_NODE_OUTCOMES = ("completed", "approved")
+
 # The verdicts a criterion report may carry.
 CRITERION_VERDICTS = ("passed", "failed", "insufficient", "conflict",
                        "not_applicable")
@@ -2705,36 +2711,48 @@ class WorkflowEngine:
             return self.runtime._reject("WORKFLOW_TEMPLATE_UNKNOWN", version)
         if work.get("cancellation"):
             return self.runtime._reject(WORKFLOW_CANCELLED, version)
+        latest: Dict[str, Dict[str, Any]] = {}
+        for instance in self._instances(db, work["id"]):
+            latest[instance["node"]] = instance
+
         terminal = work.get("workflow_terminal") or {}
+        terminal_node = latest.get(terminal.get("node")) or {}
+        # The state of the terminal node is the fact that matters: a
+        # completed node is a node that finished successfully, whatever its
+        # kind calls that verdict ("completed", "approved"). A node that
+        # failed, expired, was cancelled or whose output was refused is not
+        # a success, whatever the routing says.
+        if terminal_node and (terminal_node.get("state") != "completed"
+                              or terminal_node.get("outcome")
+                              not in SUCCESSFUL_NODE_OUTCOMES):
+            return self.runtime._reject(WORKFLOW_TERMINAL_NOT_COMPLETED,
+                                        version, [{
+                                            "node": terminal.get("node"),
+                                            "state": terminal_node.get("state"),
+                                            "outcome": terminal.get("outcome"),
+                                            "reason": terminal.get("reason")}])
         finished = (work.get("workflow_status") == "finished"
                     and work.get("workflow_current") is None)
-        if finished:
-            if terminal.get("outcome") != "completed":
-                # Failed, expired, cancelled and rejected terminals are not
-                # a success, whatever the routing says.
-                return self.runtime._reject(WORKFLOW_TERMINAL_NOT_COMPLETED,
-                                            version, [{
-                                                "node": terminal.get("node"),
-                                                "outcome": terminal.get("outcome"),
-                                                "reason": terminal.get("reason")}])
-            declared_terminals = spec.get("terminal") or []
-            if declared_terminals and terminal.get("node") not in declared_terminals:
-                return self.runtime._reject(WORKFLOW_TERMINAL_NOT_DECLARED,
-                                            version, [{
-                                                "node": terminal.get("node"),
-                                                "declared": list(declared_terminals)}])
-        elif terminal.get("outcome") not in (None, "completed"):
-            # The workflow stopped at a failed terminal: that is not a
-            # success either.
-            return self.runtime._reject(WORKFLOW_TERMINAL_NOT_COMPLETED, version, [{
-                "node": terminal.get("node"), "outcome": terminal.get("outcome"),
-                "reason": terminal.get("reason")}])
-        else:
+        if not finished:
             # "Finished" is the precondition; a running, a blocked or a
             # reopened workflow is never accepted.
             return self.runtime._reject(WORKFLOW_NOT_FINISHED, version, [{
                 "status": work.get("workflow_status"),
                 "currentNode": work.get("workflow_current")}])
+        if not terminal_node:
+            # A finished workflow without a readable terminal instance has
+            # no terminal to accept.
+            return self.runtime._reject(WORKFLOW_TERMINAL_NOT_COMPLETED,
+                                        version, [{
+                                            "node": terminal.get("node"),
+                                            "outcome": terminal.get("outcome"),
+                                            "reason": terminal.get("reason")}])
+        declared_terminals = spec.get("terminal") or []
+        if declared_terminals and terminal.get("node") not in declared_terminals:
+            return self.runtime._reject(WORKFLOW_TERMINAL_NOT_DECLARED,
+                                        version, [{
+                                            "node": terminal.get("node"),
+                                            "declared": list(declared_terminals)}])
 
         operations = []
         unresolved = []
@@ -2773,10 +2791,6 @@ class WorkflowEngine:
             return self.runtime._reject(WORKFLOW_REQUIREMENT_UNSATISFIED, version,
                                         blockers)
 
-        latest: Dict[str, Dict[str, Any]] = {}
-        for instance in self._instances(db, work["id"]):
-            latest[instance["node"]] = instance
-
         unsettled = []
         not_completed = []
         quality_open = []
@@ -2788,7 +2802,8 @@ class WorkflowEngine:
             if instance.get("state") not in TERMINAL_NODE_STATES:
                 unsettled.append({"node": node_id, "state": instance.get("state")})
                 continue
-            if instance.get("outcome") != "completed":
+            if (instance.get("state") != "completed"
+                    or instance.get("outcome") not in SUCCESSFUL_NODE_OUTCOMES):
                 not_completed.append({"node": node_id, "state": instance.get("state"),
                                       "outcome": instance.get("outcome"),
                                       "reason": instance.get("reason")})
@@ -2922,6 +2937,7 @@ class WorkflowEngine:
             "workflowStatus": work.get("workflow_status"),
             "terminal": {"node": terminal.get("node"),
                          "attempt": terminal_instance.get("attempt"),
+                         "state": terminal_instance.get("state"),
                          "outcome": terminal.get("outcome"),
                          "reason": terminal.get("reason")},
             "template": {"id": binding.get("template_id"),

@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W91)
+### Workflow matrix (W01–W92)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -954,6 +954,7 @@ are byte-unchanged by that slice; the boundary rows are in
 | W82 | A new command key after the freeze creates no second acceptance | covered | `test_a_new_command_key_after_the_freeze_creates_no_second_finalization` — `WORK_NOT_ACTIONABLE`; the snapshot keeps its `finalizationId` |
 | W83 | A stale version is refused before the closure | covered | `test_a_stale_version_is_refused_before_the_closure` — `STATE_VERSION_CONFLICT`; nothing is frozen, no event is written |
 | W84 | Only the trusted runner may accept a workflow | covered | `test_only_the_trusted_runner_may_accept_the_workflow`, `test_a_runtime_without_a_trusted_runner_fails_closed` — `WORKFLOW_RUNNER_MISMATCH` for an agent, the owner and a reviewer; `WORKFLOW_RUNNER_UNCONFIGURED` when no runner is configured |
+| W92 | A human terminal node is accepted on its own verdict | covered | `HumanTerminalTests` — an approved human terminal completes with the verdict of its kind ("approved"), and the acceptance reads the *state* of the terminal node; a rejected terminal is refused (`WORKFLOW_TERMINAL_NOT_COMPLETED`) |
 | W85 | Only a verifiably successful workflow is frozen | covered | `test_a_failed_terminal_cannot_be_accepted`, `test_an_output_invalid_terminal_cannot_be_accepted`, `test_a_cancelled_workflow_cannot_be_accepted`, `test_an_unknown_effect_cannot_be_accepted`, `test_an_outstanding_requirement_cannot_be_accepted`, `test_a_running_workflow_cannot_be_accepted` — `WORKFLOW_TERMINAL_NOT_COMPLETED`, `WORKFLOW_CANCELLED`, `WORKFLOW_NOT_FINISHED`, `WORKFLOW_REQUIREMENT_UNSATISFIED` |
 | W86 | Nothing may change an accepted workflow | covered | `test_nothing_may_change_the_accepted_workflow` — a revised object, a new result, a revised plan, a revised document, a cancellation and a new effect are all refused; the events, the object rows and the external effect count do not move |
 | W87 | Late evidence and late revocation cannot reopen an accepted workflow | covered | `test_a_late_proof_cannot_reopen_the_accepted_workflow`, `test_a_revocation_cannot_reopen_the_accepted_workflow` — the proof is admitted by the runtime's own correction rule, the snapshot does not change, the workflow is not routed again and no effect is produced |

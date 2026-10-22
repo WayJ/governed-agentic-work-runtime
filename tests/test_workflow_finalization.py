@@ -29,13 +29,14 @@ from work_runtime.workflow_demo import EFFECT_SHAPE, INTAKE_SHAPE
 from work_runtime.workflow_server import API_PREFIX, serve
 
 try:
-    from workflow_support import (DemoPolicy, RecordingAdapter, demo_grants,
-                                  demo_validators, instantiate, submit_valid,
-                                  version_of)
+    from workflow_support import (DemoPolicy, RecordingAdapter, decide_command,
+                                  demo_grants, demo_validators, instantiate,
+                                  submit_valid, version_of)
 except ImportError:  # pragma: no cover - repository-root import style
     from tests.workflow_support import (DemoPolicy, RecordingAdapter,
-                                        demo_grants, demo_validators,
-                                        instantiate, submit_valid, version_of)
+                                        decide_command, demo_grants,
+                                        demo_validators, instantiate,
+                                        submit_valid, version_of)
 
 RUNNER = "workflow-runner"
 WORK_ID = "W-1"
@@ -131,6 +132,39 @@ def finalization_template(template_id="finalization-fixture", version="t1"):
                                             "created.",
                                 "criterion_version": "1",
                                 "validator": "effect",
+                                "validator_version": "1"}]},
+        },
+        "edges": [{"from": "n01", "to": "n02"}],
+    }
+
+
+def human_terminal_template(template_id="finalization-human", version="t1"):
+    """The same fixture with a human terminal node.
+
+    A human node that approves completes with the verdict of its kind
+    ("approved"), not with the "completed" of an automatic node: the
+    acceptance reads the *state* of the terminal node, so both count.
+    """
+    return {
+        "id": template_id,
+        "version": version,
+        "policy_family": "workflow-demo",
+        "entry": "n01",
+        "terminal": ["n02"],
+        "nodes": {
+            "n01": {"kind": "agent", "executor": "agent-executor",
+                    "max_attempts": 1,
+                    "output": {"object": "intake",
+                               "validation": {"shape": INTAKE_SHAPE,
+                                              "validator": "intake",
+                                              "validator_version": "1"}}},
+            "n02": {"kind": "human", "evidence_kind": "safety_review",
+                    "authority": "reviewer-a", "subject": {"object": "intake"},
+                    "checks": [{"id": "N02-1", "method": "HUMAN",
+                                "criterion": "The intake covers every "
+                                            "applicable requirement.",
+                                "criterion_version": "1",
+                                "validator": "safety-review",
                                 "validator_version": "1"}]},
         },
         "edges": [{"from": "n01", "to": "n02"}],
@@ -558,6 +592,68 @@ class FrozenStateTests(FinalizationTestCase):
             self.assertIsNotNone(work.get("workflow_finalization"))
         else:
             self.assertIsNone(work.get("workflow_finalization"))
+
+
+class HumanTerminalTests(FinalizationTestCase):
+    """A workflow whose terminal node is a human one."""
+
+    def drive_to_approval(self):
+        self.template = human_terminal_template()
+        published = self.engine.publish_template("coordinator", self.template)
+        self.assertEqual(published["decision"], "accepted", published)
+        receipt = instantiate(self.runtime, self.engine, WORK_ID,
+                              template=self.template)
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        self.engine.advance(WORK_ID, 1000)
+        submitted = submit_valid(self.engine, self.runtime, WORK_ID, "n01", "intake")
+        self.assertEqual(submitted["decision"], "accepted", submitted)
+        self.engine.advance(WORK_ID, 1000)
+        reference = self.object_reference("intake")
+        decided = decide_command(
+            self.engine, self.runtime, WORK_ID, "safety_review", "reviewer-a",
+            "approved", reference["digest"], reference["revision"], node="n02",
+            items=[{"check": "N02-1", "verdict": "passed",
+                    "reason": "every applicable requirement is covered",
+                    "evidence": ["intake#revision-1"]}])
+        self.assertEqual(decided["decision"], "accepted", decided)
+        self.engine.advance(WORK_ID, 1000)
+        return self.runtime.get_work(WORK_ID)
+
+    def test_an_approved_human_terminal_is_accepted(self):
+        work = self.drive_to_approval()
+        self.assertEqual(work["workflow_status"], "finished", work)
+        # The verdict of a human node is its own: "approved", not
+        # "completed". The acceptance reads the state of the node.
+        self.assertEqual(work["workflow_terminal"]["outcome"], "approved", work)
+        receipt = self.finalize()
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        finalization = receipt["finalization"]
+        self.assertEqual(finalization["terminal"]["node"], "n02")
+        self.assertEqual(finalization["terminal"]["state"], "completed")
+        self.assertEqual(finalization["terminal"]["outcome"], "approved")
+
+    def test_a_rejected_human_terminal_is_not_accepted(self):
+        self.template = human_terminal_template()
+        published = self.engine.publish_template("coordinator", self.template)
+        self.assertEqual(published["decision"], "accepted", published)
+        instantiate(self.runtime, self.engine, WORK_ID, template=self.template)
+        self.engine.advance(WORK_ID, 1000)
+        submit_valid(self.engine, self.runtime, WORK_ID, "n01", "intake")
+        self.engine.advance(WORK_ID, 1000)
+        reference = self.object_reference("intake")
+        decided = decide_command(
+            self.engine, self.runtime, WORK_ID, "safety_review", "reviewer-a",
+            "rejected", reference["digest"], reference["revision"], node="n02",
+            items=[{"check": "N02-1", "verdict": "failed",
+                    "reason": "the intake misses a requirement",
+                    "evidence": ["intake#revision-1"]}])
+        self.assertEqual(decided["decision"], "accepted", decided)
+        self.engine.advance(WORK_ID, 1000)
+        receipt = self.finalize()
+        self.assertEqual(receipt["decision"], "rejected", receipt)
+        self.assertIn(receipt["code"], ("WORKFLOW_TERMINAL_NOT_COMPLETED",
+                                        "WORKFLOW_NOT_FINISHED"))
+        self.assertIsNone(self.runtime.get_work(WORK_ID).get("workflow_finalization"))
 
 
 class HttpFinalizationTests(FinalizationTestCase):
