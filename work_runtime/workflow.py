@@ -2974,6 +2974,26 @@ class WorkflowEngine:
             work = self.runtime._work(db, work_id)
             return work.get("workflow_finalization")
 
+    def finalization_canonical(self, snapshot: Dict[str, Any]) -> str:
+        """The canonical text of an accepted proof.
+
+        It is the exact text a reader hashes: the canonical JSON of the
+        snapshot **without** its ``digest`` entry, so that the SHA-256 over
+        its UTF-8 bytes is the digest the acceptance recorded. A reader that
+        parses the text therefore holds the very snapshot the acceptance
+        froze, without reimplementing this canonical form.
+
+        The stored digest is verified first: a snapshot whose digest does
+        not match its content yields no text at all.
+        """
+        if not isinstance(snapshot, dict):
+            raise WorkflowError("The accepted proof must be an object")
+        body = {key: value for key, value in snapshot.items() if key != "digest"}
+        text = canonical(body)
+        if digest(body) != snapshot.get("digest"):
+            raise WorkflowError("The stored proof does not match its digest")
+        return text
+
     def workflow_finalized(self, work: dict) -> bool:
         """Whether the work carries an accepted, frozen workflow."""
         return bool(work.get("workflow_finalization"))

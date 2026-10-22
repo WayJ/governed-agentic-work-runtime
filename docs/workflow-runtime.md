@@ -1046,6 +1046,18 @@ receipt, across a restart: the acceptance is never performed twice. A
 *different* command key after the freeze creates no second acceptance — the
 frozen work refuses it — and the stored snapshot keeps its identity.
 
+### The generic completion may not close it
+
+The generic `request_completion` closes a work when its requirements and
+its operations are settled. It cannot see the workflow's terminal, its
+quality or its effects, so on a workflow-bound work it would close the work
+**without** the workflow proof — exactly the bypass the acceptance exists
+to close. `request_completion` therefore refuses on a workflow-bound work
+that carries no accepted finalization (`WORKFLOW_ACCEPTANCE_REQUIRED`), and
+a work without a workflow keeps its previous completion path exactly. The
+two facts are read from the stored work, so the refusal holds after a
+restart and in a process that carries no engine at all.
+
 ### The two routes
 
 `POST /v1/workflows/instances/{workId}/finalize` issues the acceptance and
@@ -1054,6 +1066,20 @@ answers with the instance view and the snapshot;
 alone and is the **immutable** read: the same bytes for every reader, and no
 way to change them. The exact wire shapes are in
 [workflow-api-contract.md](workflow-api-contract.md).
+
+### The canonical text of the proof
+
+The completion read also answers with `finalizationCanonical`: the canonical
+JSON of the snapshot **without its `digest` entry**. Its SHA-256 over UTF-8
+is exactly the digest the acceptance recorded, so a reader that parses the
+text holds the very snapshot the acceptance froze and never has to
+reimplement this canonical form. The text is emitted only when the proof
+needs no redaction and when the stored digest still matches the stored
+content; otherwise the read refuses with
+`WORKFLOW_COMPLETION_PROOF_UNAVAILABLE` or
+`WORKFLOW_COMPLETION_PROOF_UNVERIFIED` and emits neither the text nor a
+hash of a redacted proof. The native command receipt is unchanged: it
+carries the snapshot and no canonical text.
 
 ### What the freeze does not claim
 

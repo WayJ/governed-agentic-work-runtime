@@ -473,6 +473,14 @@ class Runtime:
             work["waits"].append({**payload, "id": uuid.uuid4().hex, "status": "waiting"})
             self._save(db, work, "WaitRegistered")
         elif kind == "request_completion":
+            if work.get("workflow") and not work.get("workflow_finalization"):
+                # A workflow-bound work is closed by its acceptance, not by
+                # the generic completion: the generic path cannot see the
+                # workflow's terminal, its quality, its effects or its
+                # obligations. Both facts are read from the stored work, so
+                # the refusal holds after a restart and in a process that
+                # carries no workflow engine at all.
+                return self._reject("WORKFLOW_ACCEPTANCE_REQUIRED", version)
             blockers = [r for r in work["requirements"] if
                         r["applicability"] in ("unknown", "conflict") or
                         (r["applicability"] == "applicable" and r["fulfillment"] != "satisfied")]

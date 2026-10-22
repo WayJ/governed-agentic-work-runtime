@@ -15,6 +15,7 @@ verification of a terminal, the settledness of the material, the settledness
 of the effects and the settledness of the obligations.
 """
 
+import hashlib
 import http.client
 import json
 import os
@@ -23,19 +24,20 @@ import tempfile
 import threading
 import unittest
 
+from work_runtime.policy import canonical, digest
 from work_runtime.runtime import Runtime
-from work_runtime.workflow import WorkflowEngine
+from work_runtime.workflow import WorkflowEngine, WorkflowError
 from work_runtime.workflow_demo import EFFECT_SHAPE, INTAKE_SHAPE
 from work_runtime.workflow_server import API_PREFIX, serve
 
 try:
     from workflow_support import (DemoPolicy, RecordingAdapter, decide_command,
-                                  demo_grants, demo_validators, instantiate,
-                                  submit_valid, version_of)
+                                  demo_grants, demo_validators, document,
+                                  instantiate, submit_valid, version_of)
 except ImportError:  # pragma: no cover - repository-root import style
     from tests.workflow_support import (DemoPolicy, RecordingAdapter,
                                         decide_command, demo_grants,
-                                        demo_validators, instantiate,
+                                        demo_validators, document, instantiate,
                                         submit_valid, version_of)
 
 RUNNER = "workflow-runner"
@@ -683,6 +685,131 @@ class HumanTerminalTests(FinalizationTestCase):
         self.assertIsNone(self.runtime.get_work(WORK_ID).get("workflow_finalization"))
 
 
+class GenericCompletionGuardTests(FinalizationTestCase):
+    """The generic completion may not close an unfinalized workflow."""
+
+    def generic_completion(self, runtime=None, command_id="complete-1"):
+        runtime = runtime or self.runtime
+        return runtime.command("coordinator", command_id, WORK_ID,
+                               "request_completion", {},
+                               version_of(runtime, WORK_ID))
+
+    def test_an_active_workflow_cannot_be_closed_by_the_generic_completion(self):
+        instantiate(self.runtime, self.engine, WORK_ID, template=self.template)
+        self.engine.advance(WORK_ID, 1000)
+        receipt = self.generic_completion()
+        self.assertEqual(receipt["decision"], "rejected", receipt)
+        self.assertEqual(receipt["code"], "WORKFLOW_ACCEPTANCE_REQUIRED")
+        work = self.runtime.get_work(WORK_ID)
+        self.assertNotEqual(work["status"], "closed")
+        self.assertIsNone(work.get("completion"))
+        self.assertIsNone(work.get("workflow_finalization"))
+
+    def test_a_finished_workflow_cannot_be_closed_by_the_generic_completion(self):
+        self.assert_successful_terminal_after_drive()
+        receipt = self.generic_completion()
+        self.assertEqual(receipt["decision"], "rejected", receipt)
+        self.assertEqual(receipt["code"], "WORKFLOW_ACCEPTANCE_REQUIRED")
+        work = self.runtime.get_work(WORK_ID)
+        self.assertNotEqual(work["status"], "closed")
+        self.assertIsNone(work.get("completion"))
+
+    def test_a_bare_runtime_over_the_same_store_still_refuses_it(self):
+        """The guard reads the stored work, not an in-memory engine."""
+        self.assert_successful_terminal_after_drive()
+        grants = demo_grants()
+        grants[RUNNER] = {"workflow.finalize"}
+        bare = Runtime(self.path, OpenPolicy(), grants)
+        self.assertIsNone(bare.workflow)
+        receipt = self.generic_completion(runtime=bare, command_id="complete-bare")
+        self.assertEqual(receipt["decision"], "rejected", receipt)
+        self.assertEqual(receipt["code"], "WORKFLOW_ACCEPTANCE_REQUIRED")
+        self.assertNotEqual(bare.get_work(WORK_ID)["status"], "closed")
+
+    def test_the_generic_completion_stays_refused_after_the_acceptance(self):
+        self.assert_successful_terminal_after_drive()
+        accepted = self.finalize("final-guard")
+        self.assertEqual(accepted["decision"], "accepted", accepted)
+        finalization_id = accepted["finalization"]["finalizationId"]
+        receipt = self.generic_completion(command_id="complete-after")
+        self.assertEqual(receipt["decision"], "rejected", receipt)
+        self.assertEqual(receipt["code"], "WORK_NOT_ACTIONABLE")
+        work = self.runtime.get_work(WORK_ID)
+        self.assertEqual(work["workflow_finalization"]["finalizationId"],
+                         finalization_id)
+        self.assertEqual(self.events().count("WorkflowFinalized"), 1)
+
+    def test_the_refusal_is_a_stored_receipt(self):
+        instantiate(self.runtime, self.engine, WORK_ID, template=self.template)
+        receipt = self.generic_completion(command_id="complete-receipt")
+        self.assertEqual(receipt["decision"], "rejected", receipt)
+        stored = self.runtime.get_command_receipt("coordinator", "complete-receipt",
+                                                  WORK_ID)
+        self.assertEqual(stored["code"], "WORKFLOW_ACCEPTANCE_REQUIRED")
+        self.assertIn("observed_state_version", stored)
+
+    def test_an_ordinary_work_still_completes_the_generic_way(self):
+        """A work without a workflow keeps its previous completion path."""
+        self.runtime.command("coordinator", "create-plain", "W-plain",
+                             "create_work",
+                             {"document": document()}, None)
+        self.runtime.command("coordinator", "contract-plain", "W-plain",
+                             "bind_contract",
+                             {"policy_id": "workflow-demo",
+                              "policy_version": "demo-1",
+                              "goal": "workflow.completed"},
+                             version_of(self.runtime, "W-plain"))
+        receipt = self.runtime.command("coordinator", "complete-plain", "W-plain",
+                                       "request_completion", {},
+                                       version_of(self.runtime, "W-plain"))
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        work = self.runtime.get_work("W-plain")
+        self.assertEqual(work["status"], "closed")
+        self.assertEqual(work["outcome"], "succeeded")
+        self.assertIn("completion", work)
+
+
+class CanonicalProofTests(FinalizationTestCase):
+    """The completion read carries the exact text the platform hashes."""
+
+    def canonical_of(self, snapshot):
+        return self.engine.finalization_canonical(snapshot)
+
+    def test_the_canonical_text_hashes_to_the_stored_digest(self):
+        self.assert_successful_terminal_after_drive()
+        receipt = self.finalize("final-canonical")
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        snapshot = receipt["finalization"]
+        body = {key: value for key, value in snapshot.items() if key != "digest"}
+        text = self.canonical_of(snapshot)
+        self.assertEqual(text, canonical(body))
+        self.assertEqual(hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                         snapshot["digest"])
+        self.assertEqual(json.loads(text), body)
+
+    def test_the_canonical_text_carries_an_exponent_and_unicode(self):
+        snapshot = {"finalizationId": "f-1", "workId": "W-1",
+                    "finalizedBy": RUNNER, "finalizedAt": 1760000000,
+                    "ratio": 1e+30, "subject": "east parapet \u00e9\u00fc",
+                    "digest": None}
+        body = {key: value for key, value in snapshot.items() if key != "digest"}
+        snapshot["digest"] = digest(body)
+        text = self.canonical_of(snapshot)
+        self.assertEqual(text, canonical(body))
+        self.assertEqual(hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                         snapshot["digest"])
+        self.assertEqual(json.loads(text), body)
+        # The text is the UTF-8 the platform hashes: no escape sequences.
+        self.assertIn("\u00e9", text)
+        self.assertNotIn("\\u00e9", text)
+        self.assertIn("1e+30", text)
+
+    def test_a_proof_that_does_not_match_its_digest_is_refused(self):
+        snapshot = {"finalizationId": "f-2", "digest": "0" * 64}
+        with self.assertRaises(WorkflowError):
+            self.canonical_of(snapshot)
+
+
 class HttpFinalizationTests(FinalizationTestCase):
     """The bridge: the platform request and the immutable completion read."""
 
@@ -752,6 +879,79 @@ class HttpFinalizationTests(FinalizationTestCase):
                                  + "/completion")
         self.assertEqual(status, 404, body)
         self.assertEqual(body["error"]["code"], "WORKFLOW_NOT_FINALIZED")
+
+    def inject_snapshot(self, snapshot):
+        """Write a crafted proof into the store, as a corrupted record would."""
+        db = sqlite3.connect(self.path)
+        try:
+            row = db.execute("SELECT state FROM works WHERE id=?",
+                             (WORK_ID,)).fetchone()
+            state = json.loads(row[0])
+            state["workflow_finalization"] = snapshot
+            db.execute("UPDATE works SET state=? WHERE id=?",
+                       (canonical(state), WORK_ID))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_the_completion_read_carries_the_canonical_text(self):
+        self.drive_to_success()
+        status, body = self.call("POST", API_PREFIX + "/instances/" + WORK_ID
+                                 + "/finalize",
+                                 {"commandId": "http-canonical",
+                                  "expectedVersion": version_of(self.runtime, WORK_ID)})
+        self.assertEqual(status, 200, body)
+        status, completion = self.call("GET", API_PREFIX + "/instances/" + WORK_ID
+                                       + "/completion")
+        self.assertEqual(status, 200, completion)
+        snapshot = completion["finalization"]
+        text = completion["finalizationCanonical"]
+        body_without_digest = {key: value for key, value in snapshot.items()
+                                if key != "digest"}
+        self.assertEqual(text, canonical(body_without_digest))
+        self.assertEqual(hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                         snapshot["digest"])
+        self.assertEqual(json.loads(text), body_without_digest)
+        # The native command receipt is unchanged: it carries the snapshot
+        # and no canonical text.
+        receipt = self.runtime.get_command_receipt(RUNNER, "http-canonical",
+                                                  WORK_ID)
+        self.assertEqual(receipt["decision"], "accepted")
+        self.assertNotIn("finalizationCanonical", receipt)
+        self.assertNotIn("finalizationCanonical", body["finalization"])
+        self.assertEqual(sorted(receipt),
+                         ["command_id", "decision", "finalization",
+                          "result_state_version"])
+
+    def test_a_proof_that_needs_redaction_is_not_emitted(self):
+        self.drive_to_success()
+        self.call("POST", API_PREFIX + "/instances/" + WORK_ID + "/finalize",
+                  {"commandId": "http-redacted",
+                   "expectedVersion": version_of(self.runtime, WORK_ID)})
+        snapshot = {"finalizationId": "f-3", "workId": WORK_ID,
+                    "api_key": "secret-value", "digest": "0" * 64}
+        self.inject_snapshot(snapshot)
+        status, body = self.call("GET", API_PREFIX + "/instances/" + WORK_ID
+                                 + "/completion")
+        self.assertEqual(status, 409, body)
+        self.assertEqual(body["error"]["code"],
+                         "WORKFLOW_COMPLETION_PROOF_UNAVAILABLE")
+        self.assertNotIn("finalizationCanonical", body)
+        self.assertNotIn("secret-value", json.dumps(body))
+
+    def test_a_proof_that_does_not_match_its_digest_is_refused(self):
+        self.drive_to_success()
+        self.call("POST", API_PREFIX + "/instances/" + WORK_ID + "/finalize",
+                  {"commandId": "http-unverified",
+                   "expectedVersion": version_of(self.runtime, WORK_ID)})
+        snapshot = {"finalizationId": "f-4", "workId": WORK_ID, "digest": "0" * 64}
+        self.inject_snapshot(snapshot)
+        status, body = self.call("GET", API_PREFIX + "/instances/" + WORK_ID
+                                 + "/completion")
+        self.assertEqual(status, 409, body)
+        self.assertEqual(body["error"]["code"],
+                         "WORKFLOW_COMPLETION_PROOF_UNVERIFIED")
+        self.assertNotIn("finalizationCanonical", body)
 
     def test_the_bridge_refuses_a_mutation_of_an_accepted_workflow(self):
         self.drive_to_success()

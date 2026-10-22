@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .policy import canonical, digest as content_digest
 from .runtime import CommandError
+from .workflow import WorkflowError
 
 API_PREFIX = "/v1/workflows"
 MAX_BODY_BYTES = 1 << 20
@@ -95,6 +96,9 @@ STATUS_BY_CODE = {
     "WORKFLOW_REQUIREMENT_UNSATISFIED": 409,
     "WORKFLOW_INTENT_UNSETTLED": 409,
     "WORKFLOW_SNAPSHOT_UNBOUNDED": 409,
+    "WORKFLOW_ACCEPTANCE_REQUIRED": 409,
+    "WORKFLOW_COMPLETION_PROOF_UNAVAILABLE": 409,
+    "WORKFLOW_COMPLETION_PROOF_UNVERIFIED": 409,
     "WORKFLOW_CANCELLED": 409,
     "WORK_NOT_ACTIONABLE": 409,
 }
@@ -856,6 +860,12 @@ class WorkflowService:
 
         It answers with the snapshot the acceptance froze: the same bytes
         for every reader, and no way to change them.
+
+        It also answers with the **canonical text** of that proof: the exact
+        UTF-8 a reader hashes to obtain the digest the acceptance recorded.
+        The text is emitted only when the proof needs no redaction and when
+        the stored digest still matches it; otherwise the read refuses and
+        emits neither the text nor a hash of a redacted proof.
         """
         try:
             finalization = self.engine.finalization(work_id)
@@ -864,7 +874,20 @@ class WorkflowService:
         if finalization is None:
             return 404, _error("WORKFLOW_NOT_FINALIZED",
                                 "The workflow was not accepted")
-        return 200, redact({"workId": work_id, "finalization": finalization})
+        if redact(finalization) != finalization:
+            # The stored proof carries something that looks like a
+            # credential: its canonical text would carry it verbatim, so
+            # neither the text nor a hash of a redacted proof is emitted.
+            return 409, _error("WORKFLOW_COMPLETION_PROOF_UNAVAILABLE",
+                               "The accepted proof needs redaction; its canonical "
+                               "text is not available")
+        try:
+            canonical_text = self.engine.finalization_canonical(finalization)
+        except WorkflowError:
+            return 409, _error("WORKFLOW_COMPLETION_PROOF_UNVERIFIED",
+                               "The stored proof does not match its digest")
+        return 200, redact({"workId": work_id, "finalization": finalization,
+                             "finalizationCanonical": canonical_text})
 
     def object_revision(self, work_id: str, name: str, revision: str,
                         query: Optional[Dict[str, List[str]]] = None

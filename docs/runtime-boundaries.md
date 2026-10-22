@@ -82,18 +82,42 @@ New boundaries that the workflow adds:
 | workflow acceptance | `finalize_workflow_success` is issued by the protected runner only; under one transaction it verifies the recorded terminal, the completed nodes, the validated quality, the passed criteria, the settled effects and the settled obligations, and only then freezes the work and writes the exact final snapshot; a failed, expired, cancelled, output-invalid, unfinished, unsettled or cancelled workflow is never frozen; the frozen work accepts no later revision, cancellation, result, decision or effect, and the frozen workflow is never routed again | `tests/test_workflow_finalization.py` — `SuccessfulAcceptanceTests`, `RefusalTests`, `FrozenStateTests`, `HttpFinalizationTests` |
 | frozen snapshot | the snapshot is written once and never rewritten; it names the template digest, the contract revision, the plan revision, the document revision and digest, every object revision and digest, every node attempt with its judgment, every effect, every obligation and the verified evidence; late evidence and late revocation are still admitted by the runtime's own correction rules, but they can neither change the accepted snapshot nor reopen the accepted workflow, because the routing pass is frozen | `tests/test_workflow_finalization.py` — `test_a_late_proof_cannot_reopen_the_accepted_workflow`, `test_a_revocation_cannot_reopen_the_accepted_workflow` |
 
-### The workflow-success acceptance: no lifecycle edit
+### The workflow-success acceptance: one disclosed lifecycle edit
 
 The acceptance of a successful workflow (`finalize_workflow_success`) is
-**family-neutral** and needed no change to the frozen lifecycle files:
-`work_runtime/runtime.py` and `work_runtime/adapters.py` are byte-unchanged
-by this slice. The command rides the existing workflow command dispatch
+**family-neutral**. The command itself needed no change to the frozen
+lifecycle files: it rides the existing workflow command dispatch
 (`WORKFLOW_COMMANDS`), the existing compare-and-swap, the existing command
 dedup and the existing closed-work rule, and the freeze of an accepted
 workflow is the runtime's own "a closed work accepts no command" rule. The
 engine keeps the acceptance, the snapshot and the routing freeze in
 `work_runtime/workflow.py`, and the bridge keeps the two routes in
 `work_runtime/workflow_server.py`.
+
+**One lifecycle edit follows it, and it is disclosed here.** The generic
+`request_completion` could close a workflow-bound work that was finished but
+not accepted: the generic path sees the requirements and the operations, but
+not the workflow's terminal, its quality or its effects, so a platform could
+still close its task through it without the workflow proof. The guard is the
+smallest additive change that closes the bypass:
+
+| file | SHA-256 before | SHA-256 after |
+|---|---|---|
+| `work_runtime/runtime.py` | `19555fcfe1e602ae6598d5ef7392536c3bc19171129686516c53fcda63d8c7ac` | `1b9c73e639ffa9a6facf3d092c07c12e4cf84639c0d2ea8ccecce14b6cb3d075` |
+| `work_runtime/adapters.py` | `ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e` | unchanged |
+
+`request_completion` on a work that has a workflow binding now refuses with
+`WORKFLOW_ACCEPTANCE_REQUIRED` unless the work carries an accepted
+finalization. The two facts are read from the **stored work**, so the
+refusal holds after a restart and in a process that carries no workflow
+engine at all — an in-memory hook would have left the same bypass open
+behind a restart. A work without a workflow keeps its previous completion
+path exactly, and the refusal is an ordinary receipt: it is deduplicated,
+readable and replayed like every other.
+
+| boundary | guarantee | evidence |
+|---|---|---|
+| generic completion | a workflow-bound work is closed by its acceptance, never by the generic completion; a non-workflow work is untouched | `tests/test_workflow_finalization.py` — `GenericCompletionGuardTests` |
 
 One engine behaviour changed with it, and it is disclosed here: **a
 finished workflow is not routed again.** The routing pass used to walk the

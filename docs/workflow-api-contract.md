@@ -409,12 +409,35 @@ WORKFLOW_RUNNER_UNCONFIGURED`.
 The **immutable** read of an accepted workflow.
 
 ```json
-{"workId": "W-1", "finalization": {"…": "…"}}
+{"workId": "W-1", "finalization": {"…": "…"},
+ "finalizationCanonical": "{\"finalizationId\":\"…\",…}"}
 ```
 
 `404 WORKFLOW_NOT_FINALIZED` when the workflow was not accepted. The
 snapshot is written once by the acceptance and never rewritten: every reader
 sees the same bytes, and no route changes them.
+
+**`finalizationCanonical`** is the exact text a reader hashes. It is the
+canonical JSON of the finalization **without its `digest` entry**, so:
+
+* `SHA-256(finalizationCanonical as UTF-8)` is exactly the `digest` the
+  acceptance recorded;
+* parsing the text yields exactly the finalization without its `digest`
+  entry — a reader that compares the parsed value with the finalization it
+  received never has to reimplement this canonical form;
+* the text is UTF-8: a non-ASCII character is emitted as itself, never as
+  an escape sequence, and the bytes are the bytes that are hashed.
+
+The text is emitted only when the proof needs no redaction and when the
+stored digest still matches the stored content. Otherwise the read refuses
+and emits **neither** the text nor a hash of a redacted proof:
+`409 WORKFLOW_COMPLETION_PROOF_UNAVAILABLE` (the stored proof carries
+something that looks like a credential) and `409
+WORKFLOW_COMPLETION_PROOF_UNVERIFIED` (the stored proof does not match its
+own digest).
+
+The native command receipt is unchanged: the acceptance's receipt carries
+the snapshot and no canonical text.
 
 ### `GET /v1/workflows/instances/{workId}/objects/{name}/revisions/{revision}`
 
@@ -584,8 +607,9 @@ the engine's code verbatim. The status mapping is in
 `WORKFLOW_REQUIREMENT_UNSATISFIED`, `WORKFLOW_NODE_UNSETTLED`,
 `WORKFLOW_NODE_NOT_COMPLETED`, `WORKFLOW_QUALITY_UNSETTLED`,
 `WORKFLOW_CHECK_UNSATISFIED`, `WORKFLOW_INTENT_UNSETTLED`,
-`WORKFLOW_CANCELLED`, `WORKFLOW_SNAPSHOT_UNBOUNDED`, `WORKFLOW_FINALIZED`
-(409).
+`WORKFLOW_CANCELLED`, `WORKFLOW_SNAPSHOT_UNBOUNDED`, `WORKFLOW_FINALIZED`,
+`WORKFLOW_ACCEPTANCE_REQUIRED`, `WORKFLOW_COMPLETION_PROOF_UNAVAILABLE`,
+`WORKFLOW_COMPLETION_PROOF_UNVERIFIED` (409).
 
 A workflow that was accepted is frozen: the bridge answers `409
 WORKFLOW_FINALIZED` to every later mutation of it — a revised object, a new
