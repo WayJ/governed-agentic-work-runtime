@@ -892,20 +892,33 @@ class WorkflowService:
             return 409, _error("WORKFLOW_FINALIZED",
                                "The workflow was accepted and frozen; it accepts "
                                "no further mutation")
-        receipt = self.engine.command(actor, command_id, work_id,
-                                      "request_cancel", {"reason": reason},
-                                      expected_version, now=self.now())
+        try:
+            receipt = self.engine.command(actor, command_id, work_id,
+                                          "request_cancel", {"reason": reason},
+                                          expected_version, now=self.now())
+        except CommandError:
+            # The command never ran: there is no receipt and no effect. A
+            # missing work is a missing work — never proof about effects;
+            # a reader that lost the answer consults the command receipt.
+            return 404, _error("WORK_UNKNOWN", "No such work")
         if receipt.get("decision") != "accepted":
             return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
                                                 "The cancellation was not requested",
                                                 receipt.get("blockers"))
         intent = (self.runtime.get_work(work_id).get("cancellation") or {})
+        summary = {"requested": True,
+                   "requestedBy": intent.get("requested_by"),
+                   "reason": intent.get("reason"),
+                   "resultStateVersion": receipt.get("result_state_version")}
         status, view = self.instance(work_id)
-        view["cancellation"] = {"requested": True,
-                                "requestedBy": intent.get("requested_by"),
-                                "reason": intent.get("reason"),
-                                "resultStateVersion":
-                                    receipt.get("result_state_version")}
+        if status != 200:
+            # The command was accepted — the receipt is the truth — but the
+            # instance view needs a bound workflow, and a work whose
+            # creation is still between its stages has none yet. The answer
+            # never reports an accepted cancellation back as a missing work.
+            return 200, redact({"workId": work_id, "cancellation": summary,
+                                "instanceView": "unavailable"})
+        view["cancellation"] = summary
         return 200, redact(view)
 
     def finalize_cancel(self, work_id: str,
@@ -946,10 +959,13 @@ class WorkflowService:
             return 409, _error("WORKFLOW_FINALIZED",
                                "The workflow was accepted and frozen; it accepts "
                                "no further mutation")
-        receipt = self.engine.command(actor, command_id, work_id,
-                                      "finalize_cancel",
-                                      {"acknowledged_operations": acknowledged},
-                                      expected_version, now=self.now())
+        try:
+            receipt = self.engine.command(actor, command_id, work_id,
+                                          "finalize_cancel",
+                                          {"acknowledged_operations": acknowledged},
+                                          expected_version, now=self.now())
+        except CommandError:
+            return 404, _error("WORK_UNKNOWN", "No such work")
         if receipt.get("decision") != "accepted":
             return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
                                                 "The cancellation was not finalized",
@@ -958,13 +974,16 @@ class WorkflowService:
         completion = work.get("completion") or {}
         acknowledged_view = [entry.get("operation_id") for entry in
                              completion.get("acknowledged_operations") or []]
+        summary = {"finalized": True,
+                   "requestedBy": (work.get("cancellation") or {})
+                   .get("requested_by"),
+                   "acknowledgedOperations": acknowledged_view,
+                   "resultStateVersion": receipt.get("result_state_version")}
         status, view = self.instance(work_id)
-        view["cancellation"] = {"finalized": True,
-                                "requestedBy": (work.get("cancellation") or {})
-                                .get("requested_by"),
-                                "acknowledgedOperations": acknowledged_view,
-                                "resultStateVersion":
-                                    receipt.get("result_state_version")}
+        if status != 200:
+            return 200, redact({"workId": work_id, "cancellation": summary,
+                                "instanceView": "unavailable"})
+        view["cancellation"] = summary
         return 200, redact(view)
 
     def cancellation(self, work_id: str) -> Tuple[int, Dict[str, Any]]:
@@ -981,7 +1000,10 @@ class WorkflowService:
                 operations = [json.loads(row[0]) for row in db.execute(
                     "SELECT body FROM operations WHERE work_id=?",
                     (work_id,)).fetchall()]
-        except Exception:
+        except CommandError:
+            # Only a genuinely unknown work is a missing work. A store that
+            # cannot answer fails unavailable instead: a transient error
+            # must never be read as "there is nothing here".
             return 404, _error("WORK_UNKNOWN", "No such work")
         intent = work.get("cancellation")
         if work["status"] == "closed" and work.get("outcome") == "cancelled":

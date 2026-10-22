@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W128)
+### Workflow matrix (W01–W131)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -970,6 +970,9 @@ are byte-unchanged by that slice; the boundary rows are in
 | W125 | An unknown outcome is recovered and the closure gates on it | covered | `FinalizeCancelTests` — a real crash after the effect leaves the operation unresolved, `OUTCOME_UNRESOLVED` blocks, the lookup recovers it without a second effect, and the acknowledgement must equal the exact successful ids (`CANCEL_ACKNOWLEDGEMENT_MISMATCH` carrying them) |
 | W126 | The closure is idempotent and a new key cannot repeat it | covered | `test_the_finalize_receipt_replays_and_a_new_key_is_refused` — an identical replay with one `WorkCancelled` event, `WORK_NOT_ACTIONABLE` for a new command key |
 | W127 | The final cancelled state is not a success proof | covered | `test_the_final_cancelled_state_is_not_a_success_proof` — the read says `state=cancelled, outcome=cancelled`, the completion proof is `404 WORKFLOW_NOT_FINALIZED`, the success acceptance is refused, and the closure retains the confirmed effect's external id |
+| W129 | A refused cancellation mutates nothing | covered | `AuthorizationOrderingTests` — a denied actor, a malformed request and a duplicate request each leave the node rows, the intent rows, the operation rows, the events and the state version byte for byte unchanged (the ordering fix in `runtime.py`: authority and the duplicate gate run before the workflow cancellation hook) |
+| W130 | A work may be cancelled between its creation stages | covered | `PartialCreationTests` — a work that exists without a bound workflow is cancelled with the summary and `instanceView: "unavailable"`, the immutable receipt reads back accepted, and the read shows `state: requested` |
+| W131 | Cancelling an unknown work creates nothing | covered | `test_an_unknown_work_is_not_created_by_cancelling_it` — `404 WORK_UNKNOWN`, no work row, and the read answers the same 404 |
 | W128 | The cancellation read is safe and scoped | covered | `CancellationReadTests` — an active work answers `state=none` with empty operation lists; an unknown work is `404 WORK_UNKNOWN`; the read carries no payload body and no credential |
 | W113 | The default still needs the named record for every decision | covered | `tests/test_workflow_conditional_output.py` — `DefaultSemanticsTests`: a rejection without a record leaves the node running with `WORKFLOW_OUTPUT_MISSING` and the routing does not move; an approval writes the record |
 | W114 | A published human node may narrow the decisions its output applies to | covered | `NarrowedOutputTests` — a rejection settles the node with no acceptance record, the quality says `exempt`, the decision proof and the check report are preserved, and the declared `on_reject` branch is taken |

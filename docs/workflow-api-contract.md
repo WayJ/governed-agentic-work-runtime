@@ -524,6 +524,35 @@ the same `commandId` and the same body replays the original receipt; a
 new command key after the closure is `409 WORK_NOT_ACTIONABLE`.
 `409 CANCELLATION_NOT_REQUESTED` when no intent is active.
 
+#### Cancellation against an in-flight creation
+
+A platform may hold an immutable work id before the four-stage creation
+confirmed. The rules that keep that safe:
+
+* **The routes never create anything.** Cancelling an unknown work answers
+  `404 WORK_UNKNOWN` and stores nothing: no work, no receipt, no effect.
+* **A work may be cancelled between its stages.** A work that exists but
+  whose workflow is not bound yet (the creation stopped after `create` or
+  `contract`) is cancelled exactly like any other work: the command is
+  accepted and the answer carries the cancellation summary with
+  `"instanceView": "unavailable"` — the instance view needs a bound
+  workflow — and never reports an accepted cancellation back as a missing
+  work.
+* **The receipt is the truth, not the view.** A platform that lost an
+  answer reads the immutable command receipt
+  (`GET /v1/workflows/commands/{commandId}?workId=&actor=`) first; an
+  accepted receipt is the fact regardless of any view.
+* **A `404` is a missing work, never a fact about effects.** A store that
+  cannot answer fails unavailable (`500`), not missing: a transient error
+  is never readable as "there is nothing here", and an unknown-work `404`
+  says only that this store holds no such work.
+* **An already-completed work stays completed.** Cancelling or finalizing
+  a closed work is refused (`WORK_NOT_ACTIONABLE`); a factual prior
+  completion never reopens a task.
+* **An in-flight effect is never rolled back.** A dispatched or
+  unknown-outcome operation stays on the work and is resolved by the
+  ordinary lookup and recovery; it blocks `finalize` until it is resolved.
+
 ### `GET /v1/workflows/instances/{workId}/objects/{name}/revisions/{revision}`
 
 `200 {"workId", "name", "revision", "digest", "originalDigest", "redacted", "object"}`

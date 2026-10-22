@@ -415,12 +415,6 @@ class Runtime:
         if kind == "propose_action":
             return self._propose(db, actor, work, payload)
         if kind == "request_cancel":
-            # The workflow's own nodes and durable intents are cancelled in
-            # the same transaction as the work, so a crash can never leave a
-            # running node behind a cancelled work.
-            engine = getattr(self, "workflow", None)
-            if engine is not None and work.get("workflow"):
-                engine.cancel_in_transaction(db, work)
             return self._request_cancel(db, actor, work, payload, version)
         if kind == "finalize_cancel":
             return self._finalize_cancel(db, actor, work, payload, version)
@@ -539,6 +533,14 @@ class Runtime:
             return self._reject("AUTHORITY_DENIED", version)
         if work.get("cancellation"):
             return self._reject("CANCELLATION_ALREADY_REQUESTED", version)
+        # The workflow's own nodes and durable intents are cancelled in the
+        # same transaction as the work, so a crash can never leave a running
+        # node behind a cancelled work — but only now, after the payload,
+        # the authority and the duplicate-intent gate have all passed: a
+        # refused request must leave the workflow exactly as it was.
+        engine = getattr(self, "workflow", None)
+        if engine is not None and work.get("workflow"):
+            engine.cancel_in_transaction(db, work)
         work["cancellation"] = {"requested_by": actor, "reason": payload["reason"]}
         cancelled_waits = []
         for wait in work["waits"]:

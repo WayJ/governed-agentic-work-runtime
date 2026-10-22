@@ -116,6 +116,20 @@ behind a restart. A work without a workflow keeps its previous completion
 path exactly, and the refusal is an ordinary receipt: it is deduplicated,
 readable and replayed like every other.
 
+**A second, later edit of the same file fixes the cancellation ordering**
+(found in the review of the bridge's cancellation surface): the workflow
+cancellation hook used to run before `request_cancel` checked the actor's
+authority and the duplicate-intent gate, so a request that was refused
+`AUTHORITY_DENIED` had still cancelled the workflow's nodes and intents.
+The hook now runs inside `_request_cancel`, after the payload, the
+authority and the duplicate-intent gate have all passed — a refused
+request leaves the workflow exactly as it was. The byte pin is updated
+consciously again:
+
+| file | SHA-256 before | SHA-256 after |
+|---|---|---|
+| `work_runtime/runtime.py` | `1b9c73e639ffa9a6facf3d092c07c12e4cf84639c0d2ea8ccecce14b6cb3d075` | `1edb3bc065a8e3d59c07e20d672d6ad5354d1c233ca26de7fe848b1156379d45` |
+
 | boundary | guarantee | evidence |
 |---|---|---|
 | generic completion | a workflow-bound work is closed by its acceptance, never by the generic completion; a non-workflow work is untouched | `tests/test_workflow_finalization.py` — `GenericCompletionGuardTests` |

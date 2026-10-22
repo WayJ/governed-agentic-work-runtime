@@ -385,3 +385,106 @@ class CancellationReadTests(CancellationHttpTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuthorizationOrderingTests(CancellationHttpTestCase):
+    """A refused request leaves the workflow exactly as it was."""
+
+    def snapshot(self):
+        db = sqlite3.connect(self.path)
+        try:
+            return {
+                "nodes": db.execute("SELECT node,attempt,state,body FROM "
+                                    "workflow_nodes ORDER BY node,attempt"
+                                    ).fetchall(),
+                "intents": db.execute("SELECT id,status,body FROM "
+                                      "workflow_intents ORDER BY id").fetchall(),
+                "operations": db.execute("SELECT id,body FROM operations "
+                                         "ORDER BY id").fetchall(),
+                "events": self.events(),
+                "version": version_of(self.runtime, WORK_ID)}
+        finally:
+            db.close()
+
+    def test_a_denied_actor_changes_nothing(self):
+        self.drive_to_human()
+        before = self.snapshot()
+        denied = self.request_cancel(actor="reviewer-a")
+        self.assertEqual(denied[0], 403, denied)
+        after = self.snapshot()
+        self.assertEqual(after, before,
+                         "a refused cancellation mutated the workflow")
+
+    def test_a_malformed_request_changes_nothing(self):
+        self.drive_to_human()
+        before = self.snapshot()
+        malformed = self.call("POST", API_PREFIX + "/instances/" + WORK_ID
+                              + "/cancel",
+                              {"actor": OWNER, "commandId": self.next_id("cancel"),
+                               "expectedVersion": version_of(self.runtime, WORK_ID)})
+        self.assertEqual(malformed[0], 400, malformed)
+        self.assertEqual(malformed[1]["error"]["code"], "REASON_REQUIRED")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_duplicate_request_changes_nothing_more(self):
+        self.drive_to_human()
+        self.assertEqual(self.request_cancel()[0], 200)
+        after_request = self.snapshot()
+        again = self.request_cancel(reason="another try")
+        self.assertEqual(again[0], 409, again)
+        self.assertEqual(again[1]["error"]["code"],
+                         "CANCELLATION_ALREADY_REQUESTED")
+        self.assertEqual(self.snapshot(), after_request)
+
+
+class PartialCreationTests(CancellationHttpTestCase):
+    """A work may be cancelled between the stages of its creation."""
+
+    def create_work_only(self):
+        receipt = self.runtime.command(
+            OWNER, self.next_id("create"), WORK_ID, "create_work",
+            {"document": {"id": "H-001", "subject": "east parapet"}}, None)
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+
+    def test_a_work_without_a_bound_workflow_may_be_cancelled(self):
+        self.create_work_only()
+        status, body = self.request_cancel()
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["cancellation"]["requested"])
+        self.assertEqual(body["instanceView"], "unavailable")
+        # The receipt is the truth: it is readable and it is accepted.
+        receipt = self.call("GET", API_PREFIX + "/commands/"
+                            + body_cancellation_command(self) + "?workId=" + WORK_ID
+                            + "&actor=" + OWNER)
+        self.assertEqual(receipt[0], 200, receipt)
+        self.assertEqual(receipt[1]["receipt"]["decision"], "accepted")
+        read = self.call("GET", API_PREFIX + "/instances/" + WORK_ID
+                         + "/cancellation")
+        self.assertEqual(read[0], 200, read)
+        self.assertEqual(read[1]["state"], "requested")
+        self.assertEqual(read[1]["operations"], [])
+        work = self.runtime.get_work(WORK_ID)
+        self.assertEqual(work["cancellation"]["requested_by"], OWNER)
+
+    def test_an_unknown_work_is_not_created_by_cancelling_it(self):
+        status, body = self.call("POST", API_PREFIX + "/instances/W-none/cancel",
+                                 {"actor": OWNER, "reason": "stop",
+                                  "commandId": self.next_id("cancel"),
+                                  "expectedVersion": 1})
+        self.assertEqual(status, 404, body)
+        self.assertEqual(body["error"]["code"], "WORK_UNKNOWN")
+        db = sqlite3.connect(self.path)
+        try:
+            count = db.execute("SELECT COUNT(*) FROM works WHERE id='W-none'"
+                               ).fetchone()[0]
+        finally:
+            db.close()
+        self.assertEqual(count, 0)
+        read = self.call("GET", API_PREFIX + "/instances/W-none/cancellation")
+        self.assertEqual(read[0], 404, read)
+        self.assertEqual(read[1]["error"]["code"], "WORK_UNKNOWN")
+
+
+def body_cancellation_command(case):
+    """The command id of the last request_cancel a case issued."""
+    return "cancel-" + str(case.counter)
