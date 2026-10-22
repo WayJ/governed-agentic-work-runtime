@@ -66,6 +66,11 @@ Per node kind:
 |---|---|---|
 | `agent` | `executor`, `output`, `max_attempts` | `inputs`, `checks`, `on_failure`, `deadline_s`, `max_attempts`, `description` |
 | `human` | `evidence_kind`, `subject` | `authority` (a principal or `{"assigned": true}`), `distinct_from`, `on_reject`, `max_attempts`, `checks`, `output`, `inputs`, `deadline_s`, `description` |
+
+The human node's `output` may carry one more field than the other kinds:
+`on_decisions` names the decisions for which the named output is required
+(see [§3](#human-nodes)). It is refused on every other kind
+(`NODE_FIELD_UNKNOWN`) — only a human node has decisions.
 | `action` | `capability`, `subject` | `output`, `checks`, `inputs`, `on_failure`, `on_timeout`, `max_attempts`, `effect_policy`, `deadline_s`, `description` |
 | `wait` | `match`, `deadline_s` | `output`, `checks`, `on_timeout`, `description` |
 
@@ -95,6 +100,10 @@ coerces a value and never echoes payload content. The codes are:
 `SHAPE_TYPE_UNKNOWN`, `SHAPE_FIELD_UNKNOWN`, `SHAPE_TOO_DEEP`,
 `NODE_JUDGE_MISSING`, `NODE_EFFECT_POLICY_UNKNOWN`,
 `NODE_EFFECT_POLICY_ATTEMPTS`.
+
+`NODE_FIELD_UNKNOWN` also covers a field of a node's `output` that the
+node's kind does not support — a human node's `on_decisions` on an
+automatic node, for instance.
 
 `NODE_JUDGE_MISSING` is the orphan-judge rule: a **required** criterion
 whose judge is `AGENT` needs a declared review path, and a **required**
@@ -333,6 +342,49 @@ The binding the record was made under is persisted with it: the actor who
 decided, the ingress source it came through, the node and attempt, the
 subject's revision and digest, the input digest and the digest of the
 record itself (`outputBinding`).
+
+#### When the named record is required
+
+A declared named record is required for **every** decision by default: a
+rejection, which has no business effect and no acceptance record by
+design, leaves the node running with `WORKFLOW_OUTPUT_MISSING` and never
+reaches its `on_reject` branch. A published human node may narrow that
+requirement explicitly:
+
+```json
+"n07a": {"kind": "human", "evidence_kind": "safety_review",
+          "authority": "reviewer-a", "subject": {"object": "order"},
+          "on_reject": "n07b",
+          "output": {"object": "order_acceptance",
+                     "on_decisions": ["approved"],
+                     "validation": {"shape": {"…": "…"},
+                                    "validator": "record",
+                                    "validator_version": "1"}}}
+```
+
+* `on_decisions` lists the decisions for which the named output is
+  **required**. It is protected material: it lives in the published
+  definition, is pinned by its digest at binding, and is never caller
+  data. The list is nonempty and names only `approved`, `rejected` or
+  `request_material`; any other kind of node that declares it is refused
+  at publication.
+* **An approval is never exempt.** Whatever the list says, an `approved`
+  decision requires the named record: the record is what says the work was
+  accepted, and it is validated and bound to the exact subject and inputs
+  as before.
+* A decision **outside** the list is admitted and settles the node
+  (`approved` and `rejected`), **without** a named record: the acceptance
+  and the audit trail are preserved, the check report of the decision is
+  persisted, the node's quality record says `exempt`, and the routing
+  continues — a rejection now reaches its `on_reject` branch.
+* A `request_material` decision keeps the node waiting and writes no
+  record, exactly as before.
+* A record **supplied** for an exempt decision is refused
+  (`WORKFLOW_OUTPUT_NOT_REQUIRED`): it would be an acceptance output for a
+  decision that must not have one. The command is refused and nothing is
+  written, so the caller re-sends the decision without the record.
+* A workflow that ended on a rejection is never accepted by
+  `finalize_workflow_success` (`WORKFLOW_TERMINAL_NOT_COMPLETED`).
 
 A human node that declares **no** output keeps its previous behaviour, and
 the record says so: `quality.declared` is `false` and `quality.mode` is

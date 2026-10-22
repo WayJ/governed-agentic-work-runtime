@@ -512,6 +512,14 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
                                          findings)
     if "output" in node:
         _lint_output(node["output"], path + ".output", findings)
+        if (kind != "human" and isinstance(node["output"], dict)
+                and "on_decisions" in node["output"]):
+            # Only a human node has decisions, so only a human node may say
+            # which of them need its named output.
+            findings.append(_finding("NODE_FIELD_UNKNOWN",
+                                     path + ".output.on_decisions",
+                                     "Only a human node may declare which "
+                                     "decisions its named output applies to"))
     if "subject" in node:
         _lint_subject(node["subject"], path + ".subject", findings)
     if "review" in node:
@@ -779,11 +787,31 @@ def _lint_validation(validation: Any, path: str, findings: List[Dict[str, str]])
                                  "Validator version must be a nonempty string"))
 
 
+def _lint_on_decisions(value: Any, path: str,
+                        findings: List[Dict[str, str]]) -> None:
+    """The decisions a human node's named output applies to.
+
+    The list narrows the decisions that need the named output. It is
+    protected material: it lives in the published definition, never in a
+    caller's request.
+    """
+    if not isinstance(value, list) or not value:
+        findings.append(_finding("SPEC_FIELD_TYPE", path,
+                                 "The decisions a named output applies to must "
+                                 "be a nonempty list"))
+        return
+    for entry in value:
+        if entry not in ("approved", "rejected", "request_material"):
+            findings.append(_finding("SPEC_FIELD_TYPE", path,
+                                     "A decision must be approved, rejected or "
+                                     "request_material"))
+
+
 def _lint_output(output: Any, path: str, findings: List[Dict[str, str]]) -> None:
     if not isinstance(output, dict):
         findings.append(_finding("SPEC_FIELD_TYPE", path, "Output must be an object"))
         return
-    allowed = {"object", "validation", "evidence_kind"}
+    allowed = {"object", "validation", "evidence_kind", "on_decisions"}
     for name in output:
         if name not in allowed:
             findings.append(_finding("SPEC_FIELD_UNKNOWN", path + "." + name,
@@ -799,6 +827,9 @@ def _lint_output(output: Any, path: str, findings: List[Dict[str, str]]) -> None
                                  "Output evidence kind must be an identifier"))
     if "validation" in output:
         _lint_validation(output["validation"], path + ".validation", findings)
+    if "on_decisions" in output:
+        _lint_on_decisions(output["on_decisions"], path + ".on_decisions",
+                           findings)
 
 
 def lint_template(spec: Any) -> List[Dict[str, str]]:

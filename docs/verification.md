@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W112)
+### Workflow matrix (W01–W120)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -963,6 +963,14 @@ are byte-unchanged by that slice; the boundary rows are in
 | W101 | An output validator receives the material the attempt pinned | covered | `tests/test_workflow_materials.py` — `CoverageValidationTests`: the agent candidate is judged against the pinned input; an unknown, a missing and a duplicated identifier are each refused with the validator's own code |
 | W102 | The material is the pinned revision, never the latest | covered | `test_the_materials_are_the_pinned_revision_not_the_latest`, `test_a_candidate_covering_the_latest_revision_is_refused` — a newer revision in the store does not change what the attempt pinned |
 | W103 | Every output-producing kind hands over the material | covered | `MaterialsPerKindTests` — the agent candidate, the human record, the automatic output and the waited material each receive the pinned input (and the subject where the node declares one) |
+| W113 | The default still needs the named record for every decision | covered | `tests/test_workflow_conditional_output.py` — `DefaultSemanticsTests`: a rejection without a record leaves the node running with `WORKFLOW_OUTPUT_MISSING` and the routing does not move; an approval writes the record |
+| W114 | A published human node may narrow the decisions its output applies to | covered | `NarrowedOutputTests` — a rejection settles the node with no acceptance record, the quality says `exempt`, the decision proof and the check report are preserved, and the declared `on_reject` branch is taken |
+| W115 | An approval is never exempt | covered | `test_an_approval_is_never_exempt` — a declaration that lists only `rejected` still leaves the approval waiting for its record |
+| W116 | A record for an exempt decision is refused | covered | `test_a_supplied_record_for_an_exempt_decision_is_refused` — `WORKFLOW_OUTPUT_NOT_REQUIRED`, no object row, no decision proof, the node still waiting |
+| W117 | A request for more material still waits and writes no record | covered | `test_a_request_for_more_material_still_waits` |
+| W118 | A workflow that ended on a rejection is never accepted | covered | `test_a_rejection_cannot_be_finalized` — `WORKFLOW_TERMINAL_NOT_COMPLETED` |
+| W119 | The declaration is protected material and human-only | covered | `DeclarationLintTests` — another kind that declares it is refused (`NODE_FIELD_UNKNOWN`), a malformed list is refused, and a caller cannot carry the declaration in a decision |
+| W120 | Staleness, compare-and-swap and authority are unchanged | covered | `UnchangedGuardsTests` — `WORKFLOW_ATTEMPT_STALE`, `WORKFLOW_AUTHORITY_MISMATCH`, `STATE_VERSION_CONFLICT` |
 | W110 | An explicitly permitted not-applicable verdict is accepted | covered | `tests/test_workflow_finalization.py` — `NotApplicableCriterionTests`: a human terminal whose declaration sets `allow_not_applicable` completes on a `not_applicable` verdict and the acceptance freezes the workflow, exactly as the node's own settlement does |
 | W111 | A not-applicable verdict without the permission cannot pass | covered | `test_a_not_applicable_verdict_without_the_permission_cannot_pass` — the node never completes (the criterion is a genuine shortfall) and nothing is frozen |
 | W112 | A globally required check still demands a pass | covered | `test_a_globally_required_check_still_demands_a_pass` — the node completes under its own declaration, the acceptance refuses `WORKFLOW_CHECK_UNSATISFIED`, and the refusal names the global requirement, not a node |

@@ -1490,12 +1490,19 @@ class WorkflowEngine:
                                 {"actor": actor})
             return False
         output = node.get("output") or {}
+        output_required = self._output_required_for(node, verdict)
         if not output:
             # Compatibility: this node declared no named record. It completes
             # exactly as it always did, and the record says plainly that
             # nothing was checked.
             instance["quality"] = {"declared": False, "mode": "undeclared"}
-        if output and not instance.get("output"):
+        elif not output_required:
+            # The protected declaration exempts this decision from the named
+            # output: the decision settles the node, and no acceptance
+            # record is invented for a decision that must not have one.
+            instance["quality"] = {"declared": True, "mode": "exempt",
+                                   "validator": None}
+        if output and output_required and not instance.get("output"):
             # The node declared a named record and the record is not on the
             # node yet: the decision stands, but nothing downstream is
             # routed on a node whose own output is missing.
@@ -2623,6 +2630,26 @@ class WorkflowEngine:
                 return declaration
         return None
 
+    @staticmethod
+    def _output_required_for(node, decision) -> bool:
+        """Whether the node's named output is required for this decision.
+
+        The default is the historical one: a declared output is required
+        for **every** decision. A published human node may narrow that
+        explicitly - the declaration is protected material, and it is the
+        declaration that decides, never the caller.
+        """
+        output = node.get("output") or {}
+        declared = output.get("on_decisions")
+        if decision == "approved":
+            # An approval always needs its acceptance record: the named
+            # output is what says the work was accepted, so no declaration
+            # may exempt it.
+            return True
+        if declared is None:
+            return True
+        return decision in declared
+
     def _record_decision(self, db, actor, work, payload, version,
                          command_id=None) -> dict:
         """Admit one human decision.
@@ -2680,6 +2707,13 @@ class WorkflowEngine:
         if result is not None and not output:
             return self.runtime._reject("WORKFLOW_OUTPUT_UNDECLARED", version,
                                         [node_id])
+        output_required = self._output_required_for(node, payload["decision"])
+        if result is not None and not output_required:
+            # The declaration exempts this decision from the named output: a
+            # supplied record would be an acceptance output for a decision
+            # that must not have one, so it is refused, not written.
+            return self.runtime._reject("WORKFLOW_OUTPUT_NOT_REQUIRED", version,
+                                        [node_id])
         data = {"decision": payload["decision"], "digest": payload["digest"],
                 "revision": payload["revision"], "node": node_id, "attempt": attempt,
                 "actor": payload["actor"], "items": payload["items"]}
@@ -2689,7 +2723,7 @@ class WorkflowEngine:
                                          "data": data})
         if receipt.get("decision") != "accepted":
             return receipt
-        if output or result is not None:
+        if output and output_required:
             # The named record the decision carries is judged and written in
             # the same compare-and-swap guarded command as the decision
             # itself: no separate write can rebase the caller's version.

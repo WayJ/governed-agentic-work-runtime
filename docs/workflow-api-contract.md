@@ -317,6 +317,16 @@ evidence intake, and the command is deduplicated under (ingress source,
 channel configured for the node's evidence kind — and the actual decider
 travels in `actorId`.
 
+A human node may declare, in its published definition, which decisions
+need its named record: `output.on_decisions: ["approved"]`. The default is
+that **every** decision needs it. A decision outside the list is admitted
+and settles the node without a record — a rejection now reaches its
+`on_reject` branch — while an approval always needs the record, whatever
+the list says. A record supplied for an exempt decision is refused:
+`409 WORKFLOW_OUTPUT_NOT_REQUIRED`, nothing is written, and the caller
+re-sends the decision without the record. The declaration is protected
+material (published, digest-pinned) and never caller data.
+
 `200` the instance view with `decision: {node, attempt, outcome, actorId, resultStateVersion}`.
 `400 ACTOR_ID_REQUIRED`; `400 DECISION_INVALID` — no `items`;
 `400 COMMAND_ID_REQUIRED`; `400 EXPECTED_VERSION_REQUIRED`;
@@ -620,7 +630,8 @@ the engine's code verbatim. The status mapping is in
 `WORKFLOW_CHECK_UNSATISFIED`, `WORKFLOW_INTENT_UNSETTLED`,
 `WORKFLOW_CANCELLED`, `WORKFLOW_SNAPSHOT_UNBOUNDED`, `WORKFLOW_FINALIZED`,
 `WORKFLOW_ACCEPTANCE_REQUIRED`, `WORKFLOW_COMPLETION_PROOF_UNAVAILABLE`,
-`WORKFLOW_COMPLETION_PROOF_UNVERIFIED` (409).
+`WORKFLOW_COMPLETION_PROOF_UNVERIFIED`, `WORKFLOW_OUTPUT_NOT_REQUIRED`
+(409).
 
 A workflow that was accepted is frozen: the bridge answers `409
 WORKFLOW_FINALIZED` to every later mutation of it — a revised object, a new
