@@ -924,6 +924,18 @@ class WorkflowEngine:
                 return {"decision": "noop", "work_id": work_id,
                         "status": work.get("workflow_status"),
                         "finalized": True}
+            if work.get("cancellation") or work["status"] == "closed":
+                # A cancelling work stops, and a closed work stays closed.
+                # Without this, the next pass would walk the completed chain
+                # from the entry node and open fresh attempts behind the
+                # cancelled ones — a restart of the work, not a stop — and
+                # new intents and re-admissions would follow. Cancellation
+                # keeps the runtime's own paths open: evidence intake, the
+                # verifier, expiry and the unknown-effect reconciliation
+                # never run through this pass.
+                return {"decision": "noop", "work_id": work_id,
+                        "status": work.get("workflow_status"),
+                        "cancelling": bool(work.get("cancellation"))}
             if work.get("workflow_terminal"):
                 # The routing stopped at a terminal: a finished workflow is
                 # not routed again. Without this, the next pass would walk

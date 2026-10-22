@@ -97,6 +97,8 @@ STATUS_BY_CODE = {
     "WORKFLOW_INTENT_UNSETTLED": 409,
     "WORKFLOW_SNAPSHOT_UNBOUNDED": 409,
     "WORKFLOW_ACCEPTANCE_REQUIRED": 409,
+    "CANCELLATION_NOT_REQUESTED": 409,
+    "CANCEL_ACKNOWLEDGEMENT_MISMATCH": 409,
     "WORKFLOW_COMPLETION_PROOF_UNAVAILABLE": 409,
     "WORKFLOW_COMPLETION_PROOF_UNVERIFIED": 409,
     "WORKFLOW_CANCELLED": 409,
@@ -855,6 +857,164 @@ class WorkflowService:
         view["finalization"] = receipt.get("finalization")
         return 200, redact(view)
 
+    def request_cancel(self, work_id: str,
+                       body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Request the cancellation of a work through the runtime command.
+
+        The command is the runtime's own ``request_cancel``: it runs in the
+        work's transaction, cancels the workflow's active nodes and durable
+        intents and every never-dispatched prepared operation, and stores an
+        immutable receipt under the caller's command id. The actor must be
+        the work's owner or a ``work.intervene`` administrator — the core
+        decides that, never the transport: a request that reaches this
+        route grants nothing by itself.
+        """
+        actor = body.get("actor")
+        if not isinstance(actor, str) or not actor:
+            return 400, _error("ACTOR_REQUIRED", "actor is required")
+        reason = body.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            return 400, _error("REASON_REQUIRED",
+                               "reason is required: a cancellation says why")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
+        receipt = self.engine.command(actor, command_id, work_id,
+                                      "request_cancel", {"reason": reason},
+                                      expected_version, now=self.now())
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
+                                                "The cancellation was not requested",
+                                                receipt.get("blockers"))
+        intent = (self.runtime.get_work(work_id).get("cancellation") or {})
+        status, view = self.instance(work_id)
+        view["cancellation"] = {"requested": True,
+                                "requestedBy": intent.get("requested_by"),
+                                "reason": intent.get("reason"),
+                                "resultStateVersion":
+                                    receipt.get("result_state_version")}
+        return 200, redact(view)
+
+    def finalize_cancel(self, work_id: str,
+                        body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Close a cancelled work through the runtime command.
+
+        The acknowledgement must equal **exactly** the set of
+        ``confirmed_succeeded`` operation ids: an effect that already
+        happened is never pretended away, an unresolved effect blocks the
+        closure, and the closed work keeps every operation's disposition.
+        The actor must be the work's owner or a ``work.intervene``
+        administrator — the core decides that, never the transport.
+        """
+        actor = body.get("actor")
+        if not isinstance(actor, str) or not actor:
+            return 400, _error("ACTOR_REQUIRED", "actor is required")
+        acknowledged = body.get("acknowledgedOperations")
+        if (not isinstance(acknowledged, list)
+                or not all(isinstance(entry, str) and entry
+                           for entry in acknowledged)
+                or len(set(acknowledged)) != len(acknowledged)):
+            return 400, _error("ACKNOWLEDGEMENT_INVALID",
+                               "acknowledgedOperations must be a list of distinct "
+                               "nonempty operation ids")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
+        receipt = self.engine.command(actor, command_id, work_id,
+                                      "finalize_cancel",
+                                      {"acknowledged_operations": acknowledged},
+                                      expected_version, now=self.now())
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(receipt.get("code", "REJECTED"),
+                                                "The cancellation was not finalized",
+                                                receipt.get("blockers"))
+        work = self.runtime.get_work(work_id)
+        completion = work.get("completion") or {}
+        acknowledged_view = [entry.get("operation_id") for entry in
+                             completion.get("acknowledged_operations") or []]
+        status, view = self.instance(work_id)
+        view["cancellation"] = {"finalized": True,
+                                "requestedBy": (work.get("cancellation") or {})
+                                .get("requested_by"),
+                                "acknowledgedOperations": acknowledged_view,
+                                "resultStateVersion":
+                                    receipt.get("result_state_version")}
+        return 200, redact(view)
+
+    def cancellation(self, work_id: str) -> Tuple[int, Dict[str, Any]]:
+        """The safe cancellation state of one work.
+
+        The read answers what a platform needs to drive a cancellation:
+        whether an intent exists, which operations are still unresolved and
+        which exact successful operation ids the acknowledgement must name.
+        It carries no payload body and no credential.
+        """
+        try:
+            with self.runtime._connection() as db:
+                work = self.runtime._work(db, work_id)
+                operations = [json.loads(row[0]) for row in db.execute(
+                    "SELECT body FROM operations WHERE work_id=?",
+                    (work_id,)).fetchall()]
+        except Exception:
+            return 404, _error("WORK_UNKNOWN", "No such work")
+        intent = work.get("cancellation")
+        if work["status"] == "closed" and work.get("outcome") == "cancelled":
+            state = "cancelled"
+        elif intent:
+            state = "requested"
+        else:
+            state = "none"
+        unresolved = sorted(operation["id"] for operation in operations
+                            if operation["status"] not in ("confirmed_succeeded",
+                                                           "confirmed_failed")
+                            and operation.get("dispatch_state") != "cancelled")
+        required = sorted(operation["id"] for operation in operations
+                          if operation["status"] == "confirmed_succeeded")
+        return 200, redact({
+            "workId": work_id,
+            "state": state,
+            "status": work.get("status"),
+            "outcome": work.get("outcome"),
+            "stateVersion": work.get("state_version"),
+            "requestedBy": (intent or {}).get("requested_by"),
+            "reason": (intent or {}).get("reason"),
+            "unresolvedOperations": unresolved,
+            "requiredAcknowledgements": required,
+            "operations": sorted(
+                ({"operationId": operation["id"],
+                  "externalId": operation.get("external_id"),
+                  "status": operation["status"],
+                  "dispatchState": operation.get("dispatch_state")}
+                 for operation in operations),
+                key=lambda entry: entry["operationId"]),
+        })
+
     def completion(self, work_id: str) -> Tuple[int, Dict[str, Any]]:
         """The immutable completion read of a finalized workflow.
 
@@ -1240,6 +1400,12 @@ class WorkflowRequestHandler(BaseHTTPRequestHandler):
                 return service.decide(work_id, body)
             if method == "POST" and tail == ["objects"]:
                 return service.revise_object(work_id, body)
+            if method == "POST" and tail == ["cancel"]:
+                return service.request_cancel(work_id, body)
+            if method == "POST" and tail == ["cancel", "finalize"]:
+                return service.finalize_cancel(work_id, body)
+            if method == "GET" and tail == ["cancellation"]:
+                return service.cancellation(work_id)
             if method == "POST" and tail == ["finalize"]:
                 return service.finalize(work_id, body)
             if method == "GET" and tail == ["completion"]:

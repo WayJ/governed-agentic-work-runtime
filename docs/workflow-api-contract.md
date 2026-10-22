@@ -449,6 +449,81 @@ own digest).
 The native command receipt is unchanged: the acceptance's receipt carries
 the snapshot and no canonical text.
 
+### `POST /v1/workflows/instances/{workId}/cancel`
+
+Request the cancellation of the work. The command is the runtime's own
+`request_cancel`: it runs in the work's transaction, cancels the
+workflow's active nodes and its durable intents, cancels every
+never-dispatched prepared operation and stores an immutable receipt under
+the caller's `commandId`. The `actor` must be the work's owner or a
+`work.intervene` administrator — the core decides that, and a request
+that reaches this route grants nothing by itself.
+
+```json
+{"actor": "coordinator", "reason": "duplicates found",
+ "commandId": "cancel-1", "expectedVersion": 7}
+```
+
+* `reason` is required and nonempty: a cancellation says why.
+* `expectedVersion` is the `stateVersion` the caller observed; a stale
+  version is `409 STATE_VERSION_CONFLICT` and nothing is cancelled.
+* A retry with the same `commandId` **and the same body** replays the
+  original receipt; a different body under the same id is
+  `409 COMMAND_ID_REUSED`; a second request under a **new** id while the
+  intent is active is `409 CANCELLATION_ALREADY_REQUESTED`.
+
+`200` the instance view with `cancellation: {requested: true, requestedBy,
+reason, resultStateVersion}`. An effect that was already dispatched or of
+unknown outcome is **not** rolled back: it stays on the work and is
+resolved by the ordinary lookup and recovery.
+
+### `GET /v1/workflows/instances/{workId}/cancellation`
+
+The safe cancellation state of one work — no payload body, no credential.
+
+```json
+{"workId": "W-1", "state": "requested", "status": "needs_attention",
+ "outcome": null, "stateVersion": 8,
+ "requestedBy": "coordinator", "reason": "duplicates found",
+ "unresolvedOperations": ["<operation id>"],
+ "requiredAcknowledgements": ["<operation id>"],
+ "operations": [{"operationId": "<operation id>", "externalId": "EXT-…",
+                 "status": "confirmed_succeeded",
+                 "dispatchState": "finished"}]}
+```
+
+* `state` is `none`, `requested` (an intent is active) or `cancelled`
+  (the work is closed with the outcome `cancelled`).
+* `unresolvedOperations` are the operations that are neither confirmed
+  nor cancelled: they block the closure.
+* `requiredAcknowledgements` are **exactly** the successful operation ids
+  the acknowledgement of `finalize` must name (an empty list is correct
+  only when there were no succeeded effects).
+* `operations` names every operation of the work with its status and
+  dispatch state, so a reader can show what really happened.
+
+### `POST /v1/workflows/instances/{workId}/cancel/finalize`
+
+Close a cancelled work. The command is the runtime's own
+`finalize_cancel`: it refuses while any operation is unresolved
+(`409 OUTCOME_UNRESOLVED`) and requires the acknowledgement to equal
+**exactly** the set of `confirmed_succeeded` operation ids
+(`409 CANCEL_ACKNOWLEDGEMENT_MISMATCH`, with the required ids as the
+error's findings). An accepted closure closes the work as `cancelled`
+(never `succeeded`), keeps every operation's disposition and the
+acknowledged external ids, and is **not** a success completion proof.
+
+```json
+{"actor": "coordinator", "acknowledgedOperations": ["<operation id>"],
+ "commandId": "cancel-final-1", "expectedVersion": 9}
+```
+
+`200` the instance view with `cancellation: {finalized: true,
+requestedBy, acknowledgedOperations, resultStateVersion}`. A retry with
+the same `commandId` and the same body replays the original receipt; a
+new command key after the closure is `409 WORK_NOT_ACTIONABLE`.
+`409 CANCELLATION_NOT_REQUESTED` when no intent is active.
+
 ### `GET /v1/workflows/instances/{workId}/objects/{name}/revisions/{revision}`
 
 `200 {"workId", "name", "revision", "digest", "originalDigest", "redacted", "object"}`
@@ -630,8 +705,8 @@ the engine's code verbatim. The status mapping is in
 `WORKFLOW_CHECK_UNSATISFIED`, `WORKFLOW_INTENT_UNSETTLED`,
 `WORKFLOW_CANCELLED`, `WORKFLOW_SNAPSHOT_UNBOUNDED`, `WORKFLOW_FINALIZED`,
 `WORKFLOW_ACCEPTANCE_REQUIRED`, `WORKFLOW_COMPLETION_PROOF_UNAVAILABLE`,
-`WORKFLOW_COMPLETION_PROOF_UNVERIFIED`, `WORKFLOW_OUTPUT_NOT_REQUIRED`
-(409).
+`WORKFLOW_COMPLETION_PROOF_UNVERIFIED`, `WORKFLOW_OUTPUT_NOT_REQUIRED`,
+`CANCELLATION_NOT_REQUESTED`, `CANCEL_ACKNOWLEDGEMENT_MISMATCH` (409).
 
 A workflow that was accepted is frozen: the bridge answers `409
 WORKFLOW_FINALIZED` to every later mutation of it — a revised object, a new

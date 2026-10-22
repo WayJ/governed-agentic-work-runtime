@@ -609,6 +609,7 @@ version bump, no event.
 | the receipt does not match the operation | the operation is quarantined by the runtime (`outcome_unknown`); the node keeps waiting and is never confirmed |
 | the declared output fails its validator or shape | the node fails with `WORKFLOW_OUTPUT_INVALID`; the effect stays recorded as succeeded, no output object is written and the effect is never repeated |
 | predicate unknown | the edge is blocked; the work reports `needs_attention` |
+| cancellation requested | the work **stops**: the routing pass never runs again while the intent is active, so no node is re-opened behind the cancelled ones and no new intent is created; the active nodes and the pending intents are cancelled in the same transaction, and every never-dispatched prepared operation is cancelled. Evidence intake, the verifier, expiry and the unknown-effect reconciliation continue; a dispatched or unknown effect is never pretended away — it is resolved by the ordinary lookup and blocks `finalize_cancel` until it is |
 | last node terminal | the workflow is `finished` — a **precondition**, never an automatic close. "Finished" says the routing stopped: the read model also carries `terminalNode` and `terminalOutcome`, so a caller never reads it as a delivery. A finished workflow is **not routed again**: the next routing pass finds the recorded terminal and changes nothing, so "finished" is a fact a reader may rely on until the [acceptance](#12-the-workflow-success-acceptance) freezes it |
 
 Rework increments the attempt, keeps the old attempt and its evidence on the
@@ -681,6 +682,9 @@ The exact wire contract, with the request and response fixtures, is
 | `GET` | `/v1/workflows/instances/{workId}/nodes/{nodeId}/attempts` | the attempt history of one node, with its stored judgments |
 | `GET` | `/v1/workflows/commands/{commandId}?workId=&actor=` | the stored receipt of one command, read-only |
 | `POST` | `/v1/workflows/intents/{intentId}/ack` | acknowledge an intent |
+| `POST` | `/v1/workflows/instances/{workId}/cancel` | request the cancellation (the runtime's own command) |
+| `GET` | `/v1/workflows/instances/{workId}/cancellation` | the safe cancellation state |
+| `POST` | `/v1/workflows/instances/{workId}/cancel/finalize` | close a cancelled work (the runtime's own command) |
 | `POST` | `/v1/workflows/instances/{workId}/advance` | settle on demand |
 
 The read model is bounded: at most 64 nodes, 32 intents and 16 findings per

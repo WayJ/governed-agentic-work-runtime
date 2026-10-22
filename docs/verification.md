@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W120)
+### Workflow matrix (W01–W128)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -963,6 +963,14 @@ are byte-unchanged by that slice; the boundary rows are in
 | W101 | An output validator receives the material the attempt pinned | covered | `tests/test_workflow_materials.py` — `CoverageValidationTests`: the agent candidate is judged against the pinned input; an unknown, a missing and a duplicated identifier are each refused with the validator's own code |
 | W102 | The material is the pinned revision, never the latest | covered | `test_the_materials_are_the_pinned_revision_not_the_latest`, `test_a_candidate_covering_the_latest_revision_is_refused` — a newer revision in the store does not change what the attempt pinned |
 | W103 | Every output-producing kind hands over the material | covered | `MaterialsPerKindTests` — the agent candidate, the human record, the automatic output and the waited material each receive the pinned input (and the subject where the node declares one) |
+| W121 | The owner may cancel through the bridge and the work stops | covered | `tests/test_workflow_cancellation_http.py` — `RequestCancelTests`: the waiting node and its intent are cancelled in the command's own transaction, nothing re-opens behind them (no new attempt, no new intent, the cursor is empty), and one `CancellationRequested` event is written |
+| W122 | Only the owner or a work.intervene administrator may cancel | covered | `test_a_reviewer_may_not_and_an_administrator_may` — `403 AUTHORITY_DENIED` for a reviewer with the work untouched; the administrator is accepted |
+| W123 | The compare-and-swap and the command identity are enforced | covered | `test_a_missing_or_stale_expected_version_is_refused`, `test_the_same_command_replays_and_a_changed_body_conflicts`, `test_a_second_request_under_a_new_command_id_is_refused` — `EXPECTED_VERSION_REQUIRED`, `STATE_VERSION_CONFLICT`, an identical replay with one event, `COMMAND_ID_REUSED`, `CANCELLATION_ALREADY_REQUESTED` |
+| W124 | A prepared effect is never dispatched after the request | covered | `test_a_prepared_effect_is_never_dispatched_after_the_request` — the prepared operation is cancelled (`dispatch_state=cancelled`) and a pump plus a recovery pass leave the business system at zero effects |
+| W125 | An unknown outcome is recovered and the closure gates on it | covered | `FinalizeCancelTests` — a real crash after the effect leaves the operation unresolved, `OUTCOME_UNRESOLVED` blocks, the lookup recovers it without a second effect, and the acknowledgement must equal the exact successful ids (`CANCEL_ACKNOWLEDGEMENT_MISMATCH` carrying them) |
+| W126 | The closure is idempotent and a new key cannot repeat it | covered | `test_the_finalize_receipt_replays_and_a_new_key_is_refused` — an identical replay with one `WorkCancelled` event, `WORK_NOT_ACTIONABLE` for a new command key |
+| W127 | The final cancelled state is not a success proof | covered | `test_the_final_cancelled_state_is_not_a_success_proof` — the read says `state=cancelled, outcome=cancelled`, the completion proof is `404 WORKFLOW_NOT_FINALIZED`, the success acceptance is refused, and the closure retains the confirmed effect's external id |
+| W128 | The cancellation read is safe and scoped | covered | `CancellationReadTests` — an active work answers `state=none` with empty operation lists; an unknown work is `404 WORK_UNKNOWN`; the read carries no payload body and no credential |
 | W113 | The default still needs the named record for every decision | covered | `tests/test_workflow_conditional_output.py` — `DefaultSemanticsTests`: a rejection without a record leaves the node running with `WORKFLOW_OUTPUT_MISSING` and the routing does not move; an approval writes the record |
 | W114 | A published human node may narrow the decisions its output applies to | covered | `NarrowedOutputTests` — a rejection settles the node with no acceptance record, the quality says `exempt`, the decision proof and the check report are preserved, and the declared `on_reject` branch is taken |
 | W115 | An approval is never exempt | covered | `test_an_approval_is_never_exempt` — a declaration that lists only `rejected` still leaves the approval waiting for its record |

@@ -1289,8 +1289,12 @@ class BoundaryPins(unittest.TestCase):
     BASELINE = "7f547cb9c41ee900e48571dea6235cf7ec2f6cdc"
 
     PINNED = {
+        # Conscious update (the S17 generic-completion guard): a
+        # workflow-bound work may not be closed by request_completion
+        # without its acceptance. Disclosed in docs/runtime-boundaries.md
+        # with the before/after digests.
         "work_runtime/runtime.py":
-            "19555fcfe1e602ae6598d5ef7392536c3bc19171129686516c53fcda63d8c7ac",
+            "1b9c73e639ffa9a6facf3d092c07c12e4cf84639c0d2ea8ccecce14b6cb3d075",
         "work_runtime/adapters.py":
             "ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e",
         "work_runtime/file_adapter.py":
