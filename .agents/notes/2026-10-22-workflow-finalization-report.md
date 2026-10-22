@@ -9,7 +9,7 @@ Branch `WayJ/gawr-mixed-node-design`, baseline `457e3be`.
 |---|---|---|
 | F1 | `work_runtime/workflow.py` — the command `finalize_workflow_success`, its gate, the frozen final snapshot and the freeze of the routing pass | shipped |
 | F2 | `work_runtime/workflow_server.py` — `POST /v1/workflows/instances/{workId}/finalize` and the immutable `GET /v1/workflows/instances/{workId}/completion` | shipped |
-| F3 | `tests/test_workflow_finalization.py` — 24 tests, written before the implementation | shipped |
+| F3 | `tests/test_workflow_finalization.py` — 25 tests, written before the implementation | shipped |
 | F3b | `work_runtime/workflow_demo.py` — the acceptance as the demonstration's last chapter | shipped |
 | F4 | docs — `docs/workflow-runtime.md` (§12), `docs/workflow-api-contract.md`, `docs/runtime-boundaries.md`, `docs/verification.md` (W79–W91) | shipped |
 
@@ -38,6 +38,12 @@ no pending intent; and a snapshot that names every object and every node.
 Each refusal names what is not settled and writes nothing. Success is never
 inferred from `finished` alone, and the generic `request_completion` is not
 the acceptance path.
+
+**The snapshot names both materials.** Every node carries the revision and
+the digest it pinned, and `objects` carries the current revision of every
+named object. A revision made between the terminal and the acceptance is
+therefore visible in the snapshot instead of being inherited silently — and
+from the acceptance on, no revision may change it.
 
 **The freeze is authoritative.** An accepted workflow closes its work as
 `succeeded`, so the runtime's own closed-work rule refuses every later
@@ -98,14 +104,14 @@ recorded in `docs/runtime-boundaries.md` and in the W-matrix.
 
 | step | RED | GREEN |
 |---|---|---|
-| the new tests | `tests/test_workflow_finalization.py` (24 tests) run against the pre-change core (`git show 457e3be:work_runtime/workflow.py`): **23 of 24 failed** — the command was `COMMAND_UNSUPPORTED`, the routes did not exist, and the finished workflow had already been re-opened | `PYTHONPATH=.:tests python3 -m unittest test_workflow_finalization` → **24 tests, OK** |
+| the new tests | `tests/test_workflow_finalization.py` (25 tests) run against the pre-change core (`git show 457e3be:work_runtime/workflow.py`): **24 of 25 failed** — the command was `COMMAND_UNSUPPORTED`, the routes did not exist, and the finished workflow had already been re-opened | `PYTHONPATH=.:tests python3 -m unittest test_workflow_finalization` → **25 tests, OK** |
 | the workflow suites | — | `PYTHONPATH=.:tests python3 -m unittest test_workflow_engine test_workflow_http test_workflow_recovery test_workflow_review test_workflow_effect_policy test_workflow_node_quality test_workflow_action_context test_workflow_authority test_workflow_participants test_workflow_create_resume test_workflow_demo` → **224 tests, OK** |
-| the whole suite | — | `python3 -m unittest discover -s tests` → **1411 tests, OK (skipped=2)** |
+| the whole suite | — | `python3 -m unittest discover -s tests` → **1412 tests, OK (skipped=2)** |
 
 The gates at the end of the slice:
 
 ```
-python3 -m unittest discover -s tests            →  1411 tests, OK (skipped=2)
+python3 -m unittest discover -s tests            →  1412 tests, OK (skipped=2)
 python3 -m compileall -q work_runtime tests scripts   →  clean
 python3 scripts/check_docs.py                    →  127 markdown files, 682 local links, 0 broken
 python3 scripts/check_site.py                    →  2 pages, 0 findings

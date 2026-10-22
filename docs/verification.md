@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W92)
+### Workflow matrix (W01–W93)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -960,6 +960,7 @@ are byte-unchanged by that slice; the boundary rows are in
 | W87 | Late evidence and late revocation cannot reopen an accepted workflow | covered | `test_a_late_proof_cannot_reopen_the_accepted_workflow`, `test_a_revocation_cannot_reopen_the_accepted_workflow` — the proof is admitted by the runtime's own correction rule, the snapshot does not change, the workflow is not routed again and no effect is produced |
 | W88 | The acceptance and a competing mutation do not both win | covered | `test_the_acceptance_and_a_mutation_do_not_both_win` — two threads, one version: exactly one command is accepted, the other is `STATE_VERSION_CONFLICT` |
 | W89 | The bridge exposes the acceptance and the immutable completion read | covered | `HttpFinalizationTests` — `POST /v1/workflows/instances/{workId}/finalize` answers the instance view and the snapshot; `GET /v1/workflows/instances/{workId}/completion` answers the same snapshot every time; a stale version is `409`, a foreign actor is `403` |
+| W93 | A revision before the acceptance is visible in the snapshot | covered | `test_a_revision_before_the_acceptance_is_visible_in_the_snapshot` — the node keeps the revision it judged (1), the object list carries the current revision (2), and the revision is refused from the acceptance on |
 | W90 | An unbounded snapshot is refused instead of truncated | covered | `test_an_unbounded_snapshot_is_refused_instead_of_truncated` — 67 named objects, `WORKFLOW_SNAPSHOT_UNBOUNDED`, nothing is frozen |
 | W91 | A finished workflow is not routed again | covered | `test_a_finished_workflow_is_not_routed_again` — the routing pass and the recovery pass find the recorded terminal and write nothing: no new attempt, no new event, the same state version |
 

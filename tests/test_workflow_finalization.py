@@ -433,6 +433,33 @@ class RefusalTests(FinalizationTestCase):
 
 
 class FrozenStateTests(FinalizationTestCase):
+    def test_a_revision_before_the_acceptance_is_visible_in_the_snapshot(self):
+        """The material the workflow judged and the current material are both named."""
+        self.assert_successful_terminal_after_drive()
+        revised = self.engine.command(
+            "coordinator", "revise-before-final", WORK_ID, "revise_object",
+            {"name": "intake", "object": {"records": [], "standard": "STD-2"}},
+            version_of(self.runtime, WORK_ID))
+        self.assertEqual(revised["decision"], "accepted", revised)
+        receipt = self.finalize()
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        finalization = receipt["finalization"]
+        objects = {entry["name"]: entry for entry in finalization["objects"]}
+        nodes = {entry["node"]: entry for entry in finalization["nodes"]}
+        # The object the automatic node judged, and the object as it stands
+        # now: the snapshot names both, so a reader sees the divergence
+        # instead of inheriting it.
+        self.assertEqual(nodes["n02"]["subject"]["revision"], 1)
+        self.assertEqual(objects["intake"]["revision"], 2)
+        self.assertEqual(objects["intake"]["digest"],
+                         self.object_reference("intake")["digest"])
+        # And the accepted material is frozen from here on.
+        again = self.engine.command(
+            "coordinator", "revise-after-final", WORK_ID, "revise_object",
+            {"name": "intake", "object": {"records": [], "standard": "STD-3"}},
+            version_of(self.runtime, WORK_ID))
+        self.assertEqual(again["decision"], "rejected", again)
+
     def test_an_unbounded_snapshot_is_refused_instead_of_truncated(self):
         """A partial snapshot is not the snapshot of the accepted workflow."""
         self.assert_successful_terminal_after_drive()

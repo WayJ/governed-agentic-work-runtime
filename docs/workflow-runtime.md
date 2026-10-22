@@ -1029,6 +1029,13 @@ It names revisions and digests, never bodies: the material stays readable as
 the object revision it names. The snapshot's own `digest` covers the
 snapshot.
 
+The snapshot names **both** the material the workflow judged and the
+material as it stands: every node carries the revision and the digest it
+pinned, and `objects` carries the current revision of every named object.
+A revision made between the terminal and the acceptance is therefore
+visible in the snapshot instead of being inherited silently — and from the
+acceptance on, no revision may change it.
+
 ### The receipt and the replay
 
 The receipt of the acceptance is the runtime's ordinary command receipt, so
