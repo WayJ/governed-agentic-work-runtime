@@ -519,6 +519,17 @@ complete the node, the shortage is persisted with its real verdict, and the
 node keeps waiting. A `rejected` or `request_material` decision keeps the
 shortages in the report — nothing is turned into a pass.
 
+**The acceptance follows the same rule, and one list is stricter.** The
+workflow acceptance (`finalize_workflow_success`) accepts a required
+criterion that was judged `not_applicable` **only** when the protected
+declaration sets `allow_not_applicable` — the same rule the node's
+settlement applies, so a workflow that legitimately completed is not
+refused by its own acceptance. The definition's `required_checks` list is
+different: it is a bare list of identifiers with no declaration attached,
+so there is no `allow_not_applicable` to map and only a `passed` verdict
+satisfies it. A `not_applicable` verdict never satisfies a globally
+required check.
+
 The evidence of a **pass** is required; a shortage may carry none, because
 its reason *is* the missing fact and inventing a reference would be a lie.
 

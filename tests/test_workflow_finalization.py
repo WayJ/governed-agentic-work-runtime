@@ -810,6 +810,88 @@ class CanonicalProofTests(FinalizationTestCase):
             self.canonical_of(snapshot)
 
 
+class NotApplicableCriterionTests(FinalizationTestCase):
+    """A criterion the protected declaration allows to be not applicable.
+
+    The engine's own settlement has always accepted such a verdict: the
+    node completes and approves. The acceptance must agree with it.
+    """
+
+    def na_template(self, allow=True, required_checks=None,
+                    template_id=None):
+        template = human_terminal_template(
+            template_id=template_id or ("finalization-na-"
+                                        + ("allowed" if allow else "denied")))
+        if allow:
+            template["nodes"]["n02"]["checks"][0]["allow_not_applicable"] = True
+        if required_checks:
+            template["required_checks"] = list(required_checks)
+        return template
+
+    def decide_not_applicable(self, template):
+        published = self.engine.publish_template("coordinator", template)
+        self.assertEqual(published["decision"], "accepted", published)
+        receipt = instantiate(self.runtime, self.engine, WORK_ID,
+                              template=template)
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        self.engine.advance(WORK_ID, 1000)
+        submitted = submit_valid(self.engine, self.runtime, WORK_ID, "n01", "intake")
+        self.assertEqual(submitted["decision"], "accepted", submitted)
+        self.engine.advance(WORK_ID, 1000)
+        reference = self.object_reference("intake")
+        decided = decide_command(
+            self.engine, self.runtime, WORK_ID, "safety_review", "reviewer-a",
+            "approved", reference["digest"], reference["revision"], node="n02",
+            items=[{"check": "N02-1", "verdict": "not_applicable",
+                    "reason": "the criterion does not apply to this material"}])
+        self.assertEqual(decided["decision"], "accepted", decided)
+        self.engine.advance(WORK_ID, 1000)
+        return self.runtime.get_work(WORK_ID)
+
+    def test_an_explicitly_permitted_not_applicable_verdict_is_accepted(self):
+        work = self.decide_not_applicable(self.na_template())
+        self.assertEqual(work["workflow_status"], "finished", work)
+        self.assertEqual(work["workflow_terminal"]["outcome"], "approved", work)
+        receipt = self.finalize()
+        self.assertEqual(receipt["decision"], "accepted", receipt)
+        finalization = receipt["finalization"]
+        self.assertEqual(finalization["terminal"]["outcome"], "approved")
+        node = [entry for entry in finalization["nodes"]
+                if entry["node"] == "n02"][0]
+        verdicts = {entry["checkId"]: entry["verdict"]
+                    for entry in node["checks"]}
+        self.assertEqual(verdicts["N02-1"], "not_applicable")
+
+    def test_a_not_applicable_verdict_without_the_permission_cannot_pass(self):
+        work = self.decide_not_applicable(self.na_template(allow=False))
+        # The node never completes: the criterion is a genuine shortfall.
+        self.assertIsNone(work.get("workflow_terminal"))
+        self.assertNotEqual(work.get("workflow_status"), "finished")
+        receipt = self.finalize()
+        self.assertEqual(receipt["decision"], "rejected", receipt)
+        self.assertIsNone(self.runtime.get_work(WORK_ID).get("workflow_finalization"))
+
+    def test_a_globally_required_check_still_demands_a_pass(self):
+        """The template's required_checks are a bare id list: strictly passed."""
+        work = self.decide_not_applicable(
+            self.na_template(required_checks=["N02-1"],
+                             template_id="finalization-na-global"))
+        # The node completed: the declaration allows this criterion to be
+        # not applicable.
+        self.assertEqual(work["workflow_status"], "finished", work)
+        receipt = self.finalize()
+        self.assertEqual(receipt["decision"], "rejected", receipt)
+        self.assertEqual(receipt["code"], "WORKFLOW_CHECK_UNSATISFIED")
+        # The refusal names the global requirement, not a node: the node's
+        # own declaration allowed the verdict.
+        blockers = receipt.get("blockers") or []
+        self.assertTrue(blockers)
+        for blocker in blockers:
+            self.assertNotIn("node", blocker)
+            self.assertEqual(blocker["checkId"], "N02-1")
+        self.assertIsNone(self.runtime.get_work(WORK_ID).get("workflow_finalization"))
+
+
 class HttpFinalizationTests(FinalizationTestCase):
     """The bridge: the platform request and the immutable completion read."""
 

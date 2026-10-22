@@ -2905,9 +2905,17 @@ class WorkflowEngine:
                 if declaration.get("required") is False:
                     continue
                 entry = results.get(identifier)
-                if not entry or entry.get("verdict") != "passed":
-                    checks_open.append({"node": node_id, "checkId": identifier,
-                                        "verdict": (entry or {}).get("verdict")})
+                verdict = (entry or {}).get("verdict")
+                if verdict == "passed":
+                    continue
+                if (verdict == "not_applicable"
+                        and declaration.get("allow_not_applicable")):
+                    # The protected declaration allows this criterion to be
+                    # not applicable, and the node's own settlement applied
+                    # exactly this rule when it completed.
+                    continue
+                checks_open.append({"node": node_id, "checkId": identifier,
+                                    "verdict": verdict})
         if unsettled:
             return self.runtime._reject(WORKFLOW_NODE_UNSETTLED, version, unsettled)
         if not_completed:

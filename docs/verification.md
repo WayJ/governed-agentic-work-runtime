@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W109)
+### Workflow matrix (W01–W112)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -963,6 +963,9 @@ are byte-unchanged by that slice; the boundary rows are in
 | W101 | An output validator receives the material the attempt pinned | covered | `tests/test_workflow_materials.py` — `CoverageValidationTests`: the agent candidate is judged against the pinned input; an unknown, a missing and a duplicated identifier are each refused with the validator's own code |
 | W102 | The material is the pinned revision, never the latest | covered | `test_the_materials_are_the_pinned_revision_not_the_latest`, `test_a_candidate_covering_the_latest_revision_is_refused` — a newer revision in the store does not change what the attempt pinned |
 | W103 | Every output-producing kind hands over the material | covered | `MaterialsPerKindTests` — the agent candidate, the human record, the automatic output and the waited material each receive the pinned input (and the subject where the node declares one) |
+| W110 | An explicitly permitted not-applicable verdict is accepted | covered | `tests/test_workflow_finalization.py` — `NotApplicableCriterionTests`: a human terminal whose declaration sets `allow_not_applicable` completes on a `not_applicable` verdict and the acceptance freezes the workflow, exactly as the node's own settlement does |
+| W111 | A not-applicable verdict without the permission cannot pass | covered | `test_a_not_applicable_verdict_without_the_permission_cannot_pass` — the node never completes (the criterion is a genuine shortfall) and nothing is frozen |
+| W112 | A globally required check still demands a pass | covered | `test_a_globally_required_check_still_demands_a_pass` — the node completes under its own declaration, the acceptance refuses `WORKFLOW_CHECK_UNSATISFIED`, and the refusal names the global requirement, not a node |
 | W109 | A node that pins no input compares against its protected subject | covered | `SubjectCoverageTests` — the material carries the subject the node decided on, and a record that does not cover it is refused while the decision itself is never lost |
 | W104 | A refused automatic output keeps the real effect | covered | `test_a_rejected_automatic_output_keeps_the_effect` — the effect stays `succeeded`, the node fails with `WORKFLOW_OUTPUT_INVALID`, and no second effect is produced |
 | W105 | A validator cannot change the stored material | covered | `test_a_mutating_validator_cannot_change_the_stored_material` — the stored object, the stored document and the stored requirements are unchanged |

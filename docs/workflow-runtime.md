@@ -1036,13 +1036,29 @@ refusal names what is *not* settled, and none of them writes anything:
 | every node settled: no running, blocked or submitted instance | `WORKFLOW_NODE_UNSETTLED` |
 | every node completed with a successful verdict: no failed, expired, cancelled or rejected attempt | `WORKFLOW_NODE_NOT_COMPLETED` |
 | every declared quality validated — a rejected or missing quality is not a pass | `WORKFLOW_QUALITY_UNSETTLED` |
-| every required criterion passed, including the definition's `required_checks` | `WORKFLOW_CHECK_UNSATISFIED` |
+| every required criterion satisfied — a `passed` verdict, or a `not_applicable` verdict the protected declaration allows (`allow_not_applicable`) | `WORKFLOW_CHECK_UNSATISFIED` |
+| every criterion of the definition's `required_checks` **passed** | `WORKFLOW_CHECK_UNSATISFIED` |
 | no durable intent left pending | `WORKFLOW_INTENT_UNSETTLED` |
 | a snapshot that names **every** object and **every** node | `WORKFLOW_SNAPSHOT_UNBOUNDED` — the snapshot is never truncated: a partial proof is not a proof |
 
 The gate never infers success from `finished` alone: the terminal, the
 material, the effects and the obligations are all verified, and the generic
 `request_completion` is **not** used as the acceptance path.
+
+**A criterion that is not applicable.** The acceptance applies the same
+rule the node's own settlement applies: a required criterion is satisfied
+by a `passed` verdict, **or** by a `not_applicable` verdict when the
+protected declaration sets `allow_not_applicable` — the declaration is the
+protected text, so it is the declaration that decides. Every other verdict
+(`failed`, `insufficient`, `conflict`) and a missing verdict still refuse
+the acceptance.
+
+The definition's own `required_checks` list is **stricter**: it is a bare
+list of identifiers with no per-criterion declaration, so there is no
+`allow_not_applicable` to map and only a `passed` verdict satisfies it. A
+node may therefore complete under its own declaration while the acceptance
+refuses the workflow — and it says so: the refusal names the global
+requirement, not a node.
 
 ### The freeze
 
