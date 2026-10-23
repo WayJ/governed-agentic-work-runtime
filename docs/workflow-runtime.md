@@ -605,6 +605,7 @@ version bump, no event.
 | input or subject missing | the node is `blocked` with a bounded finding (`INPUT_MISSING`, `SUBJECT_MISSING`); it re-resolves on the next pass |
 | a decision or a candidate is missing | the node keeps waiting; a deadline turns it into `expired` |
 | the node waits for material | the node stays `waiting`: the routing pass settles nothing and opens nothing, the result acceptance is refused, and the wait survives a restart until the manager adopts the material and resumes (see [§13](#13-the-material-wait)) |
+| the material was replaced | the affected consumers are revalidated in dependency order, each on one **material** attempt; the source read is never re-run and no effect is replayed (see [§14](#14-the-controlled-source-replacement-and-the-transitive-revalidation)) |
 | human decision `rejected` | the node's `on_reject` branch is taken |
 | agent candidate invalid | the node fails with `WORKFLOW_RESULT_INVALID` and the same node is re-opened as a **new attempt**; the bounded `max_attempts` decides when the work escalates to `needs_attention` (`WorkflowReworkLimitExceeded`) |
 | operation confirmed failed | the node fails; `on_failure` is taken |
@@ -1379,7 +1380,121 @@ Two things move on a resume, even when the material did not change:
 * The workflow acceptance refuses a waiting workflow: a waiting node is
   never terminal, so the workflow is not finished.
 
-## 14. What is deliberately not here
+## 14. The controlled source replacement and the transitive revalidation
+
+A manager may replace the archived material of a running workflow and
+revalidate the consumers that judged it — **in the same workflow and
+session**. The replacement is a bounded, pre-effect intervention: it is
+admitted before any effect is produced, it never re-runs the source
+read, and it never replays a business effect.
+
+The command is `replace_material`, an ordinary runtime command: a
+compare-and-swap on `state_version`, a durable receipt under
+`(actor, commandId)`, one transaction, and a replay admitted only while
+the manager authority still holds.
+
+| payload | meaning |
+|---|---|
+| `node` | the **source node** — the node whose completed attempt produced the material. The core derives the object from that node, so a caller cannot name an arbitrary object. |
+| `source_reference` | the **frozen reference** the platform acquired. A manifest, never the material. |
+| `reason` | why the material is replaced. |
+| `waiting_node`, `waiting_ticket` | the node that waits and the ticket the manager observed. When given, the ticket must still be the current one. |
+| `request_version` | `1`. |
+
+### The source read is never re-run
+
+The core never re-proposes the source node's operation, never
+re-dispatches it and never reuses its operation key. The platform
+acquires the archive; the core receives only the frozen reference.
+
+The accepted historical version of the source node stays exactly as it
+is, and the **attestation** says so: the previous acceptance does not
+cover the new revision.
+
+```json
+{"kind": "business-material-snapshot", "referenceId": "…", "workflowId": "…",
+ "sourceNode": "…", "documentDigest": "…", "snapshotDigest": "…",
+ "scope": "…"}
+```
+
+The reference is **opaque** to the core: it never resolves it and never
+fetches anything. The core checks three things and refuses the rest —
+that it names the kind it claims, that it names the work and the source
+it belongs to, and that it carries no raw material, no location and no
+credential (`WORKFLOW_SOURCE_REFERENCE_INVALID`). It is at most 4 KiB
+(`WORKFLOW_SOURCE_REFERENCE_TOO_LARGE`).
+
+The new revision of the source object is the reference in the **same
+envelope the source output carries** — `{"sourceReference": <manifest>}` —
+so the declared structural validator of the source output still judges
+it.
+
+### The closure
+
+The affected consumers are computed over the **stored instances**, not
+over the published graph: a node is a consumer when it judged the
+material, or what was derived from it. A node that is still working on
+the material is in the closure too — its acceptance is not settled, but
+its work is bound to material that is being replaced.
+
+The closure holds **only the consumers that were instantiated**. A node
+without history has nothing to invalidate: it proceeds through the
+ordinary routing and its own budget, and it is never a material attempt.
+
+The chain is ordered: a consumer comes after the node whose output it
+judged, so the re-run judges the material in the right order.
+
+### The material budget
+
+The **core allowance is one material replacement generation per
+workflow**. It is a core bound — not a caller-supplied number, and not a
+quality counter. A definition may only **tighten** it: a node that
+declares `material_generations: 0` may not be revalidated at all
+(`WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED`).
+
+A definition published before the field existed keeps the core
+allowance: the live definition is **not** mutated to make a
+revalidation possible.
+
+### The material attempt
+
+The revalidated node runs again on a **material attempt**:
+
+* the attempt number is **monotonic** and never reused, and every
+  attempt records the **trigger** that opened it (`initial`, `quality`,
+  `material`), so the history of a node is never ambiguous;
+* the **quality allowance** (`max_attempts`) counts the attempts that
+  are *not* material attempts. It is never raised and never reset by a
+  revalidation;
+* the **material allowance** counts the revalidations;
+* a material attempt has **no automatic further retry**: when it fails
+  on quality, the node fails and nothing else is opened;
+* the ticket of a material attempt carries the node's input generation,
+  so a result ticket issued before the replacement never satisfies the
+  node after it — a node that never waited keeps exactly the ticket it
+  was given.
+
+A wait that was bound to the replaced material ends with the recorded
+reason `MATERIAL_REPLACED`; its record stays on the attempt it was
+opened on, and the node runs again.
+
+### What blocks the revalidation
+
+| the replacement is refused when | code |
+|---|---|
+| the affected branch carries a prepared, unknown or confirmed business effect — the branch is never rewound behind one, and the effect is never replayed under its old key | `WORKFLOW_REVALIDATION_EFFECT_PRESENT` |
+| the branch carries a **human judgement** — an approval granted on the material that is being replaced is a business fact the revalidation would contradict | `WORKFLOW_REVALIDATION_EFFECT_PRESENT` |
+| the material budget is spent, or a definition denies the revalidation of that node | `WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED` |
+| the ticket the manager observed is no longer current | `WORKFLOW_WAITING_TICKET_STALE` |
+| the source node produced no material, or has not completed | `WORKFLOW_SOURCE_NOT_PRODUCER`, `WORKFLOW_SOURCE_NOT_COMPLETED` |
+| nothing consumed the material | `WORKFLOW_REVALIDATION_NO_CONSUMERS` |
+| the work is cancelling or finalized | `CANCELLATION_ACTIVE`, `WORKFLOW_FINALIZED` |
+
+While a revalidation is pending, the **acceptance refuses** the workflow
+(`WORKFLOW_REVALIDATION_PENDING`): the material and the judgements would
+not belong together.
+
+## 15. What is deliberately not here
 
 * No authentication, no tenant isolation, no distributed leases or fencing.
   Principals are trusted local configuration.

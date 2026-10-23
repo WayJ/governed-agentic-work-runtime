@@ -114,6 +114,7 @@ WORKFLOW_EFFECT_UNRESOLVED = "WORKFLOW_EFFECT_UNRESOLVED"
 WORKFLOW_REQUIREMENT_UNSATISFIED = "WORKFLOW_REQUIREMENT_UNSATISFIED"
 WORKFLOW_INTENT_UNSETTLED = "WORKFLOW_INTENT_UNSETTLED"
 WORKFLOW_CANCELLED = "WORKFLOW_CANCELLED"
+WORKFLOW_REVALIDATION_PENDING = "WORKFLOW_REVALIDATION_PENDING"
 WORKFLOW_SNAPSHOT_UNBOUNDED = "WORKFLOW_SNAPSHOT_UNBOUNDED"
 
 # The reasons an automatic node refuses to produce its external effect. The
@@ -3843,6 +3844,14 @@ class WorkflowEngine:
             return self.runtime._reject("WORKFLOW_TEMPLATE_UNKNOWN", version)
         if work.get("cancellation"):
             return self.runtime._reject(WORKFLOW_CANCELLED, version)
+        plan = work.get("material_revalidation") or {}
+        if plan.get("state") == "revalidating":
+            # The material was replaced and the consumers have not been
+            # revalidated yet: the acceptance would freeze a workflow whose
+            # material and judgements do not belong together.
+            return self.runtime._reject(WORKFLOW_REVALIDATION_PENDING, version,
+                                        [{"node": node
+                                         for node in (plan.get("queue") or [])}])
         latest: Dict[str, Dict[str, Any]] = {}
         for instance in self._instances(db, work["id"]):
             latest[instance["node"]] = instance

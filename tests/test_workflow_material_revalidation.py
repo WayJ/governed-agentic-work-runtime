@@ -80,7 +80,8 @@ class RevalidationTestCase(unittest.TestCase):
         self.adapter = SourceReferenceAdapter(
             os.path.join(self.folder, "effects.db"))
         self.runtime, self.engine = build(self.path, policy=RevalidationPolicy(),
-                                          validators=revalidation_validators())
+                                          validators=revalidation_validators(),
+                                          runner="workflow-runner")
         self.work = WORK_ID
         published = self.engine.publish_template(OWNER, self.template)
         self.assertEqual("accepted", published["decision"], published)
@@ -388,6 +389,16 @@ class MaterialAttemptTestCase(RevalidationTestCase):
         self.assertEqual("rejected", refused["decision"], refused)
         self.assertIn(refused["code"], ("WORKFLOW_ATTEMPT_STALE",
                                         "WORKFLOW_INPUT_STALE"))
+
+    def test_the_acceptance_refuses_a_pending_revalidation(self):
+        # the work carries a revalidation that has not run yet
+        self.replace()
+        receipt = self.engine.command(
+            "workflow-runner", uuid.uuid4().hex, self.work,
+            "finalize_workflow_success", {},
+            version_of(self.runtime, self.work))
+        self.assertEqual("rejected", receipt["decision"], receipt)
+        self.assertEqual("WORKFLOW_REVALIDATION_PENDING", receipt["code"])
 
     def test_the_view_reports_the_revalidation(self):
         self.replace()

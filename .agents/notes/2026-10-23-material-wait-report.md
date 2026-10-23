@@ -115,7 +115,7 @@ The coordinator's two corrections are in, and they changed the design:
 | the coordinator's corrections | the adopt of a completed upstream's output was **accepted** (the engine blessed a stale output); the ticket did **not** move on a same-input resume; the intent kept its old identity — 7 failures | pinned by `test_the_adoption_of_a_completed_upstream_output_is_refused`, `test_the_resume_moves_the_input_ticket_even_for_equal_material`, `test_the_resume_asks_again_under_a_new_intent_identity` |
 | the second correction round | the ticket formula was global, so a generation-zero ticket changed on upgrade; the guard was producer-only, so the stale `intake`/`analysis` derived from a changed `sources` would have been reused — 3 failures | pinned by `test_the_generation_zero_ticket_is_legacy_compatible`, `test_a_node_persisted_before_the_upgrade_keeps_its_ticket`, `test_a_resumed_node_stale_raises_the_pre_upgrade_ticket`, `test_a_material_read_by_a_completed_node_stale_raises_the_resume` |
 | the bridge | the three routes answered 404 | `PYTHONPATH=.:tests python3 -m unittest test_workflow_material_wait_http` → **19 tests, OK** |
-| the full suite | baseline `1477 tests, OK (skipped=2)` before this slice | **1600 tests, OK (skipped=2)** after it (1477 + 51 + 16 new; the byte pin of `runtime.py` still holds) |
+| the full suite | baseline `1477 tests, OK (skipped=2)` before this slice | **1556 tests, OK (skipped=2)** after it — 1477 + 60 new in `tests/test_workflow_material_wait.py` + 19 new in `tests/test_workflow_material_wait_http.py`; the byte pin of `runtime.py` still holds |
 
 The gates: `python3 scripts/check_docs.py` (127 files, 682 links, 0
 broken); `python3 -m compileall -q work_runtime tests scripts`;

@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W153)
+### Workflow matrix (W01–W167)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -995,6 +995,20 @@ are byte-unchanged by that slice; the boundary rows are in
 | W151 | A store written before the upgrade still works | covered | `test_a_node_persisted_before_the_upgrade_keeps_its_ticket` — an instance persisted without an input generation keeps its legacy ticket and accepts the candidate bound to it |
 | W152 | The resumed node stale_raises the old ticket | covered | `test_a_resumed_node_stale_raises_the_pre_upgrade_ticket` — the same legacy ticket is refused `WORKFLOW_INPUT_STALE` after the resume |
 | W153 | The platform envelope is accepted, and a contradiction is refused | covered | `test_the_platform_envelope_is_accepted`, `test_a_body_that_names_another_work_is_refused`, `test_a_body_that_names_two_actors_is_refused` — `actorId` and `workId` are accepted, `WORK_MISMATCH` and `ACTOR_CONFLICT` refuse the contradictions |
+| W154 | The source read is never re-run by a replacement | covered | `tests/test_workflow_material_revalidation.py` — `test_the_source_read_is_never_rerun`: the source node keeps its attempt, its accepted output revision, its operation and its intents byte for byte |
+| W155 | The replacement writes an attestation and names the affected consumers | covered | `test_the_manager_replaces_the_source_material` — the attestation names the source node, the object, both revisions and the claim that the previous acceptance does not cover the new one; the new revision is the frozen reference in the source output envelope and the historical revision is retained |
+| W156 | A refused replacement writes nothing | covered | `test_a_refused_replacement_mutates_nothing` — a denied actor, an unknown node, a node that produced no material, an invalid, oversized, foreign or credential-bearing reference and a stale ticket each leave the objects, the nodes, the events and the state version unchanged |
+| W157 | The affected chain is revalidated in dependency order | covered | `test_the_affected_chain_re_runs_on_material_attempts` — n01, n02 and n03 each run on one material attempt, the attempt numbers are monotonic, the old attempts and their checks are retained, and the wait that was bound to the replaced material ends with `MATERIAL_REPLACED` |
+| W158 | The quality allowance is separate and never raised | covered | `test_a_used_up_node_gets_a_fresh_material_attempt` — a node that used three of three quality attempts gets attempt 4 as its material attempt; `test_a_material_attempt_that_fails_on_quality_opens_no_further_attempt` — a material attempt that fails on quality opens nothing |
+| W159 | The material budget is a fixed core allowance | covered | `test_the_core_allowance_carries_a_legacy_definition` — a definition published before the field existed keeps the core allowance of one generation per workflow; `test_a_second_replacement_is_refused` — the second replacement is refused `WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED` |
+| W160 | A branch with an effect is never rewound | covered | `test_a_branch_with_a_prepared_effect_is_refused` — the prepared operation is `WORKFLOW_REVALIDATION_EFFECT_PRESENT` and the operation row is unchanged; the effect is never replayed |
+| W161 | A human judgement in the branch is an effect | covered | `test_a_human_approval_in_the_branch_blocks_the_revalidation` — an approval granted on the replaced material blocks the revalidation and is named in the findings |
+| W162 | Only the instantiated consumers are invalidated | covered | `test_every_consumer_of_the_source_is_invalidated` — a sibling consumer without history is not invalidated and proceeds through the ordinary routing |
+| W163 | The acceptance refuses a pending revalidation | covered | `test_the_acceptance_refuses_a_pending_revalidation` — `WORKFLOW_REVALIDATION_PENDING` |
+| W164 | The bridge exposes the replacement | covered | `tests/test_workflow_material_revalidation_http.py` — the route answers the instance view with the attestation and the affected consumers, the new revision carries the envelope, and the historical revision is retained |
+| W165 | The bridge keeps the compare-and-swap and the command identity | covered | `test_a_stale_version_is_a_conflict`, `test_a_replay_returns_the_same_receipt`, `test_a_reused_command_id_with_another_body_is_refused` — `STATE_VERSION_CONFLICT`, one event for an identical replay, `COMMAND_ID_REUSED` |
+| W166 | Only the manager may replace, and the replay is re-authorized | covered | `test_only_the_manager_may_replace`, `test_a_replay_after_an_ownership_change_is_refused` — `403 AUTHORITY_DENIED`, and the store is unchanged |
+| W167 | The manifest is checked and the envelope is accepted | covered | `test_a_manifest_that_names_another_work_is_refused`, `test_a_manifest_with_a_location_is_refused`, `test_the_platform_envelope_is_accepted` — `WORKFLOW_SOURCE_REFERENCE_INVALID` for a foreign work and for a raw location, and the platform envelope is accepted |
 | W128 | The cancellation read is safe and scoped | covered | `CancellationReadTests` — an active work answers `state=none` with empty operation lists; an unknown work is `404 WORK_UNKNOWN`; the read carries no payload body and no credential |
 | W113 | The default still needs the named record for every decision | covered | `tests/test_workflow_conditional_output.py` — `DefaultSemanticsTests`: a rejection without a record leaves the node running with `WORKFLOW_OUTPUT_MISSING` and the routing does not move; an approval writes the record |
 | W114 | A published human node may narrow the decisions its output applies to | covered | `NarrowedOutputTests` — a rejection settles the node with no acceptance record, the quality says `exempt`, the decision proof and the check report are preserved, and the declared `on_reject` branch is taken |
@@ -1151,12 +1165,20 @@ are byte-unchanged by that slice; the boundary rows are in
 
 ### Explicitly not covered
 
-- **No transitive invalidation and no rewind.** When the material of a
-  completed upstream node moved on, the wait stays refused
-  (`INPUT_DEPENDENCIES_REQUIRE_REVALIDATION`) and the upstream needs a
-  separate, bounded revalidation. This slice does not rewind a completed
-  node, does not grant a new attempt for it, and does not raise any
-  configured `max_attempts`. A generic rewind engine is out of scope.
+- **No rewind of a completed node, and no effect replay.** The controlled
+  replacement revalidates the *consumers* of the replaced material; it
+  never re-runs the source read, never re-proposes or re-dispatches an
+  operation, and never reuses an operation key. A branch that carries a
+  prepared, unknown or confirmed business effect — or a human judgement —
+  is refused (`WORKFLOW_REVALIDATION_EFFECT_PRESENT`). The core
+  allowance is one material generation per workflow; a definition may
+  only tighten it. The quality allowance is never raised and never reset,
+  and a material attempt that fails on quality opens no further attempt.
+  A generic rewind engine is out of scope.
+- **The material reference is opaque.** The core never resolves the
+  frozen reference and never fetches anything: the platform acquires the
+  archive, the core records the manifest. The core does not check that
+  the archive holds the material the manifest names.
 
 - **No authentication and no tenant isolation.** The bridge resolves the
   approving principal from the published node and the policy's source

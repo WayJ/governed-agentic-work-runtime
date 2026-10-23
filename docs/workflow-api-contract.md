@@ -582,6 +582,74 @@ names the work of the path (a body that names another work is
 `400 WORK_MISMATCH` — the path is authoritative, and a request is never
 applied to a work it does not name).
 
+### `POST /v1/workflows/instances/{workId}/material/replace`
+
+Replace the archived source material and revalidate the consumers that
+judged it, in the same workflow and session. The command is the runtime's
+own `replace_material`: a compare-and-swap against the version the
+caller observed, under the caller's own `commandId`, in one transaction.
+
+```json
+{"actor": "platform", "requestVersion": 1, "node": "s00",
+ "sourceReference": {"kind": "business-material-snapshot",
+                     "referenceId": "REF-2", "workflowId": "W-1",
+                     "sourceNode": "s00", "documentDigest": "…",
+                     "snapshotDigest": "…", "scope": "records"},
+ "reason": "the archive was refreshed",
+ "waitingNode": "n03", "waitingTicket": "…",
+ "commandId": "replace-1", "expectedVersion": 17}
+```
+
+* `node` is the **source node** — the node whose completed attempt
+  produced the material. The core derives the object from that node, so
+  a caller cannot name an arbitrary object
+  (`409 WORKFLOW_SOURCE_NOT_PRODUCER`, `409 WORKFLOW_SOURCE_NOT_COMPLETED`).
+* `sourceReference` is the **frozen reference** the platform acquired: a
+  manifest, never the material. The core checks that it names its kind,
+  the work and the source it belongs to, and refuses a raw location, a
+  credential or the raw material (`422
+  WORKFLOW_SOURCE_REFERENCE_INVALID`). It is at most 4 KiB (`422
+  WORKFLOW_SOURCE_REFERENCE_TOO_LARGE`). The core wraps it in the same
+  envelope the source output carries and writes it as a new revision;
+  the historical revision is retained.
+* `waitingNode` and `waitingTicket` are the node that waits and the
+  ticket the manager observed. When given, the ticket must still be the
+  current one (`409 WORKFLOW_WAITING_TICKET_STALE`).
+* `requestVersion` is `1`; any other value is `400
+  MATERIAL_WAIT_VERSION_UNSUPPORTED`.
+* The `actor` must be the work's owner with `work.manage`; anybody else
+  is `403 AUTHORITY_DENIED` and nothing changes. The trusted platform
+  wire may name it `actor` or `actorId`; a body that names **two
+  different** ones is `400 ACTOR_CONFLICT`, and a body that names
+  neither is `400 ACTOR_REQUIRED`. A `workId` in the body is accepted
+  when it names the work of the path (`400 WORK_MISMATCH` otherwise).
+
+`200` the instance view with `materialReplacement: {node, attestation,
+affected, generation, resultStateVersion}` and the plan in
+`materialRevalidation: {state, generation, attestation, affected, queue}`.
+
+**The source read is never re-run**: the source node keeps its attempt,
+its effect, its receipts and its accepted revision. The attestation says
+so explicitly — `claim: "… the previous acceptance does not cover this
+revision …"`.
+
+**The revalidation is bounded.** The core allowance is one material
+replacement generation per workflow; a definition may only tighten it.
+The affected consumers are revalidated in dependency order, each on one
+**material attempt**, whose attempt number is the next one and whose
+ticket carries the node's input generation. A material attempt that
+fails on quality opens no further attempt.
+
+Refusals: `409 WORKFLOW_REVALIDATION_EFFECT_PRESENT` (the affected
+branch carries a business effect or a human judgement),
+`409 WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED`,
+`409 WORKFLOW_REVALIDATION_NO_CONSUMERS`, `409
+WORKFLOW_WAITING_TICKET_STALE`, `409 WORKFLOW_SOURCE_NOT_PRODUCER`,
+`409 WORKFLOW_SOURCE_NOT_COMPLETED`, `409 CANCELLATION_ACTIVE`, `409
+WORKFLOW_FINALIZED`, `409 WORKFLOW_REVALIDATION_PENDING` (the
+acceptance), `422 WORKFLOW_SOURCE_REFERENCE_INVALID`, `422
+WORKFLOW_SOURCE_REFERENCE_TOO_LARGE`.
+
 ### `GET /v1/workflows/instances/{workId}/cancellation`
 
 The safe cancellation state of one work — no payload body, no credential.
