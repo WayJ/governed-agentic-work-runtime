@@ -3258,8 +3258,9 @@ class WorkflowEngine:
         it is, and the attestation says so: the old acceptance does **not**
         cover the new revision. The consumers that judged the material —
         and everything derived from them — are revalidated on **material
-        attempts**, which are bounded by the definition's material budget
-        and are never counted against the quality allowance.
+        attempts**, which are bounded by the core allowance of one
+        generation per workflow (a definition may only tighten it) and
+        are never counted against the quality allowance.
         """
         if set(payload) != {"node", "source_reference", "reason",
                             "request_version", "waiting_node",

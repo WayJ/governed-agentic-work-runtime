@@ -18,7 +18,7 @@ definition may only tighten.
 | C1 | `work_runtime/workflow.py` — the command `replace_material`, the consumer/transitive closure, the attestation, the material attempt, the queue-driven revalidation | shipped |
 | C2 | `work_runtime/workflow_spec.py` — the optional node field `material_generations` | shipped |
 | C3 | `work_runtime/workflow_server.py` — the route `POST …/material/replace`, the status table, the view | shipped |
-| C4 | `tests/test_workflow_material_revalidation.py` — 16 tests over a real store | shipped |
+| C4 | `tests/test_workflow_material_revalidation.py` — 19 tests over a real store | shipped |
 | C5 | `tests/test_workflow_material_revalidation_http.py` — 14 tests over a real service on a real store | shipped |
 | C6 | docs — `workflow-runtime.md` (§14), `workflow-api-contract.md`, `verification.md` (W154–W167) | shipped |
 
@@ -110,7 +110,7 @@ pending (`WORKFLOW_REVALIDATION_PENDING`).
 | the material attempt | 4 failures + 1 error: the cursor routed past the invalidated node, the wait was not invalidated, the ticket did not move | `test_the_affected_chain_re_runs_on_material_attempts` → OK |
 | the coordinator's adjustments | the global ticket formula, the producer-only guard, the invented manifest fields and the automatic retry after a material failure | `test_the_core_allowance_carries_a_legacy_definition`, `test_a_used_up_node_gets_a_fresh_material_attempt`, `test_a_human_approval_in_the_branch_blocks_the_revalidation`, `test_every_consumer_of_the_source_is_invalidated` → OK |
 | the bridge | the route answered 404 | `PYTHONPATH=.:tests python3 -m unittest test_workflow_material_revalidation_http` → **14 tests, OK** |
-| the whole slice | — | `PYTHONPATH=.:tests python3 -m unittest test_workflow_material_revalidation test_workflow_material_revalidation_http` → **30 tests, OK** |
+| the whole slice | — | `PYTHONPATH=.:tests python3 -m unittest test_workflow_material_revalidation test_workflow_material_revalidation_http` → **33 tests, OK** |
 | the full suite | the baseline before this slice was 1556 tests, OK (skipped=2) | **SUITE_COUNT tests, OK (skipped=2)** |
 
 The gates: `python3 scripts/check_docs.py` (127 files, 682 links, 0
@@ -188,6 +188,7 @@ WORKFLOW_SOURCE_REFERENCE_TOO_LARGE.
 | `2656341` | feat: a revalidated node runs on a material attempt, not a quality one |
 | `3d51368` | fix: the material budget is a fixed core allowance the definition may tighten |
 | `6dd8dd2` | test: the closure, the effects and the legacy definition |
+| `154969c` | test: the old review, the old acknowledgement and the restart |
 | `1d73419` | feat: the bridge exposes the controlled source replacement |
 | `dcd5f05` | docs: the controlled replacement, the material budget and the limits |
 
