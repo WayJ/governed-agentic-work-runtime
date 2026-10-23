@@ -382,7 +382,7 @@ class FocusedMaterialWaitHttpTestCase(MaterialWaitHttpBase):
             OWNER, "focused-bind", WORK_ID, "bind_workflow",
             {"template_id": FOCUSED_TEMPLATE["id"],
              "template_version": FOCUSED_TEMPLATE["version"],
-             "parameters": {"subject": "east parapet"}},
+             "parameters": {"subject": "focused material"}},
             version_of(self.runtime, WORK_ID))
         self.assertEqual("accepted", bound["decision"], bound)
         self.engine.advance(WORK_ID, 1000)

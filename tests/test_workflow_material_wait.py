@@ -611,7 +611,7 @@ class FocusedWaitTestCase(unittest.TestCase):
             OWNER, uuid.uuid4().hex, self.work, "bind_workflow",
             {"template_id": FOCUSED_TEMPLATE["id"],
              "template_version": FOCUSED_TEMPLATE["version"],
-             "parameters": {"subject": "east parapet"}},
+             "parameters": {"subject": "focused material"}},
             version_of(self.runtime, self.work))
         self.assertEqual("accepted", bound["decision"], bound)
         self.engine.advance(self.work, 1_000)
