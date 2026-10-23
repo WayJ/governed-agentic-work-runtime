@@ -7,12 +7,14 @@ only holds the test-side helpers.
 """
 
 import uuid
+from typing import List
 
 from work_runtime.policy import digest
 from work_runtime.runtime import Runtime
 from work_runtime.workflow import WorkflowEngine
 from work_runtime.workflow_demo import (ANALYSIS_SHAPE as DEMO_ANALYSIS_SHAPE,
                                          INTAKE_SHAPE as DEMO_INTAKE_SHAPE,
+                                         PROPOSAL_SHAPE as DEMO_PROPOSAL_SHAPE,
                                          DemoBusinessSystem, WorkflowDemoPolicy,
                                          workflow_demo_grants,
                                          workflow_demo_template,
@@ -266,3 +268,120 @@ def submit_valid(engine, runtime, work_id, node, name, result=None,
     attempt = current_attempt(engine, runtime, work_id, node)
     payload = VALID_RESULTS[name] if result is None else result
     return submit(engine, runtime, work_id, node, attempt, name, payload, actor=actor)
+
+
+# A family of its own, shaped like the safety workflow: a source read
+# that produces the archived material, two consumers that judge it, and a
+# third that waits for what is still missing. Every consumer declares a
+# material budget, so a controlled replacement may revalidate it.
+REVALIDATION_TEMPLATE = {
+    "id": "material-revalidation-focused",
+    "version": "test-1",
+    "policy_family": POLICY_ID,
+    "entry": "s00",
+    "terminal": ["n03"],
+    "nodes": {
+        "s00": {"kind": "action", "capability": "work.dispatch",
+                "subject": {"object": "request"},
+                "output": {"object": "sources",
+                           "validation": {"shape": {
+                               "type": "object",
+                               "properties": {"recordId": {"type": "string"},
+                                              "action": {"type": "string"},
+                                              "items": {"type": "array",
+                                                        "items": {"type": "string"}}},
+                               "required": ["recordId", "action", "items"]},
+                           "validator": "effect", "validator_version": "1"}},
+                "checks": [{"id": "N00-1", "method": "PROGRAM",
+                            "criterion": "The receipt names the effect it "
+                                         "recorded.",
+                            "criterion_version": "1",
+                            "validator": "effect",
+                            "validator_version": "1"}],
+                "max_attempts": 1},
+        "n01": {"kind": "agent", "executor": "agent-executor", "max_attempts": 2,
+                "material_generations": 1,
+                "inputs": [{"object": "sources"}],
+                "output": {"object": "intake",
+                           "validation": {"shape": DEMO_INTAKE_SHAPE,
+                                          "validator": "intake",
+                                          "validator_version": "1"}},
+                "checks": [{"id": "N01-1", "method": "PROGRAM",
+                            "criterion": "Every extracted record names its "
+                                         "source.",
+                            "criterion_version": "1",
+                            "validator": "intake",
+                            "validator_version": "1"}]},
+        "n02": {"kind": "agent", "executor": "agent-executor", "max_attempts": 2,
+                "material_generations": 1,
+                "inputs": [{"object": "intake"}, {"object": "sources"}],
+                "output": {"object": "analysis",
+                           "validation": {"shape": DEMO_ANALYSIS_SHAPE,
+                                          "validator": "analysis",
+                                          "validator_version": "1"}},
+                "checks": [{"id": "N02-1", "method": "PROGRAM",
+                            "criterion": "Every finding cites a clause.",
+                            "criterion_version": "1",
+                            "validator": "analysis",
+                            "validator_version": "1"}]},
+        "n03": {"kind": "agent", "executor": "agent-executor", "max_attempts": 2,
+                "material_generations": 1,
+                "inputs": [{"object": "analysis"}],
+                "output": {"object": "proposal",
+                           "validation": {"shape": DEMO_PROPOSAL_SHAPE,
+                                          "validator": "proposal",
+                                          "validator_version": "1"}},
+                "checks": [{"id": "N03-1", "method": "PROGRAM",
+                            "criterion": "Every measure has a stable identifier.",
+                            "criterion_version": "1",
+                            "validator": "proposal",
+                            "validator_version": "1"}]},
+    },
+    "edges": [{"from": "s00", "to": "n01"}, {"from": "n01", "to": "n02"},
+              {"from": "n02", "to": "n03"}],
+}
+
+
+class RevalidationPolicy:
+    """A family whose source read is not gated by an approval obligation.
+
+    The demonstration family blocks every dispatch until a project approval
+    exists. A source read is a trusted read of an archive, so this family
+    declares no obligation: the *engine* still decides whether a node may
+    be revalidated, and the business effect is still never replayed.
+    """
+
+    id = POLICY_ID
+    version = POLICY_VERSION
+    goal = POLICY_GOAL
+    evidence_sources = {"dispatch_receipt": "business-system",
+                        "accepted": "business-system"}
+
+    def validate_document(self, document: dict) -> None:
+        if set(document) != {"id", "subject"}:
+            raise ValueError("Document requires id and subject")
+        if not isinstance(document["id"], str) or not document["id"]:
+            raise ValueError("Document id must be a nonempty string")
+        if not isinstance(document["subject"], str) or not document["subject"]:
+            raise ValueError("Document subject must be a nonempty string")
+
+    def validate_evidence(self, work: dict, candidate: dict) -> bool:
+        data = candidate["data"]
+        if candidate["kind"] in ("dispatch_receipt", "accepted"):
+            return (set(data) == {"digest", "external_id"}
+                    and isinstance(data["digest"], str) and bool(data["digest"])
+                    and isinstance(data["external_id"], str))
+        return False
+
+    def evaluate(self, work: dict, evidence: List[dict]) -> List[dict]:
+        return []
+
+    def action_blockers(self, capability: str,
+                        requirements: List[dict]) -> List[dict]:
+        if capability not in ("work.dispatch", "work.deliver"):
+            return [{"code": "CAPABILITY_UNSUPPORTED", "capability": capability}]
+        return []
+
+    def operation_key(self, capability: str, work: dict) -> str:
+        return digest([self.id, capability, work["document"]["id"],
+                       work["document_revision"]])

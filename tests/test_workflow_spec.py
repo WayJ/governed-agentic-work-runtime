@@ -256,3 +256,42 @@ class ValidatorRegistryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MaterialGenerationLintTests(unittest.TestCase):
+    """The definition declares how often a node's material may be replaced.
+
+    The material budget is separate from the quality allowance: a node
+    declares both, and they bound different things.
+    """
+
+    def base(self):
+        return {
+            "id": "t", "version": "1", "policy_family": "f",
+            "entry": "n01", "terminal": ["n01"],
+            "nodes": {"n01": {"kind": "agent", "executor": "e",
+                              "output": {"object": "o"}, "max_attempts": 2}},
+            "edges": [],
+        }
+
+    def test_a_material_budget_is_accepted(self):
+        spec = self.base()
+        spec["nodes"]["n01"]["material_generations"] = 2
+        self.assertEqual([], lint_template(spec))
+
+    def test_a_negative_budget_is_refused(self):
+        spec = self.base()
+        spec["nodes"]["n01"]["material_generations"] = -1
+        codes = [finding["code"] for finding in lint_template(spec)]
+        self.assertIn("NODE_FIELD_TYPE", codes)
+
+    def test_a_budget_that_is_not_an_integer_is_refused(self):
+        spec = self.base()
+        spec["nodes"]["n01"]["material_generations"] = "2"
+        codes = [finding["code"] for finding in lint_template(spec)]
+        self.assertIn("NODE_FIELD_TYPE", codes)
+
+    def test_no_budget_means_no_revalidation(self):
+        spec = self.base()
+        self.assertEqual([], lint_template(spec))
+        self.assertNotIn("material_generations", spec["nodes"]["n01"])

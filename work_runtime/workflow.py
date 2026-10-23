@@ -35,7 +35,7 @@ from .workflow_spec import (EFFECT_POLICIES, EFFECT_POLICY_ONCE,
 WORKFLOW_COMMANDS = ("bind_workflow", "revise_object", "submit_node_result",
                      "record_decision", "finalize_workflow_success",
                      "request_material_wait", "adopt_material",
-                     "resume_material_wait")
+                     "resume_material_wait", "replace_material")
 
 TERMINAL_NODE_STATES = ("completed", "failed", "expired", "cancelled")
 
@@ -68,6 +68,12 @@ MAX_WAIT_REASON_CHARS = 512
 
 # The bound of the adoptions one wait may carry.
 MAX_WAIT_ADOPTIONS = 16
+
+# The bound of the source reference a manager may freeze. It is a
+# *reference* to archived material, never the material itself: the core
+# never resolves it, and it never carries a URL, an authority or a
+# credential.
+MAX_SOURCE_REFERENCE_BYTES = 4096
 
 # The source of the proofs the engine writes itself. It is the engine's own
 # trusted channel, never the ingress source of a signed evidence kind: the
@@ -456,7 +462,7 @@ class WorkflowEngine:
         the configured source and the actor must still hold the assignment.
         """
         if kind in ("bind_workflow", "revise_object", "request_material_wait",
-                    "adopt_material", "resume_material_wait"):
+                    "adopt_material", "resume_material_wait", "replace_material"):
             return self.runtime._manager(actor, work)
         if kind == "submit_node_result":
             return "workflow.execute" in self.runtime.grants.get(actor, set())
@@ -506,6 +512,8 @@ class WorkflowEngine:
             return self._adopt_material(db, actor, work, payload, version)
         if kind == "resume_material_wait":
             return self._resume_material_wait(db, actor, work, payload, version)
+        if kind == "replace_material":
+            return self._replace_material(db, actor, work, payload, version)
         return self.runtime._reject("COMMAND_UNSUPPORTED", version)
 
     # ------------------------------------------------------------------
@@ -972,6 +980,19 @@ class WorkflowEngine:
         value = node.get("max_attempts")
         if type(value) is not int or value < 1:
             return DEFAULT_MAX_ATTEMPTS
+        return value
+
+    def _material_generations(self, spec, node_id) -> int:
+        """How often the material this node judges may be replaced.
+
+        The material budget is separate from the quality allowance: it
+        bounds the **material** attempts, the revalidations a controlled
+        replacement opens. Zero means the node may not be revalidated.
+        """
+        node = spec["nodes"].get(node_id) or {}
+        value = node.get("material_generations")
+        if type(value) is not int or value < 0:
+            return 0
         return value
 
     def advance(self, work_id: str, now: int) -> Dict[str, Any]:
@@ -3021,6 +3042,306 @@ class WorkflowEngine:
                                       state=instance["state"],
                                       input_digest=instance.get("input_digest"),
                                       wait=copy.deepcopy(instance.get("material_wait") or {}))
+
+    def _replace_material(self, db, actor, work, payload, version):
+        """Replace the archived source material and revalidate its consumers.
+
+        The source read is **never** re-run: the core never re-proposes
+        the source node's operation, never re-dispatches it and never
+        reuses its operation key. The manager supplies the frozen
+        ``sourceReference`` — a small immutable pointer to the archive the
+        platform acquired — and the core records it as a new revision of
+        the material the source node produced.
+
+        The accepted historical version of the source node stays exactly as
+        it is, and the attestation says so: the old acceptance does **not**
+        cover the new revision. The consumers that judged the material —
+        and everything derived from them — are revalidated on **material
+        attempts**, which are bounded by the definition's material budget
+        and are never counted against the quality allowance.
+        """
+        if set(payload) != {"node", "source_reference", "reason",
+                            "request_version", "waiting_node",
+                            "waiting_ticket"}:
+            raise WorkflowError("replace_material requires exactly node, "
+                                "source_reference, reason, request_version, "
+                                "waiting_node and waiting_ticket")
+        node_id = payload["node"]
+        reference = payload["source_reference"]
+        reason = payload["reason"]
+        if not isinstance(node_id, str) or not node_id:
+            raise WorkflowError("replace_material requires a node id")
+        if (not isinstance(reason, str) or not reason
+                or len(reason) > MAX_WAIT_REASON_CHARS):
+            raise WorkflowError("the reason must be a nonempty bounded string")
+        if payload["request_version"] != MATERIAL_WAIT_REQUEST_VERSION:
+            raise WorkflowError("replace_material requires request_version "
+                                + str(MATERIAL_WAIT_REQUEST_VERSION))
+        if (not isinstance(reference, dict)
+                or not isinstance(reference.get("kind"), str)
+                or not reference["kind"]):
+            # The frozen reference is a **value** the manager supplies, not
+            # a protocol shape: the refusal says what was wrong with it.
+            return self.runtime._reject("WORKFLOW_SOURCE_REFERENCE_INVALID",
+                                        version, [node_id])
+        if len(canonical(reference).encode("utf-8")) > MAX_SOURCE_REFERENCE_BYTES:
+            return self.runtime._reject("WORKFLOW_SOURCE_REFERENCE_TOO_LARGE",
+                                        version, [node_id])
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self.runtime._reject("CANCELLATION_ACTIVE", version)
+        if work.get("workflow_finalization"):
+            return self.runtime._reject("WORKFLOW_FINALIZED", version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        # the source node: the completed attempt that produced the material
+        node = spec["nodes"].get(node_id)
+        if node is None:
+            return self.runtime._reject("WORKFLOW_NODE_UNKNOWN", version, [node_id])
+        instance = self._latest_instance(db, work["id"], node_id)
+        output = instance.get("output") if instance else None
+        if not isinstance(output, dict) or not output.get("name"):
+            # The node produced no material: it is not a source.
+            return self.runtime._reject("WORKFLOW_SOURCE_NOT_PRODUCER", version,
+                                        [node_id])
+        if instance.get("state") != "completed":
+            return self.runtime._reject("WORKFLOW_SOURCE_NOT_COMPLETED", version,
+                                        [node_id])
+        object_name = output["name"]
+        # the ticket the manager observed must still be the current one
+        waiting_node = payload["waiting_node"]
+        ticket = payload["waiting_ticket"]
+        if waiting_node is not None or ticket is not None:
+            if not isinstance(waiting_node, str) or not waiting_node:
+                raise WorkflowError("waiting_node and waiting_ticket are "
+                                    "given together")
+            if not isinstance(ticket, str) or not ticket:
+                raise WorkflowError("waiting_ticket must be a nonempty string")
+            current = self._latest_instance(db, work["id"], waiting_node)
+            if (current is None
+                    or current.get("input_digest") != ticket):
+                return self.runtime._reject("WORKFLOW_WAITING_TICKET_STALE",
+                                            version, [waiting_node])
+        # the consumers of the material, and everything derived from them
+        affected = self._consumer_closure(db, work, object_name)
+        if not affected:
+            return self.runtime._reject("WORKFLOW_REVALIDATION_NO_CONSUMERS",
+                                        version, [object_name])
+        branch = self._branch_nodes(spec, [entry["node"] for entry in affected])
+        blocked = self._branch_effects(db, work, branch)
+        if blocked:
+            # A prepared, unknown or confirmed effect is a business effect:
+            # the branch is never rewound behind one, and the effect is
+            # never replayed under its old operation key.
+            return self.runtime._reject("WORKFLOW_REVALIDATION_EFFECT_PRESENT",
+                                        version, blocked)
+        # the material budget: separate from the quality allowance
+        used = work.get("material_generations_used") or {}
+        exhausted = []
+        for entry in affected:
+            node_of = entry["node"]
+            spent = int(used.get(node_of) or 0)
+            if spent + 1 > self._material_generations(spec, node_of):
+                exhausted.append({"node": node_of, "used": spent,
+                                  "allowed": self._material_generations(spec, node_of)})
+        if exhausted:
+            return self.runtime._reject("WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED",
+                                        version, exhausted)
+        # the new revision of the material: the manager's frozen reference
+        revision = self._write_object(db, work["id"], object_name, reference)
+        generation = int((work.get("material_revalidation") or {}).get("generation") or 0) + 1
+        attestation = {
+            "kind": reference.get("kind"),
+            "source_reference": reference,
+            "adopted_by": actor,
+            "adopted_at": int(time.time()),
+            "source_node": node_id,
+            "source_attempt": instance["attempt"],
+            "object": object_name,
+            "from": {"revision": output.get("revision"), "digest": output.get("digest")},
+            "to": {"revision": revision["revision"], "digest": revision["digest"]},
+            "reason": reason,
+            "claim": "adopted by the trusted manager: the acceptance of the "
+                     "previous revision does not cover this revision, and the "
+                     "source read was not re-run",
+        }
+        # the consumers are marked: their next attempt is a material one
+        for entry in affected:
+            target = self._latest_instance(db, work["id"], entry["node"])
+            if target is None:
+                continue
+            target["pending_revalidation"] = {
+                "generation": generation,
+                "source_node": node_id,
+                "object": object_name,
+                "from": attestation["from"],
+                "to": attestation["to"],
+                "reason": entry["reason"],
+            }
+            self._save_instance(db, work, target, "WorkflowNodeInvalidated",
+                                {"generation": generation,
+                                 "source": {"node": node_id, "object": object_name}})
+        used = dict(used)
+        for entry in affected:
+            node_of = entry["node"]
+            used[node_of] = int(used.get(node_of) or 0) + 1
+        work["material_generations_used"] = used
+        work["material_revalidation"] = {
+            "state": "revalidating",
+            "generation": generation,
+            "attestation": attestation,
+            "affected": affected,
+            "queue": [entry["node"] for entry in affected],
+        }
+        work["workflow_current"] = affected[0]["node"]
+        self.runtime._save(db, work, "WorkflowMaterialReplaced", {
+            "generation": generation, "source_node": node_id,
+            "object": object_name, "revision": revision["revision"],
+            "affected": [entry["node"] for entry in affected]})
+        return self.runtime._accepted(work, attestation=attestation,
+                                      affected=affected,
+                                      generation=generation)
+
+    def _consumer_closure(self, db, work, object_name):
+        """The consumers of the material, and everything derived from it.
+
+        The closure is computed over the **stored instances**, not over the
+        published graph: a node is a consumer when it judged the material,
+        or what was derived from it. A node that is still working on the
+        material is in the closure too — its acceptance is not settled, but
+        its work is bound to material that is being replaced, so it is
+        invalidated as well.
+
+        The order is the dependency order: a consumer comes after the node
+        whose output it judged.
+        """
+        latest = {}
+        for instance in self._instances(db, work["id"]):
+            current = latest.get(instance["node"])
+            if current is None or instance["attempt"] > current["attempt"]:
+                latest[instance["node"]] = instance
+        produced = {}
+        for instance in latest.values():
+            output = instance.get("output")
+            if isinstance(output, dict) and output.get("name"):
+                produced[output["name"]] = instance
+
+        def judges(instance, name):
+            return any(ref.get("name") == name
+                       for ref in self._judged_refs(instance))
+
+        affected = []
+        seen = set()
+        frontier = [instance for instance in latest.values()
+                    if instance.get("state") == "completed"
+                    and judges(instance, object_name)]
+        while frontier:
+            instance = frontier.pop(0)
+            key = (instance["node"], instance["attempt"])
+            if key in seen:
+                continue
+            seen.add(key)
+            direct = judges(instance, object_name)
+            settled = instance.get("state") == "completed"
+            affected.append({
+                "node": instance["node"], "attempt": instance["attempt"],
+                "reason": (("judged" if settled else "was working on")
+                           + " the replaced material" if direct else
+                           (("judged" if settled else "was working on")
+                            + " what the replaced material produced"))})
+            output = instance.get("output")
+            if not isinstance(output, dict):
+                continue
+            for other in latest.values():
+                if (other["node"], other["attempt"]) in seen:
+                    continue
+                if not judges(other, output.get("name")):
+                    continue
+                frontier.append(other)
+        return self._order_affected(affected, produced, latest)
+
+    def _order_affected(self, affected, produced, latest):
+        """The affected nodes in dependency order.
+
+        A node comes after the node whose output it judged. The order is
+        stable, so a reader can rely on it.
+        """
+        unique = []
+        for entry in affected:
+            if entry["node"] not in unique:
+                unique.append(entry["node"])
+        depends = {node: set() for node in unique}
+        for entry in affected:
+            node = entry["node"]
+            instance = latest.get(node)
+            if instance is None:
+                continue
+            for ref in self._judged_refs(instance):
+                source = produced.get(ref.get("name"))
+                if (source is not None and source["node"] in depends
+                        and source["node"] != node):
+                    depends[node].add(source["node"])
+        ordered = []
+        remaining = {node: set(deps) for node, deps in depends.items()}
+        while remaining:
+            ready = sorted(node for node, deps in remaining.items() if not deps)
+            if not ready:
+                break
+            for node in ready:
+                ordered.append(node)
+                del remaining[node]
+            for deps in remaining.values():
+                deps.difference_update(ready)
+        for node in unique:
+            if node not in ordered:
+                ordered.append(node)
+        by_node = {entry["node"]: entry for entry in affected}
+        return [by_node[node] for node in ordered]
+
+    def _branch_nodes(self, spec, roots):
+        """The affected nodes and everything the graph runs after them."""
+        children = {}
+        for edge in spec.get("edges") or []:
+            children.setdefault(edge.get("from"), []).append(edge.get("to"))
+        branch = set()
+        frontier = list(roots)
+        while frontier:
+            node = frontier.pop()
+            if node in branch:
+                continue
+            branch.add(node)
+            frontier.extend(children.get(node) or [])
+        return branch
+
+    def _branch_effects(self, db, work, branch):
+        """The business effects the branch already carries.
+
+        A prepared, unknown or confirmed effect is an effect that happened
+        or may still happen: the branch is never rewound behind one, and
+        the effect is never replayed under its old operation key.
+        """
+        blocked = []
+        for instance in self._instances(db, work["id"]):
+            if instance["node"] not in branch:
+                continue
+            operation_id = instance.get("operation_id")
+            if not operation_id:
+                continue
+            row = db.execute("SELECT body FROM operations WHERE id=?",
+                             (operation_id,)).fetchone()
+            if row is None:
+                continue
+            operation = json.loads(row[0])
+            if operation.get("dispatch_state") == "cancelled":
+                continue
+            blocked.append({"node": instance["node"],
+                            "attempt": instance["attempt"],
+                            "operationId": operation_id,
+                            "status": operation.get("status"),
+                            "dispatchState": operation.get("dispatch_state")})
+        return blocked
 
     # ------------------------------------------------------------------
     # Cancellation
