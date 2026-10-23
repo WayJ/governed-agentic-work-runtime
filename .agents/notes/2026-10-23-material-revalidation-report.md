@@ -302,6 +302,11 @@ exists, not a gap to be filled later.
 | `154969c` | test: the old review, the old acknowledgement and the restart |
 | `1d73419` | feat: the bridge exposes the controlled source replacement |
 | `dcd5f05` | docs: the controlled replacement, the material budget and the limits |
+| `5a11431` | docs: the plan records the delivered design and the three adjustments |
+| `d148c36` | docs: the report carries the authoritative count of the suite |
+| `7f74bdb` | fix: the published validation judges the new reference, and nothing settles an invalidated attempt |
+| `6609bef` | test: the accepted workflow after a controlled revalidation |
+| `4dd7408` | docs: the report records the review-fix evidence |
 
 Nothing was merged and nothing was pushed: the branch is left for the
 integration worker.
