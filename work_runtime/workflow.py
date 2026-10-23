@@ -226,6 +226,39 @@ def _material_wait_view(wait: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+def _revalidation_view(plan: Any) -> Optional[Dict[str, Any]]:
+    """The bounded view of a material revalidation.
+
+    It names the attestation, the affected consumers and the chain they
+    are re-run in. It carries no payload body: the material stays
+    readable as the object revision the attestation names.
+    """
+    if not isinstance(plan, dict):
+        return None
+    attestation = plan.get("attestation") or {}
+    return {
+        "state": plan.get("state"),
+        "generation": plan.get("generation"),
+        "attestation": {
+            "kind": attestation.get("kind"),
+            "adoptedBy": attestation.get("adopted_by"),
+            "adoptedAt": attestation.get("adopted_at"),
+            "sourceNode": attestation.get("source_node"),
+            "sourceAttempt": attestation.get("source_attempt"),
+            "object": attestation.get("object"),
+            "from": attestation.get("from"),
+            "to": attestation.get("to"),
+            "claim": attestation.get("claim"),
+            "reason": attestation.get("reason"),
+        },
+        "affected": [{"node": entry.get("node"),
+                      "attempt": entry.get("attempt"),
+                      "reason": entry.get("reason")}
+                     for entry in (plan.get("affected") or [])],
+        "queue": list(plan.get("queue") or []),
+    }
+
+
 def _finding(code: str, message: str, **extra) -> Dict[str, Any]:
     entry = {"code": code, "message": message}
     entry.update(extra)
@@ -1062,10 +1095,22 @@ class WorkflowEngine:
             persisted = persisted or progressed
             instance = self._latest_instance(db, work["id"], current)
         elif instance["state"] == "waiting":
-            # A node that waits for material is stable: the pass neither
-            # settles it nor opens anything behind it. The manager resumes
-            # it, adopts the material or cancels the work.
-            return changed, True
+            if not instance.get("pending_revalidation"):
+                # A node that waits for material is stable: the pass
+                # neither settles it nor opens anything behind it. The
+                # manager resumes it, adopts the material or cancels the
+                # work.
+                return changed, True
+            # The material under the wait was replaced: the wait ends and
+            # the node runs again on a material attempt.
+            opened = self._open_attempt(db, work, spec, current, now)
+            changed = True
+            persisted = True
+            if opened is None:
+                self._persist(db, work, "WorkflowReworkLimitExceeded",
+                              {"node": current})
+                return changed, True
+            instance = opened
         elif instance["state"] in ("running", "submitted"):
             progressed = self._settle(db, work, spec, current, instance, now)
             changed = changed or progressed
@@ -1074,7 +1119,21 @@ class WorkflowEngine:
         if instance is None:
             return changed, True
         if instance["state"] in TERMINAL_NODE_STATES:
-            successor = self._successor(db, work, spec, current, instance)
+            if instance.get("pending_revalidation"):
+                # A node that was invalidated runs again in place: the
+                # revalidation re-runs the consumer instead of routing
+                # past it.
+                opened = self._open_attempt(db, work, spec, current, now)
+                changed = True
+                persisted = True
+                if opened is None:
+                    self._persist(db, work, "WorkflowReworkLimitExceeded",
+                                  {"node": current})
+                    return changed, True
+                return changed, True
+            successor = self._revalidation_successor(db, work, current, instance)
+            if successor is None:
+                successor = self._successor(db, work, spec, current, instance)
             if successor is None:
                 work["workflow_current"] = None
                 work["workflow_status"] = (
@@ -1129,28 +1188,93 @@ class WorkflowEngine:
     def _open_attempt(self, db, work, spec, node_id, now) -> Optional[Dict[str, Any]]:
         """Open (or re-open) the current attempt of a node.
 
-        Returns the instance, or ``None`` when the bounded rework allowance
-        for that node is exhausted.
+        Returns the instance, or ``None`` when the bounded allowance for
+        that node is exhausted.
+
+        Two allowances meet here, and they are separate on purpose:
+
+        * the **quality** allowance (``max_attempts``) counts the attempts
+          that are not material attempts. It is never raised and never
+          reset by a revalidation.
+        * the **material** allowance (``material_generations``) counts the
+          revalidations a controlled replacement may open.
+
+        The attempt number itself is monotonic and is never reused: the
+        history of a node stays unambiguous, and every attempt records the
+        trigger that opened it.
         """
         latest = self._latest_instance(db, work["id"], node_id)
-        if latest is not None and latest["state"] in ("running", "submitted",
-                                                      "waiting"):
+        material = bool(latest and latest.get("pending_revalidation"))
+        if latest is not None and latest["state"] in ("running", "submitted"):
             return latest
+        if latest is not None and latest["state"] == "waiting":
+            if not material:
+                # A node that waits for material is stable: the pass
+                # neither settles it nor opens anything behind it.
+                return latest
+            # The wait is bound to material that has been replaced: it ends
+            # with the recorded reason, and the node runs again.
+            self._invalidate_material_wait(db, work, latest)
         attempt = (latest["attempt"] + 1) if latest is not None else 1
-        if attempt > self._max_attempts(spec, node_id):
-            return None
         node = spec["nodes"][node_id]
+        generation = 0
+        if material:
+            trigger = "material"
+            generation = int((latest.get("pending_revalidation") or {}).get(
+                "generation") or 0)
+        else:
+            trigger = "initial" if attempt == 1 else "quality"
+            if (self._quality_attempts(db, work, node_id) + 1
+                    > self._max_attempts(spec, node_id)):
+                return None
         instance = {"node": node_id, "kind": node.get("kind"), "attempt": attempt,
                     "state": "blocked", "outcome": None, "reason": None,
                     "inputs": [], "subject": None, "output": None,
                     "findings": [], "blockers": [], "actor": None,
                     "operation_id": None, "intent_id": None, "result": None,
-                    "input_generation": 0,
+                    "input_generation": (int((latest or {}).get("input_generation")
+                                             or 0) + 1) if material
+                    else int((latest or {}).get("input_generation") or 0),
+                    "trigger": trigger,
+                    "material_generation": generation,
                     "created_at": now}
+        if material:
+            # the material this attempt judges must be newer than the
+            # material the invalidation recorded
+            instance["invalidated_refs"] = (latest.get("pending_revalidation")
+                                            or {}).get("refs") or []
         db.execute("INSERT INTO workflow_nodes VALUES (?,?,?,?,?)",
                    (work["id"], node_id, attempt, "blocked", canonical(instance)))
         self._activate(db, work, spec, node_id, instance, now)
         return self._latest_instance(db, work["id"], node_id)
+
+    def _quality_attempts(self, db, work, node_id) -> int:
+        """How many quality attempts the node has spent.
+
+        A material attempt is not a quality attempt: it never spends the
+        quality allowance, and it never gives it back.
+        """
+        spent = 0
+        for instance in self._instances(db, work["id"]):
+            if instance["node"] != node_id:
+                continue
+            if instance.get("trigger") == "material":
+                continue
+            spent += 1
+        return spent
+
+    def _invalidate_material_wait(self, db, work, instance) -> None:
+        """End a wait that is bound to material which has been replaced.
+
+        The wait's record stays on the attempt it was opened on: it is the
+        history of what the node was waiting for, and it is not deleted.
+        """
+        instance["state"] = "cancelled"
+        instance["outcome"] = "cancelled"
+        instance["reason"] = "MATERIAL_REPLACED"
+        self._cancel_intents(db, work["id"], instance["node"], instance["attempt"])
+        self._save_instance(db, work, instance, "WorkflowMaterialWaitInvalidated",
+                            {"reason": "MATERIAL_REPLACED"})
 
     def _activate(self, db, work, spec, node_id, instance, now) -> bool:
         """Resolve inputs and subject, then start the node's own work.
@@ -2497,6 +2621,29 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
     # Successors and rework
     # ------------------------------------------------------------------
+
+    def _revalidation_successor(self, db, work, current, instance):
+        """The next node the revalidation re-runs, if any.
+
+        The queue is the affected chain in dependency order, so the
+        re-run judges the material in the right order. It is consumed as
+        the chain **completes**: a node that fails keeps its place, so the
+        ordinary quality rework of that node runs first.
+        """
+        if instance.get("state") != "completed":
+            return None
+        plan = work.get("material_revalidation") or {}
+        if plan.get("state") != "revalidating":
+            return None
+        queue = plan.get("queue") or []
+        if not queue or queue[0] != current:
+            return None
+        remaining = queue[1:]
+        plan["queue"] = remaining
+        if not remaining:
+            plan["state"] = "revalidated"
+        work["material_revalidation"] = plan
+        return remaining[0] if remaining else None
 
     def _successor(self, db, work, spec, node_id, instance):
         """The node that follows, or None when the workflow is finished.
@@ -4140,6 +4287,9 @@ class WorkflowEngine:
                     "inputDigest": instance.get("input_digest") if instance else None,
                     "inputGeneration": instance.get("input_generation", 0)
                     if instance else 0,
+                    "trigger": instance.get("trigger") if instance else None,
+                    "materialGeneration": instance.get("material_generation", 0)
+                    if instance else 0,
                     "actor": instance.get("actor") if instance else None,
                     "blockers": (instance.get("blockers") or [])[:MAX_VIEW_FINDINGS]
                     if instance else [],
@@ -4210,6 +4360,8 @@ class WorkflowEngine:
                 "checks": checks[:MAX_VIEW_NODES],
                 "allowedActions": allowed,
                 "intents": intents[:MAX_VIEW_INTENTS],
+                "materialRevalidation": _revalidation_view(
+                    work.get("material_revalidation")),
             }
 
     # ------------------------------------------------------------------

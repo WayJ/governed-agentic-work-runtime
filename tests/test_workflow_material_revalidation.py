@@ -56,6 +56,7 @@ class RevalidationTestCase(unittest.TestCase):
     """
 
     template = REVALIDATION_TEMPLATE
+    spend_quality_first = False
 
     def setUp(self):
         self.folder = tempfile.mkdtemp(prefix="gawr-revalidation-")
@@ -89,6 +90,13 @@ class RevalidationTestCase(unittest.TestCase):
         self.engine.pump(self.adapter, 1000)
         self.source_revision = self.object_revision("sources")
         self.assertEqual(1, self.source_revision["revision"])
+        if self.spend_quality_first:
+            # the first consumer spends its quality allowance on a bad
+            # candidate before it succeeds
+            failed = submit(self.engine, self.runtime, self.work, "n01", 1,
+                            "intake", {"records": "not a list"})
+            self.assertEqual("rejected", failed["decision"], failed)
+            self.engine.advance(self.work, 1500)
         for node, name, result in (("n01", "intake", VALID_INTAKE),
                                    ("n02", "analysis", VALID_ANALYSIS)):
             submitted = submit_valid(self.engine, self.runtime, self.work, node,
@@ -250,6 +258,128 @@ class ReplaceMaterialTestCase(RevalidationTestCase):
         self.assertEqual("rejected", receipt["decision"], receipt)
         self.assertEqual("CANCELLATION_ACTIVE", receipt["code"])
 
+
+class MaterialAttemptTestCase(RevalidationTestCase):
+    """The affected chain is revalidated on material attempts."""
+
+    def drive(self, node, name, result):
+        """The agent answers the current attempt of the node."""
+        entry = self.instance(node)[-1]
+        submitted = submit(self.engine, self.runtime, self.work, node,
+                           entry["attempt"], name, result,
+                           input_digest=entry["body"].get("input_digest"))
+        return submitted
+
+    def test_the_affected_chain_re_runs_on_material_attempts(self):
+        receipt = self.replace()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        # the chain starts at the first consumer
+        self.assertEqual("n01", self.runtime.get_work(self.work)["workflow_current"])
+        self.engine.advance(self.work, 2000)
+        n01 = self.instance("n01")
+        self.assertEqual(2, len(n01))
+        # the new attempt is a material attempt, and the attempt number is
+        # monotonic: the old attempt stays where it was
+        self.assertEqual("material", n01[1]["body"]["trigger"])
+        self.assertEqual(1, n01[1]["body"]["material_generation"])
+        self.assertEqual("completed", n01[0]["state"])
+        self.assertTrue(n01[0]["body"]["check_results"])
+        # the agent is asked again under a new identity, and the withdrawn
+        # one is cancelled
+        intents = self.rows("SELECT id,status FROM workflow_intents "
+                             "WHERE work_id=? AND node='n01' ORDER BY id",
+                             (self.work,))
+        self.assertEqual(2, len(intents))
+        # the withdrawn prompt is not pending any more, and the new one is
+        self.assertNotEqual("pending", intents[0][1])
+        self.assertEqual("pending", intents[1][1])
+        # the new attempt runs on the new material
+        submitted = self.drive("n01", "intake", VALID_INTAKE)
+        self.assertEqual("accepted", submitted["decision"], submitted)
+        self.assertEqual(2, self.object_revision("intake")["revision"])
+        # the second consumer is revalidated next, on the material the
+        # first one produced
+        self.engine.advance(self.work, 2001)
+        n02 = self.instance("n02")
+        self.assertEqual(2, len(n02))
+        self.assertEqual("material", n02[1]["body"]["trigger"])
+        self.assertEqual(2, n02[1]["body"]["inputs"][0]["revision"])
+        submitted = self.drive("n02", "analysis", VALID_ANALYSIS)
+        self.assertEqual("accepted", submitted["decision"], submitted)
+        self.engine.advance(self.work, 2002)
+        n03 = self.instance("n03")
+        self.assertEqual(2, len(n03))
+        self.assertEqual("material", n03[1]["body"]["trigger"])
+        # the wait of the third consumer was bound to the old material: it
+        # ended with the recorded reason and the node runs again
+        self.assertEqual("cancelled", n03[0]["state"])
+        self.assertEqual("MATERIAL_REPLACED", n03[0]["body"]["reason"])
+
+    def test_a_material_attempt_that_fails_on_quality_keeps_the_quality_allowance(self):
+        self.replace()
+        self.engine.advance(self.work, 2000)
+        failed = self.drive("n01", "intake", {"records": "not a list"})
+        self.assertEqual("rejected", failed["decision"], failed)
+        self.engine.advance(self.work, 2001)
+        # the material attempt failed on quality: the node fails, and the
+        # quality allowance it still has is spent on a quality rework -
+        # the two budgets are separate, and neither is infinite
+        n01 = self.instance("n01")
+        self.assertEqual(3, len(n01))
+        self.assertEqual("failed", n01[1]["state"])
+        self.assertEqual("material", n01[1]["body"]["trigger"])
+        self.assertEqual("quality", n01[2]["body"]["trigger"])
+
+    def test_a_second_replacement_is_refused(self):
+        first = self.replace()
+        self.assertEqual("accepted", first["decision"], first)
+        second = self.replace()
+        self.assertEqual("rejected", second["decision"], second)
+        self.assertEqual("WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED",
+                         second["code"])
+
+    def test_the_ticket_of_the_old_attempt_is_stale(self):
+        stale = input_digest_of(self.engine, self.work, "n01")
+        self.replace()
+        self.engine.advance(self.work, 2000)
+        refused = submit(self.engine, self.runtime, self.work, "n01", 1,
+                         "intake", VALID_INTAKE, input_digest=stale)
+        self.assertEqual("rejected", refused["decision"], refused)
+        self.assertIn(refused["code"], ("WORKFLOW_ATTEMPT_STALE",
+                                        "WORKFLOW_INPUT_STALE"))
+
+    def test_the_view_reports_the_revalidation(self):
+        self.replace()
+        view = self.engine.instance(self.work)
+        plan = view["materialRevalidation"]
+        self.assertEqual("revalidating", plan["state"])
+        self.assertEqual(1, plan["generation"])
+        self.assertEqual("s00", plan["attestation"]["sourceNode"])
+        self.assertEqual(["n01", "n02", "n03"],
+                         [entry["node"] for entry in plan["affected"]])
+        self.assertIn("does not cover", plan["attestation"]["claim"])
+
+
+class SpentQualityTestCase(RevalidationTestCase):
+    """A node whose quality allowance is already spent."""
+
+    spend_quality_first = True
+
+    def test_the_material_attempt_spends_no_quality_allowance(self):
+        # the first consumer failed once on quality, so its quality
+        # allowance is spent by its second attempt
+        n01 = self.instance("n01")
+        self.assertEqual(2, len(n01))
+        self.assertEqual("quality", n01[1]["body"]["trigger"])
+        # the material attempt opens although the quality allowance is
+        # spent: the two allowances are separate
+        receipt = self.replace()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        self.engine.advance(self.work, 2000)
+        n01 = self.instance("n01")
+        self.assertEqual(3, len(n01))
+        self.assertEqual("material", n01[2]["body"]["trigger"])
+        self.assertEqual(2, n01[0]["attempt"] + 1)
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
