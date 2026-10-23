@@ -34,7 +34,7 @@ from .workflow_spec import (EFFECT_POLICIES, EFFECT_POLICY_ONCE,
 # commands: CAS-guarded, deduplicated and receipt-bearing like every other.
 WORKFLOW_COMMANDS = ("bind_workflow", "revise_object", "submit_node_result",
                      "record_decision", "finalize_workflow_success",
-                     "request_material_wait")
+                     "request_material_wait", "adopt_material")
 
 TERMINAL_NODE_STATES = ("completed", "failed", "expired", "cancelled")
 
@@ -64,6 +64,9 @@ MATERIAL_WAIT_REQUEST_VERSION = 1
 
 # The bound of the reason a manager gives for a wait.
 MAX_WAIT_REASON_CHARS = 512
+
+# The bound of the adoptions one wait may carry.
+MAX_WAIT_ADOPTIONS = 16
 
 # The source of the proofs the engine writes itself. It is the engine's own
 # trusted channel, never the ingress source of a signed evidence kind: the
@@ -420,7 +423,8 @@ class WorkflowEngine:
         it still holds: for a decision, the ingress source must still be
         the configured source and the actor must still hold the assignment.
         """
-        if kind in ("bind_workflow", "revise_object", "request_material_wait"):
+        if kind in ("bind_workflow", "revise_object", "request_material_wait",
+                    "adopt_material"):
             return self.runtime._manager(actor, work)
         if kind == "submit_node_result":
             return "workflow.execute" in self.runtime.grants.get(actor, set())
@@ -466,6 +470,8 @@ class WorkflowEngine:
             return self._finalize_success(db, actor, work, payload, version)
         if kind == "request_material_wait":
             return self._request_material_wait(db, actor, work, payload, version)
+        if kind == "adopt_material":
+            return self._adopt_material(db, actor, work, payload, version)
         return self.runtime._reject("COMMAND_UNSUPPORTED", version)
 
     # ------------------------------------------------------------------
@@ -2681,6 +2687,78 @@ class WorkflowEngine:
                              "dependencies": dependencies})
         return self.runtime._accepted(work, node=node_id, attempt=attempt,
                                       wait=dict(instance["material_wait"]))
+
+    def _adopt_material(self, db, actor, work, payload, version):
+        """Adopt externally provided material under an active wait.
+
+        The adopted material becomes a **new immutable revision** of the
+        named object: the historical revisions and the decisions that were
+        made on them stay on the record, and the adoption itself re-runs
+        nothing. The wait accepts the adopted revision; the node is still
+        waiting until the manager resumes it.
+        """
+        if set(payload) != {"node", "attempt", "name", "object",
+                            "request_version"}:
+            raise WorkflowError("adopt_material requires exactly node, attempt, "
+                                "name, object and request_version")
+        node_id = payload["node"]
+        attempt = payload["attempt"]
+        name = payload["name"]
+        body = payload["object"]
+        if not isinstance(node_id, str) or type(attempt) is not int:
+            raise WorkflowError("adopt_material requires a node id and an attempt")
+        if not isinstance(name, str) or not name:
+            raise WorkflowError("adopt_material requires a nonempty object name")
+        if not isinstance(body, dict):
+            raise WorkflowError("adopt_material requires an object body")
+        if payload["request_version"] != MATERIAL_WAIT_REQUEST_VERSION:
+            raise WorkflowError("adopt_material requires request_version "
+                                + str(MATERIAL_WAIT_REQUEST_VERSION))
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self.runtime._reject("CANCELLATION_ACTIVE", version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        instance = self._latest_instance(db, work["id"], node_id)
+        if instance is None or instance["attempt"] != attempt:
+            return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        wait = instance.get("material_wait")
+        if instance["state"] != "waiting" or not isinstance(wait, dict):
+            return self.runtime._reject("WORKFLOW_NOT_WAITING", version, [node_id])
+        dependencies = wait.get("dependencies") or []
+        entry = next((item for item in dependencies
+                      if item.get("name") == name), None)
+        if entry is None:
+            # Only the material the wait is actually about may be adopted:
+            # an adoption of anything else would be a silent write.
+            return self.runtime._reject("WORKFLOW_MATERIAL_NOT_DEPENDENCY",
+                                        version, [name])
+        adoptions = wait.get("adoptions") or []
+        if len(adoptions) >= MAX_WAIT_ADOPTIONS:
+            return self.runtime._reject("WORKFLOW_ADOPTION_LIMIT_EXCEEDED",
+                                        version, [name])
+        if len(canonical(body).encode("utf-8")) > MAX_OUTPUT_BYTES:
+            return self.runtime._reject("WORKFLOW_MATERIAL_TOO_LARGE", version,
+                                        [name])
+        reference = self._write_object(db, work["id"], name, body)
+        entry["revision"] = reference["revision"]
+        entry["digest"] = reference["digest"]
+        entry["adopted"] = True
+        adoptions.append({"name": name, "revision": reference["revision"],
+                          "digest": reference["digest"], "adopted_by": actor,
+                          "adopted_at": int(time.time())})
+        wait["dependencies"] = dependencies
+        wait["adoptions"] = adoptions
+        instance["material_wait"] = wait
+        self._save_instance(db, work, instance, "WorkflowMaterialAdopted",
+                            {"actor": actor, "name": name,
+                             "revision": reference["revision"],
+                             "digest": reference["digest"]})
+        return self.runtime._accepted(work, node=node_id, attempt=attempt,
+                                      adoption=dict(adoptions[-1]),
+                                      wait=copy.deepcopy(wait))
 
     # ------------------------------------------------------------------
     # Cancellation

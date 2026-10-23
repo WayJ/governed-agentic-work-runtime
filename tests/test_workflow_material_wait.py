@@ -210,5 +210,102 @@ class MaterialWaitTestCase(unittest.TestCase):
         self.assertEqual("CANCELLATION_ACTIVE", receipt["code"])
 
 
+class AdoptMaterialTestCase(MaterialWaitTestCase):
+    """A manager adopts externally provided material under an active wait."""
+
+    SUPPLEMENT = {"records": [{"id": "R-1", "source": "site-log"},
+                              {"id": "R-2", "source": "site-log"}],
+                  "standard": "STD-1"}
+
+    def adopt(self, *, name="intake", body=None, actor=OWNER, attempt=None,
+              request_version=1):
+        payload = {"node": "n02", "attempt": self.attempt if attempt is None
+                   else attempt, "name": name,
+                   "object": self.SUPPLEMENT if body is None else body,
+                   "request_version": request_version}
+        return self.engine.command(actor, uuid.uuid4().hex, self.work,
+                                   "adopt_material", payload,
+                                   version_of(self.runtime, self.work))
+
+    def object_revisions(self, name="intake"):
+        db = sqlite3.connect(self.path)
+        try:
+            return db.execute(
+                "SELECT revision,digest,body FROM workflow_objects "
+                "WHERE work_id=? AND name=? ORDER BY revision",
+                (self.work, name)).fetchall()
+        finally:
+            db.close()
+
+    def test_the_manager_adopts_external_material(self):
+        self.wait()
+        receipt = self.adopt()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        adoption = receipt["adoption"]
+        self.assertEqual("intake", adoption["name"])
+        self.assertEqual(2, adoption["revision"])
+        # the historical revision is retained: the new material is a new
+        # immutable revision, never a rewrite of the old one
+        revisions = self.object_revisions()
+        self.assertEqual(2, len(revisions))
+        self.assertEqual(1, revisions[0][0])
+        self.assertIn("R-1", revisions[0][2])
+        self.assertIn("R-2", revisions[1][2])
+        # the wait accepts the adopted revision
+        wait = receipt["wait"]
+        dependency = [entry for entry in wait["dependencies"]
+                      if entry["name"] == "intake"][0]
+        self.assertEqual(2, dependency["revision"])
+        self.assertEqual(adoption["digest"], dependency["digest"])
+        self.assertEqual(1, len(wait["adoptions"]))
+        self.assertEqual(OWNER, wait["adoptions"][0]["adopted_by"])
+        # the node is still waiting: adopting material does not start work
+        entry = instance_of(self.engine, self.runtime, self.work, "n02")
+        self.assertEqual("waiting", entry["state"])
+        self.assertEqual(1, entry["attempt"])
+        kinds = [event["type"] for event in self.runtime.events(self.work)]
+        self.assertIn("WorkflowMaterialAdopted", kinds)
+
+    def test_a_refused_adoption_mutates_nothing(self):
+        self.wait()
+        before = self.stored()
+        self.assertEqual("WORKFLOW_MATERIAL_NOT_DEPENDENCY",
+                         self.adopt(name="analysis")["code"])
+        self.assertEqual("AUTHORITY_DENIED",
+                         self.adopt(actor=EXECUTOR)["code"])
+        self.assertEqual("WORKFLOW_ATTEMPT_STALE",
+                         self.adopt(attempt=2)["code"])
+        self.assertEqual(before, self.stored())
+
+    def test_adopting_without_a_wait_is_refused(self):
+        receipt = self.adopt()
+        self.assertEqual("rejected", receipt["decision"], receipt)
+        self.assertEqual("WORKFLOW_NOT_WAITING", receipt["code"])
+
+    def test_an_oversized_adoption_is_refused(self):
+        self.wait()
+        before = self.stored()
+        receipt = self.adopt(body={"records": [], "padding": "x" * 70000})
+        self.assertEqual("rejected", receipt["decision"], receipt)
+        self.assertEqual("WORKFLOW_MATERIAL_TOO_LARGE", receipt["code"])
+        self.assertEqual(before, self.stored())
+
+    def test_the_number_of_adoptions_is_bounded(self):
+        self.wait()
+        for index in range(16):
+            receipt = self.adopt(body={"records": [], "index": index})
+            self.assertEqual("accepted", receipt["decision"], receipt)
+        before = self.stored()
+        receipt = self.adopt(body={"records": [], "index": 17})
+        self.assertEqual("rejected", receipt["decision"], receipt)
+        self.assertEqual("WORKFLOW_ADOPTION_LIMIT_EXCEEDED", receipt["code"])
+        self.assertEqual(before, self.stored())
+
+    def test_the_adoption_is_versioned(self):
+        self.wait()
+        with self.assertRaises(WorkflowError):
+            self.adopt(request_version=2)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
