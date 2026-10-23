@@ -859,9 +859,12 @@ class WorkflowService:
         if version is None:
             return 400, _error("MATERIAL_WAIT_VERSION_UNSUPPORTED",
                                "requestVersion 1 is the supported version")
-        actor = body.get("actor")
-        if not isinstance(actor, str) or not actor:
-            return 400, _error("ACTOR_REQUIRED", "actor is required")
+        actor, error = self._request_actor(body)
+        if error is not None:
+            return 400, error
+        if not self._body_names_this_work(work_id, body):
+            return 400, _error("WORK_MISMATCH",
+                               "the request body names another work")
         command_id = self._command_id(body)
         if command_id is None:
             return 400, _error("COMMAND_ID_REQUIRED",
@@ -912,9 +915,12 @@ class WorkflowService:
         if version is None:
             return 400, _error("MATERIAL_WAIT_VERSION_UNSUPPORTED",
                                "requestVersion 1 is the supported version")
-        actor = body.get("actor")
-        if not isinstance(actor, str) or not actor:
-            return 400, _error("ACTOR_REQUIRED", "actor is required")
+        actor, error = self._request_actor(body)
+        if error is not None:
+            return 400, error
+        if not self._body_names_this_work(work_id, body):
+            return 400, _error("WORK_MISMATCH",
+                               "the request body names another work")
         command_id = self._command_id(body)
         if command_id is None:
             return 400, _error("COMMAND_ID_REQUIRED",
@@ -960,9 +966,12 @@ class WorkflowService:
         if version is None:
             return 400, _error("MATERIAL_WAIT_VERSION_UNSUPPORTED",
                                "requestVersion 1 is the supported version")
-        actor = body.get("actor")
-        if not isinstance(actor, str) or not actor:
-            return 400, _error("ACTOR_REQUIRED", "actor is required")
+        actor, error = self._request_actor(body)
+        if error is not None:
+            return 400, error
+        if not self._body_names_this_work(work_id, body):
+            return 400, _error("WORK_MISMATCH",
+                               "the request body names another work")
         command_id = self._command_id(body)
         if command_id is None:
             return 400, _error("COMMAND_ID_REQUIRED",
@@ -1409,6 +1418,37 @@ class WorkflowService:
         if type(version) is not int:
             raise ValueError("expectedVersion must be an integer")
         return version
+
+    @staticmethod
+    def _request_actor(body: Dict[str, Any]):
+        """The principal a material request claims to act as.
+
+        The trusted platform wire may name it `actor` or `actorId`; both
+        name the same thing. A body that carries **two different** ones is
+        refused rather than guessed at, and a body that names neither is
+        refused. The principal is only an assertion: the core decides
+        whether it may act.
+        """
+        actor = body.get("actor")
+        actor_id = body.get("actorId")
+        if actor is not None and actor_id is not None and actor != actor_id:
+            return None, _error("ACTOR_CONFLICT",
+                                "the request names two different actors")
+        claimed = actor if actor is not None else actor_id
+        if not isinstance(claimed, str) or not claimed:
+            return None, _error("ACTOR_REQUIRED", "actor is required")
+        return claimed, None
+
+    @staticmethod
+    def _body_names_this_work(work_id: str, body: Dict[str, Any]) -> bool:
+        """Whether a request body agrees with the work of the path.
+
+        The path is authoritative. A body that names **another** work is
+        refused rather than ignored: the request would be about one work
+        and applied to another.
+        """
+        named = body.get("workId")
+        return named is None or named == work_id
 
     def _material_command(self, actor: str, command_id: str, work_id: str,
                           kind: str, payload: Dict[str, Any],

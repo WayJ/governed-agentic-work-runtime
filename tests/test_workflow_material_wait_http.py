@@ -318,6 +318,31 @@ class MaterialWaitHttpTestCase(MaterialWaitHttpBase):
         self.assertEqual(200, status, accepted)
         self.assertEqual("running", accepted["materialResume"]["state"])
 
+    def test_the_platform_envelope_is_accepted(self):
+        # The trusted platform wire may name the actor `actorId` and may
+        # carry the work id in the body.
+        body = self.wait_body()
+        body.pop("actor")
+        body["actorId"] = OWNER
+        body["workId"] = WORK_ID
+        status, view = self.call("POST", BASE + "/material/wait", body)
+        self.assertEqual(200, status, view)
+        self.assertEqual("waiting", view["workflowStatus"])
+
+    def test_a_body_that_names_another_work_is_refused(self):
+        body = self.wait_body()
+        body["workId"] = "W-other"
+        status, refused = self.call("POST", BASE + "/material/wait", body)
+        self.assertEqual(400, status, refused)
+        self.assertEqual("WORK_MISMATCH", refused["error"]["code"])
+
+    def test_a_body_that_names_two_actors_is_refused(self):
+        body = self.wait_body()
+        body["actorId"] = SECOND_MANAGER
+        status, refused = self.call("POST", BASE + "/material/wait", body)
+        self.assertEqual(400, status, refused)
+        self.assertEqual("ACTOR_CONFLICT", refused["error"]["code"])
+
     def test_an_unknown_work_is_not_created_by_waiting_on_it(self):
         status, body = self.call(
             "POST", API_PREFIX + "/instances/W-none/material/wait",
