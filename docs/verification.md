@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W167)
+### Workflow matrix (W01–W172)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -1009,6 +1009,11 @@ are byte-unchanged by that slice; the boundary rows are in
 | W165 | The bridge keeps the compare-and-swap and the command identity | covered | `test_a_stale_version_is_a_conflict`, `test_a_replay_returns_the_same_receipt`, `test_a_reused_command_id_with_another_body_is_refused` — `STATE_VERSION_CONFLICT`, one event for an identical replay, `COMMAND_ID_REUSED` |
 | W166 | Only the manager may replace, and the replay is re-authorized | covered | `test_only_the_manager_may_replace`, `test_a_replay_after_an_ownership_change_is_refused` — `403 AUTHORITY_DENIED`, and the store is unchanged |
 | W167 | The manifest is checked and the envelope is accepted | covered | `test_a_manifest_that_names_another_work_is_refused`, `test_a_manifest_with_a_location_is_refused`, `test_the_platform_envelope_is_accepted` — `WORKFLOW_SOURCE_REFERENCE_INVALID` for a foreign work and for a raw location, and the platform envelope is accepted |
+| W168 | The published validation judges the new reference | covered | `tests/test_workflow_material_revalidation.py` — `PublishedValidationTestCase`: a manifest that misses a required field and one with a malformed field are both refused `WORKFLOW_SOURCE_REFERENCE_REJECTED`, and no revision, no invalidation and no material generation is spent |
+| W169 | Nothing settles an invalidated attempt | covered | `InvalidatedAttemptTestCase` — the candidate of a consumer that is still working on the replaced material is refused `WORKFLOW_NODE_INVALIDATED` at once, nothing is written, and the attempt keeps its state and its old input digest until the cursor reaches it; `InvalidatedDecisionTestCase` — a decision for an invalidated human node is refused at once |
+| W170 | The review of an invalidated attempt is never accepted | covered | `PendingReviewTestCase` — the review of the invalidated attempt does not complete the node, no check of it is materialized, and the old attempt keeps its candidate and its output on the record |
+| W171 | The waiting node must be the current one | covered | `WaitingNodeTestCase` — a node that does not wait and a node that does not exist are refused `WORKFLOW_WAITING_NODE_NOT_CURRENT`, and a stale ticket is refused `WORKFLOW_WAITING_TICKET_STALE` |
+| W172 | The service refuses the same things | covered | `tests/test_workflow_material_revalidation_http.py` — a manifest the published validation refuses is `422` and writes nothing, a waiting node that is not the current one is `409`, and the old result of an invalidated attempt is `409 WORKFLOW_NODE_INVALIDATED` |
 | W128 | The cancellation read is safe and scoped | covered | `CancellationReadTests` — an active work answers `state=none` with empty operation lists; an unknown work is `404 WORK_UNKNOWN`; the read carries no payload body and no credential |
 | W113 | The default still needs the named record for every decision | covered | `tests/test_workflow_conditional_output.py` — `DefaultSemanticsTests`: a rejection without a record leaves the node running with `WORKFLOW_OUTPUT_MISSING` and the routing does not move; an approval writes the record |
 | W114 | A published human node may narrow the decisions its output applies to | covered | `NarrowedOutputTests` — a rejection settles the node with no acceptance record, the quality says `exempt`, the decision proof and the check report are preserved, and the declared `on_reject` branch is taken |

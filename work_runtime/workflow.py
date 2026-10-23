@@ -115,6 +115,11 @@ WORKFLOW_REQUIREMENT_UNSATISFIED = "WORKFLOW_REQUIREMENT_UNSATISFIED"
 WORKFLOW_INTENT_UNSETTLED = "WORKFLOW_INTENT_UNSETTLED"
 WORKFLOW_CANCELLED = "WORKFLOW_CANCELLED"
 WORKFLOW_REVALIDATION_PENDING = "WORKFLOW_REVALIDATION_PENDING"
+WORKFLOW_REVALIDATION_EFFECT_PRESENT = "WORKFLOW_REVALIDATION_EFFECT_PRESENT"
+WORKFLOW_SOURCE_REFERENCE_REJECTED = "WORKFLOW_SOURCE_REFERENCE_REJECTED"
+WORKFLOW_NODE_INVALIDATED = "WORKFLOW_NODE_INVALIDATED"
+WORKFLOW_NODE_NOT_CURRENT = "WORKFLOW_NODE_NOT_CURRENT"
+WORKFLOW_WAITING_NODE_NOT_CURRENT = "WORKFLOW_WAITING_NODE_NOT_CURRENT"
 WORKFLOW_SNAPSHOT_UNBOUNDED = "WORKFLOW_SNAPSHOT_UNBOUNDED"
 
 # The reasons an automatic node refuses to produce its external effect. The
@@ -1677,6 +1682,12 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     def _settle(self, db, work, spec, node_id, instance, now) -> bool:
+        if instance.get("pending_revalidation"):
+            # A material replacement invalidated this attempt: nothing
+            # settles it. A candidate, a decision or a review made on the
+            # material that was replaced is never accepted for it, and the
+            # material attempt replaces it.
+            return False
         node = spec["nodes"][node_id]
         kind = node.get("kind")
         if kind == "human":
@@ -2781,6 +2792,18 @@ class WorkflowEngine:
             return self.runtime._reject("WORKFLOW_NODE_WAITING", version, [node_id])
         if instance["state"] != "running":
             return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        if instance.get("pending_revalidation"):
+            # A material replacement invalidated this attempt. Its result
+            # is refused **at once**, before the material attempt opens:
+            # the candidate was produced from the material that was
+            # replaced, and nothing of it is stored.
+            return self.runtime._reject("WORKFLOW_NODE_INVALIDATED", version,
+                                        [node_id])
+        if work.get("workflow_current") != node_id:
+            # The workflow is working on another node: a result for a node
+            # the cursor has left is never accepted.
+            return self.runtime._reject("WORKFLOW_NODE_NOT_CURRENT", version,
+                                        [node_id])
         if payload["input_digest"] != instance.get("input_digest"):
             # A candidate produced from a superseded input is refused: the
             # content it was derived from is not the content in force.
@@ -3316,6 +3339,20 @@ class WorkflowEngine:
         if invalid is not None:
             return self.runtime._reject("WORKFLOW_SOURCE_REFERENCE_INVALID",
                                         version, [invalid])
+        # The new revision is judged by the **published** validation of the
+        # source output before anything is written: the reference stays
+        # opaque — the core never resolves it — but the definition's shape
+        # and its pinned validator decide whether the envelope is a
+        # material this source may produce. A manifest that does not
+        # satisfy them is refused here, so no revision, no invalidation
+        # and no material generation is spent on it.
+        body = {"sourceReference": reference}
+        problems, _ = self._validate_output_material(
+            db, work, node_id, node, instance, body, "output",
+            node.get("capability"))
+        if problems:
+            return self.runtime._reject("WORKFLOW_SOURCE_REFERENCE_REJECTED",
+                                        version, problems)
         # the ticket the manager observed must still be the current one
         waiting_node = payload["waiting_node"]
         ticket = payload["waiting_ticket"]
@@ -3325,9 +3362,20 @@ class WorkflowEngine:
                                     "given together")
             if not isinstance(ticket, str) or not ticket:
                 raise WorkflowError("waiting_ticket must be a nonempty string")
-            current = self._latest_instance(db, work["id"], waiting_node)
-            if (current is None
-                    or current.get("input_digest") != ticket):
+            # The manager states the node that waits and the ticket it
+            # observed. The node must be the **current** one and it must
+            # really wait for material: a digest match alone is not
+            # enough, because the node the manager looked at may be a node
+            # that has moved on.
+            if work.get("workflow_current") != waiting_node:
+                return self.runtime._reject("WORKFLOW_WAITING_NODE_NOT_CURRENT",
+                                            version, [waiting_node])
+            waiting = self._latest_instance(db, work["id"], waiting_node)
+            if (waiting is None or waiting.get("state") != "waiting"
+                    or not waiting.get("material_wait")):
+                return self.runtime._reject("WORKFLOW_WAITING_NODE_NOT_CURRENT",
+                                            version, [waiting_node])
+            if waiting.get("input_digest") != ticket:
                 return self.runtime._reject("WORKFLOW_WAITING_TICKET_STALE",
                                             version, [waiting_node])
         # the consumers of the material, and everything derived from them
@@ -3367,8 +3415,7 @@ class WorkflowEngine:
                                         version, exhausted)
         # the new revision of the material: the frozen reference, wrapped in
         # the same envelope the source output carries
-        revision = self._write_object(db, work["id"], object_name,
-                                      {"sourceReference": reference})
+        revision = self._write_object(db, work["id"], object_name, body)
         generation = int((work.get("material_revalidation") or {}).get("generation") or 0) + 1
         attestation = {
             "kind": reference.get("kind"),
@@ -3737,6 +3784,12 @@ class WorkflowEngine:
         if (instance is None or instance["attempt"] != attempt
                 or instance["state"] != "running"):
             return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        if instance.get("pending_revalidation"):
+            # A material replacement invalidated this attempt: the decision
+            # made on the material that was replaced is refused at once,
+            # and nothing of it is written.
+            return self.runtime._reject("WORKFLOW_NODE_INVALIDATED", version,
+                                        [node_id])
         subject = instance.get("subject")
         if (subject is None or subject["digest"] != payload["digest"]
                 or subject["revision"] != payload["revision"]):

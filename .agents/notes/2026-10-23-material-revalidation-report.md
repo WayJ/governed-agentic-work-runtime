@@ -158,6 +158,22 @@ WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED / WORKFLOW_REVALIDATION_NO_CONSUMERS
 / WORKFLOW_REVALIDATION_PENDING; `422` WORKFLOW_SOURCE_REFERENCE_INVALID /
 WORKFLOW_SOURCE_REFERENCE_TOO_LARGE.
 
+## The scope boundary (corrected)
+
+An earlier summary of this slice said that the "pre-effect transitive
+revalidation" was still to be dispatched. That was **wrong**: the
+pre-effect revalidation **is implemented** — it is this slice, and it is
+what the coordinator reviews next.
+
+What is intentionally **not** built is a **post-effect amendment**: a
+replacement of the material of a branch that has already produced a
+business effect. Such a branch is refused
+(`WORKFLOW_REVALIDATION_EFFECT_PRESENT`) — the effect is never replayed
+under its old operation key, and the effect is never rewritten. There is
+no after-effect change workflow in this design, and none is planned
+here: the safety of the effect boundary is the reason the refusal
+exists, not a gap to be filled later.
+
 ## The remaining risks
 
 * **The revalidation re-runs agents, not effects.** The affected

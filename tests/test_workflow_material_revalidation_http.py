@@ -91,17 +91,22 @@ class ReplaceMaterialHttpTestCase(unittest.TestCase):
             version_of(self.runtime, WORK_ID))
         self.assertEqual("accepted", bound["decision"], bound)
         self.engine.pump(self.adapter, 1000)
-        for node, name, result in (("n01", "intake",
-                                    {"records": [{"id": "R-1", "source": "s"}],
-                                     "standard": "STD-1"}),
-                                   ("n02", "analysis",
-                                    {"findings": [{"issueId": "H-1",
-                                                   "clause": "C-1",
-                                                   "finding": "g"}]})):
-            submitted = submit_valid(self.engine, self.runtime, WORK_ID, node,
-                                     name, result)
-            self.assertEqual("accepted", submitted["decision"], submitted)
-        self.ticket = input_digest_of(self.engine, WORK_ID, "n03")
+        submitted = submit_valid(self.engine, self.runtime, WORK_ID, "n01",
+                                 "intake",
+                                 {"records": [{"id": "R-1", "source": "s"}],
+                                  "standard": "STD-1"})
+        self.assertEqual("accepted", submitted["decision"], submitted)
+        # the second consumer is still working, and it waits for what is
+        # still missing
+        parked = self.engine.command(
+            OWNER, "wait-1", WORK_ID, "request_material_wait",
+            {"node": "n02", "attempt": 1,
+             "input_digest": input_digest_of(self.engine, WORK_ID, "n02"),
+             "reason": "the referenced standard is missing",
+             "request_version": 1},
+            version_of(self.runtime, WORK_ID))
+        self.assertEqual("accepted", parked["decision"], parked)
+        self.ticket = input_digest_of(self.engine, WORK_ID, "n02")
 
     def tearDown(self):
         self.ticker.stop()
@@ -141,7 +146,7 @@ class ReplaceMaterialHttpTestCase(unittest.TestCase):
                 "requestVersion": 1, "node": "s00",
                 "sourceReference": SOURCE_REFERENCE,
                 "reason": "the archive was refreshed",
-                "waitingNode": "n03", "waitingTicket": self.ticket}
+                "waitingNode": "n02", "waitingTicket": self.ticket}
         body.update(extra)
         return body
 
@@ -162,7 +167,7 @@ class ReplaceMaterialHttpTestCase(unittest.TestCase):
         replacement = view["materialReplacement"]
         self.assertEqual("s00", replacement["node"])
         self.assertEqual(1, replacement["generation"])
-        self.assertEqual(["n01", "n02", "n03"],
+        self.assertEqual(["n01", "n02"],
                          [entry["node"] for entry in replacement["affected"]])
         attestation = replacement["attestation"]
         self.assertEqual("s00", attestation["sourceNode"])
@@ -287,6 +292,69 @@ class ReplaceMaterialHttpTestCase(unittest.TestCase):
                          self.rows("SELECT node,attempt,state,body FROM "
                                    "workflow_nodes WHERE work_id=? AND node='s00'",
                                    (WORK_ID,)))
+
+    def test_a_manifest_the_published_validation_refuses_is_refused(self):
+        before = self.rows("SELECT name,revision,digest,body FROM workflow_objects")
+        reference = dict(SOURCE_REFERENCE, scope=42)
+        status, body = self.call("POST", BASE + "/material/replace",
+                                  self.replace_body(sourceReference=reference))
+        self.assertEqual(422, status, body)
+        self.assertEqual("WORKFLOW_SOURCE_REFERENCE_REJECTED",
+                         body["error"]["code"])
+        # nothing was written: no revision, no invalidation, no generation
+        self.assertEqual(before, self.rows(
+            "SELECT name,revision,digest,body FROM workflow_objects"))
+        self.assertEqual(0, len(self.rows(
+            "SELECT body FROM events WHERE work_id=? AND type=?",
+            (WORK_ID, "WorkflowMaterialReplaced"))))
+        # and the material generation is still available
+        status, accepted = self.call("POST", BASE + "/material/replace",
+                                     self.replace_body())
+        self.assertEqual(200, status, accepted)
+
+    def test_a_waiting_node_that_is_not_the_current_one_is_refused(self):
+        status, body = self.call("POST", BASE + "/material/replace",
+                                  self.replace_body(waitingNode="n01"))
+        self.assertEqual(409, status, body)
+        self.assertEqual("WORKFLOW_WAITING_NODE_NOT_CURRENT",
+                         body["error"]["code"])
+
+    def test_an_old_result_of_an_invalidated_attempt_is_refused(self):
+        # the waiting consumer is resumed and works on the old material
+        resumed = self.engine.command(
+            OWNER, "resume-1", WORK_ID, "resume_material_wait",
+            {"node": "n02", "attempt": 1, "request_version": 1},
+            version_of(self.runtime, WORK_ID))
+        self.assertEqual("accepted", resumed["decision"], resumed)
+        status, view = self.call("GET", BASE)
+        self.assertEqual(200, status, view)
+        running = [entry for entry in view["nodes"] if entry["node"] == "n02"][0]
+        self.assertEqual("running", running["state"])
+        # the material is replaced: the consumer is invalidated
+        status, replaced = self.call("POST", BASE + "/material/replace",
+                                     self.replace_body(waitingNode=None,
+                                                        waitingTicket=None))
+        self.assertEqual(200, status, replaced)
+        # its candidate, produced from the replaced material, is refused
+        # at once
+        status, refused = self.call("POST", BASE + "/results",
+                                    {"actor": "agent-executor",
+                                     "commandId": self.next_id("result"),
+                                     "expectedVersion": version_of(self.runtime,
+                                                                 WORK_ID),
+                                     "node": "n02", "attempt": running["attempt"],
+                                     "object": "analysis",
+                                     "result": {"findings": [{"issueId": "H-1",
+                                                              "clause": "C-1",
+                                                              "finding": "g"}]},
+                                     "inputDigest": running["inputDigest"]})
+        self.assertEqual(409, status, refused)
+        self.assertEqual("WORKFLOW_NODE_INVALIDATED",
+                         refused["error"]["code"])
+        # nothing was written
+        self.assertEqual(0, len(self.rows(
+            "SELECT name FROM workflow_objects WHERE work_id=? AND name='analysis'",
+            (WORK_ID,))))
 
     def test_the_receipt_of_the_replacement_is_readable(self):
         request = self.replace_body()

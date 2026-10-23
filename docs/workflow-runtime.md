@@ -1398,7 +1398,7 @@ the manager authority still holds.
 | `node` | the **source node** — the node whose completed attempt produced the material. The core derives the object from that node, so a caller cannot name an arbitrary object. |
 | `source_reference` | the **frozen reference** the platform acquired. A manifest, never the material. |
 | `reason` | why the material is replaced. |
-| `waiting_node`, `waiting_ticket` | the node that waits and the ticket the manager observed. When given, the ticket must still be the current one. |
+| `waiting_node`, `waiting_ticket` | the node that waits and the ticket the manager observed. When given, the node must be the **current** one and it must really wait for material (`WORKFLOW_WAITING_NODE_NOT_CURRENT`), and the ticket must still be its current one (`WORKFLOW_WAITING_TICKET_STALE`). The pair may be left out — the manager may replace the material of a workflow that waits for nothing — but the platform that replaces material on a waiting work always sends both. |
 | `request_version` | `1`. |
 
 ### The source read is never re-run
@@ -1423,6 +1423,15 @@ that it names the kind it claims, that it names the work and the source
 it belongs to, and that it carries no raw material, no location and no
 credential (`WORKFLOW_SOURCE_REFERENCE_INVALID`). It is at most 4 KiB
 (`WORKFLOW_SOURCE_REFERENCE_TOO_LARGE`).
+
+**The published validation judges it.** The reference stays opaque, but
+the definition's own rules decide whether the envelope is a material
+this source may produce: the new revision is judged by the **shape** and
+the **pinned validator** the source node declares for its output, before
+anything is written (`WORKFLOW_SOURCE_REFERENCE_REJECTED`). A manifest
+that misses a required field or carries a malformed one is refused
+there, so no revision, no invalidation and no material generation is
+spent on it.
 
 The new revision of the source object is the reference in the **same
 envelope the source output carries** — `{"sourceReference": <manifest>}` —
@@ -1476,7 +1485,25 @@ The revalidated node runs again on a **material attempt**:
 
 A wait that was bound to the replaced material ends with the recorded
 reason `MATERIAL_REPLACED`; its record stays on the attempt it was
-opened on, and the node runs again.
+opened on, and the node runs again. A consumer that is still working on
+the replaced material is withdrawn the same way.
+
+**Nothing settles an invalidated attempt.** A candidate, a decision or a
+review made on the material that was replaced is refused **at once**:
+
+* a candidate for an invalidated attempt is refused
+  (`WORKFLOW_NODE_INVALIDATED`), and a candidate for a node the
+  workflow is not working on is refused too
+  (`WORKFLOW_NODE_NOT_CURRENT`) — nothing of it is stored;
+* a decision for an invalidated attempt is refused
+  (`WORKFLOW_NODE_INVALIDATED`);
+* the settlement of an invalidated attempt never happens, so the review
+  of an earlier attempt never completes it and no check of it is
+  materialized.
+
+The old attempt keeps its history: its candidate, its checks and its
+receipts stay on the record, and only its state and its reason say that
+it was withdrawn.
 
 ### What blocks the revalidation
 

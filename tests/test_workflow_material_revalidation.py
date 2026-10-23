@@ -24,18 +24,18 @@ try:
     from workflow_support import (POLICY_GOAL, POLICY_ID, POLICY_VERSION,
                                   REVALIDATION_TEMPLATE, RevalidationPolicy,
                                   SourceReferenceAdapter, build, current_attempt,
-                                  document, input_digest_of, instance_of,
-                                  instantiate, send, source_reference_validator,
-                                  submit, submit_valid, version_of)
+                                  decide_command, document, input_digest_of,
+                                  instance_of, instantiate, send,
+                                  source_reference_validator, submit,
+                                  submit_valid, version_of)
     from workflow_support import workflow_demo_validators
 except ImportError:  # pragma: no cover - repository-root import style
     from tests.workflow_support import (POLICY_GOAL, POLICY_ID, POLICY_VERSION,
                                         REVALIDATION_TEMPLATE, RevalidationPolicy,
                                         SourceReferenceAdapter, build,
-                                        current_attempt, document,
-                                        input_digest_of, instance_of,
-                                        instantiate, send,
-                                        source_reference_validator, submit,
+                                        current_attempt, decide_command, document,
+                                        input_digest_of, instance_of, instantiate,
+                                        send, source_reference_validator, submit,
                                         submit_valid, version_of)
     from tests.workflow_support import workflow_demo_validators
     from tests.workflow_support import DemoBusinessSystem
@@ -70,9 +70,11 @@ class RevalidationTestCase(unittest.TestCase):
     """
 
     template = REVALIDATION_TEMPLATE
+    settle_review = True
     quality_failures = 0
     park_wait = True
     park_first_consumer = False
+    drive_consumers = ("n01", "n02")
 
     def setUp(self):
         self.folder = tempfile.mkdtemp(prefix="gawr-revalidation-")
@@ -123,6 +125,8 @@ class RevalidationTestCase(unittest.TestCase):
             return
         for node, name, result in (("n01", "intake", VALID_INTAKE),
                                    ("n02", "analysis", VALID_ANALYSIS)):
+            if node not in self.drive_consumers:
+                continue
             submitted = submit_valid(self.engine, self.runtime, self.work, node,
                                      name, result)
             self.assertEqual("accepted", submitted["decision"], submitted)
@@ -388,7 +392,13 @@ class MaterialAttemptTestCase(RevalidationTestCase):
     def test_a_second_replacement_is_refused(self):
         first = self.replace()
         self.assertEqual("accepted", first["decision"], first)
-        second = self.replace()
+        # the waiting node the manager observed is no longer the current
+        # one: the replacement is refused before anything is written
+        stale = self.replace()
+        self.assertEqual("rejected", stale["decision"], stale)
+        self.assertEqual("WORKFLOW_WAITING_NODE_NOT_CURRENT", stale["code"])
+        # and without the waiting pair the material generation is spent
+        second = self.replace(waiting_node=None)
         self.assertEqual("rejected", second["decision"], second)
         self.assertEqual("WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED",
                          second["code"])
@@ -662,6 +672,8 @@ class StaleBindingTestCase(RevalidationTestCase):
 
     def settle_first_consumer(self):
         """The independent reviewer settles the first consumer."""
+        if not self.settle_review:
+            return
         entry = self.instance("n01")[-1]
         reviewed = self.review(entry["attempt"], entry["body"]["input_digest"],
                                entry["body"]["result"]["digest"])
@@ -736,6 +748,175 @@ class OldAcknowledgementTestCase(RevalidationTestCase):
         self.assertEqual(2, len(intents))
         self.assertEqual("acknowledged", intents[0][1])
         self.assertEqual("pending", intents[1][1])
+
+
+class PublishedValidationTestCase(RevalidationTestCase):
+    """The new reference is judged by the published source validation."""
+
+    def test_a_manifest_missing_a_field_is_refused(self):
+        before = self.objects()
+        reference = {key: value for key, value in SOURCE_REFERENCE.items()
+                     if key != "scope"}
+        refused = self.replace(reference=reference)
+        self.assertEqual("rejected", refused["decision"], refused)
+        self.assertEqual("WORKFLOW_SOURCE_REFERENCE_REJECTED", refused["code"])
+        # nothing was written: no revision, no invalidation, no event
+        self.assertEqual(before, self.objects())
+        self.assertEqual([], [entry for entry in self.revalidation()
+                               if entry["node"] != "n01"])
+        # and the material generation was not spent
+        accepted = self.replace()
+        self.assertEqual("accepted", accepted["decision"], accepted)
+
+    def test_a_manifest_with_a_malformed_field_is_refused(self):
+        before = self.objects()
+        refused = self.replace(reference=dict(SOURCE_REFERENCE, scope=42))
+        self.assertEqual("rejected", refused["decision"], refused)
+        self.assertEqual("WORKFLOW_SOURCE_REFERENCE_REJECTED", refused["code"])
+        self.assertEqual(before, self.objects())
+        # the finding names the shape or the validator that refused it
+        codes = [finding.get("code") for finding in refused["blockers"]]
+        self.assertTrue(any(code in ("SHAPE_TYPE", "SOURCE_REFERENCE_INCOMPLETE")
+                            for code in codes), refused["blockers"])
+
+    def objects(self):
+        return self.rows("SELECT name,revision,digest,body FROM workflow_objects "
+                         "ORDER BY name,revision")
+
+    def revalidation(self):
+        plan = self.runtime.get_work(self.work).get("material_revalidation") or {}
+        return plan.get("affected") or []
+
+
+class InvalidatedAttemptTestCase(RevalidationTestCase):
+    """A descendant that is still working when the material is replaced."""
+
+    drive_consumers = ("n01",)
+    park_wait = False
+
+    def test_an_old_downstream_result_is_refused_immediately(self):
+        # the second consumer is still working on the old material
+        running = self.instance("n02")[-1]
+        self.assertEqual("running", running["state"])
+        old_digest = running["body"]["input_digest"]
+        receipt = self.replace(waiting_node=None)
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        # its candidate, produced from the material that was replaced, is
+        # refused at once - before any advance opens the material attempt
+        refused = submit(self.engine, self.runtime, self.work, "n02",
+                         running["attempt"], "analysis", VALID_ANALYSIS,
+                         input_digest=old_digest)
+        self.assertEqual("rejected", refused["decision"], refused)
+        self.assertEqual("WORKFLOW_NODE_INVALIDATED", refused["code"])
+        # nothing was written: no analysis object, no event, no new attempt
+        self.assertEqual([], self.rows("SELECT name FROM workflow_objects "
+                                       "WHERE work_id=? AND name='analysis'",
+                                       (self.work,)))
+        self.assertEqual(1, len(self.instance("n02")))
+        self.assertEqual("running", self.instance("n02")[-1]["state"])
+        self.assertEqual(old_digest, self.instance("n02")[-1]["body"]["input_digest"])
+
+
+def pending_review_template():
+    """A definition whose second consumer needs an independent review."""
+
+    spec = json.loads(json.dumps(REVALIDATION_TEMPLATE))
+    spec["nodes"]["n02"]["review"] = {
+        "evidence_kind": "agent_review", "reviewer": "reviewer-v",
+        "rubric": {"validator": "review-rubric", "validator_version": "1"}}
+    return spec
+
+
+class PendingReviewTestCase(RevalidationTestCase):
+    """A consumer that waits for its review when the material is replaced."""
+
+    template = review_template()
+    park_wait = False
+    drive_consumers = ("n01",)
+    settle_review = False
+
+    def review(self, attempt, input_digest, output_digest):
+        return send(self.runtime, "reviewer-v", self.work, "record_evidence",
+                    {"event_id": uuid.uuid4().hex, "kind": "agent_review",
+                     "data": {"node": "n01", "attempt": attempt,
+                              "input_digest": input_digest,
+                              "output_digest": output_digest,
+                              "producer": "reviewer-v", "verdict": "passed",
+                              "items": []}})
+
+    def test_an_old_review_is_not_accepted_for_the_invalidated_attempt(self):
+        # the consumer waits for its independent review
+        entry = self.instance("n01")[-1]
+        self.assertEqual("submitted", entry["state"])
+        receipt = self.replace(waiting_node=None)
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        # the review of the invalidated attempt arrives
+        reviewed = self.review(entry["attempt"], entry["body"]["input_digest"],
+                               entry["body"]["result"]["digest"])
+        self.assertEqual("accepted", reviewed["decision"], reviewed)
+        self.runtime.verify_pending(self.work)
+        # the node did not settle on the old review: the material attempt
+        # opened instead, and nothing of the old review was materialized
+        fresh = self.instance("n01")[-1]
+        self.assertEqual(2, fresh["attempt"])
+        self.assertEqual("material", fresh["body"]["trigger"])
+        self.assertNotEqual("completed", fresh["state"])
+        self.assertNotIn("completed", [entry["state"]
+                                       for entry in self.instance("n01")])
+        # and no check of the old review was materialized on the new attempt
+        self.assertEqual([], fresh["body"].get("check_results") or [])
+        # the old attempt is withdrawn with the recorded reason, and it
+        # keeps its history: the candidate it judged is still on the record
+        old = self.instance("n01")[0]
+        self.assertEqual("cancelled", old["state"])
+        self.assertEqual("MATERIAL_REPLACED", old["body"]["reason"])
+        self.assertIsNotNone(old["body"].get("result"))
+        self.assertIsNotNone(old["body"].get("output"))
+
+
+class InvalidatedDecisionTestCase(RevalidationTestCase):
+    """A human node that waits for a decision when the material is replaced."""
+
+    template = approval_branch_template()
+    park_wait = False
+
+    def test_an_old_decision_is_refused_immediately(self):
+        entry = self.instance("h01")[-1]
+        self.assertEqual("running", entry["state"])
+        subject = entry["body"]["subject"]
+        receipt = self.replace(waiting_node=None)
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        # the decision made on the material that was replaced is refused
+        # at once
+        decided = decide_command(self.engine, self.runtime, self.work,
+                                 "safety_review", "reviewer-a", "approved",
+                                 subject["digest"], subject["revision"],
+                                 node="h01", attempt=entry["attempt"],
+                                 actor="reviewer-a", items=[])
+        self.assertEqual("rejected", decided["decision"], decided)
+        self.assertEqual("WORKFLOW_NODE_INVALIDATED", decided["code"])
+        # the human node keeps waiting
+        self.assertEqual("running", self.instance("h01")[-1]["state"])
+
+
+class WaitingNodeTestCase(RevalidationTestCase):
+    """The waiting node the manager states must be the current one."""
+
+    def test_the_waiting_node_must_be_the_current_waiting_node(self):
+        # a node that is not waiting
+        refused = self.replace(waiting_node="n01",
+                               waiting_ticket=input_digest_of(self.engine,
+                                                             self.work, "n01"))
+        self.assertEqual("rejected", refused["decision"], refused)
+        self.assertEqual("WORKFLOW_WAITING_NODE_NOT_CURRENT", refused["code"])
+        # a node that does not exist
+        refused = self.replace(waiting_node="n99", waiting_ticket="0" * 64)
+        self.assertEqual("rejected", refused["decision"], refused)
+        self.assertEqual("WORKFLOW_WAITING_NODE_NOT_CURRENT", refused["code"])
+        # the current waiting node with a ticket that is not current
+        refused = self.replace(waiting_ticket="0" * 64)
+        self.assertEqual("rejected", refused["decision"], refused)
+        self.assertEqual("WORKFLOW_WAITING_TICKET_STALE", refused["code"])
 
 
 if __name__ == "__main__":  # pragma: no cover

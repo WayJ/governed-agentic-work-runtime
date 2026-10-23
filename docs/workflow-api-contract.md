@@ -612,9 +612,20 @@ caller observed, under the caller's own `commandId`, in one transaction.
   WORKFLOW_SOURCE_REFERENCE_TOO_LARGE`). The core wraps it in the same
   envelope the source output carries and writes it as a new revision;
   the historical revision is retained.
+* The reference stays opaque — the core never resolves it — but the
+  **published validation** of the source output judges it before anything
+  is written: a manifest that does not satisfy the declared shape or the
+  pinned validator is refused (`422 WORKFLOW_SOURCE_REFERENCE_REJECTED`),
+  and no revision, no invalidation and no material generation is spent on
+  it.
 * `waitingNode` and `waitingTicket` are the node that waits and the
-  ticket the manager observed. When given, the ticket must still be the
-  current one (`409 WORKFLOW_WAITING_TICKET_STALE`).
+  ticket the manager observed. When given, the node must be the
+  **current** node and it must really wait for material (`409
+  WORKFLOW_WAITING_NODE_NOT_CURRENT`), and the ticket must still be its
+  current one (`409 WORKFLOW_WAITING_TICKET_STALE`). The pair may be
+  left out — the manager may replace the material of a workflow that
+  waits for nothing — but a platform that replaces material on a waiting
+  work always sends both.
 * `requestVersion` is `1`; any other value is `400
   MATERIAL_WAIT_VERSION_UNSUPPORTED`.
 * The `actor` must be the work's owner with `work.manage`; anybody else
@@ -640,14 +651,24 @@ The affected consumers are revalidated in dependency order, each on one
 ticket carries the node's input generation. A material attempt that
 fails on quality opens no further attempt.
 
+**Nothing settles an invalidated attempt.** While the revalidation is
+pending, a candidate for an invalidated attempt is refused (`409
+WORKFLOW_NODE_INVALIDATED`), a candidate for a node the workflow is not
+working on is refused (`409 WORKFLOW_NODE_NOT_CURRENT`), and a decision
+for an invalidated attempt is refused (`409 WORKFLOW_NODE_INVALIDATED`).
+The old attempt keeps its history; nothing of it is stored.
+
 Refusals: `409 WORKFLOW_REVALIDATION_EFFECT_PRESENT` (the affected
 branch carries a business effect or a human judgement),
 `409 WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED`,
 `409 WORKFLOW_REVALIDATION_NO_CONSUMERS`, `409
-WORKFLOW_WAITING_TICKET_STALE`, `409 WORKFLOW_SOURCE_NOT_PRODUCER`,
-`409 WORKFLOW_SOURCE_NOT_COMPLETED`, `409 CANCELLATION_ACTIVE`, `409
-WORKFLOW_FINALIZED`, `409 WORKFLOW_REVALIDATION_PENDING` (the
-acceptance), `422 WORKFLOW_SOURCE_REFERENCE_INVALID`, `422
+WORKFLOW_WAITING_TICKET_STALE`, `409 WORKFLOW_WAITING_NODE_NOT_CURRENT`,
+`409 WORKFLOW_NODE_INVALIDATED`, `409 WORKFLOW_NODE_NOT_CURRENT`,
+`409 WORKFLOW_SOURCE_NOT_PRODUCER`, `409 WORKFLOW_SOURCE_NOT_COMPLETED`,
+`409 CANCELLATION_ACTIVE`, `409 WORKFLOW_FINALIZED`, `409
+WORKFLOW_REVALIDATION_PENDING` (the acceptance), `422
+WORKFLOW_SOURCE_REFERENCE_INVALID`, `422
+WORKFLOW_SOURCE_REFERENCE_REJECTED`, `422
 WORKFLOW_SOURCE_REFERENCE_TOO_LARGE`.
 
 ### `GET /v1/workflows/instances/{workId}/cancellation`
