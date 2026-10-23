@@ -72,6 +72,7 @@ class RevalidationTestCase(unittest.TestCase):
     template = REVALIDATION_TEMPLATE
     quality_failures = 0
     park_wait = True
+    park_first_consumer = False
 
     def setUp(self):
         self.folder = tempfile.mkdtemp(prefix="gawr-revalidation-")
@@ -116,14 +117,23 @@ class RevalidationTestCase(unittest.TestCase):
                             "intake", {"records": "not a list"})
             self.assertEqual("rejected", failed["decision"], failed)
             self.engine.advance(self.work, 1500)
+        if self.park_first_consumer:
+            # the first consumer is still working: its prompt is pending,
+            # which is where an acknowledgement is meaningful
+            return
         for node, name, result in (("n01", "intake", VALID_INTAKE),
                                    ("n02", "analysis", VALID_ANALYSIS)):
             submitted = submit_valid(self.engine, self.runtime, self.work, node,
                                      name, result)
             self.assertEqual("accepted", submitted["decision"], submitted)
+            if node == "n01":
+                self.settle_first_consumer()
         if self.park_wait:
             # the third consumer waits for what is still missing
             self.wait()
+
+    def settle_first_consumer(self):
+        """A hook for a family whose first consumer needs a review."""
 
     # -- helpers ---------------------------------------------------------
 
@@ -179,6 +189,9 @@ class RevalidationTestCase(unittest.TestCase):
                 request_version=1):
         if waiting_ticket is None and waiting_node:
             waiting_ticket = input_digest_of(self.engine, self.work, waiting_node)
+            if not waiting_ticket:
+                # the node has no ticket: there is nothing to check
+                waiting_node = None
         payload = {"node": node,
                    "source_reference": SOURCE_REFERENCE if reference is None
                    else reference,
@@ -631,6 +644,98 @@ class BranchClosureTestCase(RevalidationTestCase):
         # invalidated and it proceeds through the ordinary routing
         self.assertNotIn("n04", affected)
         self.assertEqual([], self.instance("n04"))
+
+
+def review_template():
+    """A definition whose first consumer needs an independent review."""
+    spec = json.loads(json.dumps(REVALIDATION_TEMPLATE))
+    spec["nodes"]["n01"]["review"] = {
+        "evidence_kind": "agent_review", "reviewer": "reviewer-v",
+        "rubric": {"validator": "review-rubric", "validator_version": "1"}}
+    return spec
+
+
+class StaleBindingTestCase(RevalidationTestCase):
+    """The old review and the restart."""
+
+    template = review_template()
+
+    def settle_first_consumer(self):
+        """The independent reviewer settles the first consumer."""
+        entry = self.instance("n01")[-1]
+        reviewed = self.review(entry["attempt"], entry["body"]["input_digest"],
+                               entry["body"]["result"]["digest"])
+        self.assertEqual("accepted", reviewed["decision"], reviewed)
+        self.runtime.verify_pending(self.work)
+        self.engine.advance(self.work, 1500)
+
+    def review(self, attempt, input_digest, output_digest):
+        return send(self.runtime, "reviewer-v", self.work, "record_evidence",
+                    {"event_id": uuid.uuid4().hex, "kind": "agent_review",
+                     "data": {"node": "n01", "attempt": attempt,
+                              "input_digest": input_digest,
+                              "output_digest": output_digest,
+                              "producer": "reviewer-v", "verdict": "passed",
+                              "items": []}})
+
+    def test_an_old_review_never_settles_the_new_attempt(self):
+        # the setup drove the first consumer and settled its review
+        entry = self.instance("n01")[-1]
+        self.assertEqual("completed", entry["state"])
+        # the material is replaced and the consumer runs again
+        receipt = self.replace()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        self.engine.advance(self.work, 2000)
+        fresh = self.instance("n01")[-1]
+        self.assertEqual(2, fresh["attempt"])
+        self.assertEqual("material", fresh["body"]["trigger"])
+        # the review of the earlier attempt does not settle the new one
+        old = self.review(1, entry["body"]["input_digest"],
+                          entry["body"]["result"]["digest"])
+        self.assertEqual("accepted", old["decision"], old)
+        self.runtime.verify_pending(self.work)
+        self.engine.advance(self.work, 2001)
+        self.assertEqual("running", self.instance("n01")[-1]["state"])
+
+    def test_the_revalidation_survives_a_restart(self):
+        receipt = self.replace()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        # a fresh engine reads the plan and continues the chain
+        _, engine2 = build(self.path, policy=RevalidationPolicy(),
+                           validators=revalidation_validators(),
+                           runner="workflow-runner")
+        engine2.advance(self.work, 2000)
+        n01 = self.instance("n01")
+        self.assertEqual(2, len(n01))
+        self.assertEqual("material", n01[1]["body"]["trigger"])
+
+
+class OldAcknowledgementTestCase(RevalidationTestCase):
+    """An acknowledgement of the withdrawn prompt.
+
+    The first consumer is still working when the manager acknowledges its
+    prompt: that is where an acknowledgement is meaningful.
+    """
+
+    park_first_consumer = True
+
+    def test_an_old_acknowledgement_does_not_swallow_the_new_prompt(self):
+        # the withdrawn prompt is acknowledged before the replacement
+        intent = self.rows("SELECT id FROM workflow_intents WHERE work_id=? "
+                           "AND node='n01' AND kind='agent_task'", (self.work,))
+        self.assertEqual(1, len(intent))
+        acknowledged = self.engine.acknowledge_intent("coordinator", intent[0][0])
+        self.assertEqual("accepted", acknowledged["decision"], acknowledged)
+        receipt = self.replace()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        self.engine.advance(self.work, 2000)
+        # the new prompt is a new intent, and it is pending
+        intents = self.rows("SELECT id,status FROM workflow_intents "
+                            "WHERE work_id=? AND node='n01' AND kind='agent_task' "
+                            "ORDER BY id", (self.work,))
+        self.assertEqual(2, len(intents))
+        self.assertEqual("acknowledged", intents[0][1])
+        self.assertEqual("pending", intents[1][1])
 
 
 if __name__ == "__main__":  # pragma: no cover

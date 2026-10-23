@@ -437,7 +437,8 @@ class RevalidationPolicy:
     goal = POLICY_GOAL
     evidence_sources = {"dispatch_receipt": "business-system",
                         "accepted": "business-system",
-                        "safety_review": "reviewer-a"}
+                        "safety_review": "reviewer-a",
+                        "agent_review": "reviewer-v"}
 
     def validate_document(self, document: dict) -> None:
         if set(document) != {"id", "subject"}:
@@ -454,6 +455,19 @@ class RevalidationPolicy:
             return (set(data) == {"digest", "external_id"}
                     and isinstance(data["digest"], str) and bool(data["digest"])
                     and isinstance(data["external_id"], str))
+        if kind == "agent_review":
+            return (set(data) == {"node", "attempt", "input_digest",
+                                  "output_digest", "producer", "verdict",
+                                  "items"}
+                    and isinstance(data["node"], str) and bool(data["node"])
+                    and type(data["attempt"]) is int and data["attempt"] >= 1
+                    and isinstance(data["input_digest"], str)
+                    and bool(data["input_digest"])
+                    and isinstance(data["output_digest"], str)
+                    and bool(data["output_digest"])
+                    and isinstance(data["producer"], str) and bool(data["producer"])
+                    and data["verdict"] in ("passed", "failed")
+                    and isinstance(data["items"], list))
         if kind == "safety_review":
             return (set(data) == {"decision", "digest", "revision", "node",
                                   "attempt", "actor", "items"}

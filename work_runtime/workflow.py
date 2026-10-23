@@ -1132,6 +1132,17 @@ class WorkflowEngine:
                 return changed, True
             instance = opened
         elif instance["state"] in ("running", "submitted"):
+            if instance.get("pending_revalidation"):
+                # The work of this attempt is bound to the replaced
+                # material: it is withdrawn and the node runs again.
+                opened = self._open_attempt(db, work, spec, current, now)
+                changed = True
+                persisted = True
+                if opened is None:
+                    self._persist(db, work, "WorkflowReworkLimitExceeded",
+                                  {"node": current})
+                    return changed, True
+                return changed, True
             progressed = self._settle(db, work, spec, current, instance, now)
             changed = changed or progressed
             persisted = persisted or progressed
@@ -1226,7 +1237,11 @@ class WorkflowEngine:
         latest = self._latest_instance(db, work["id"], node_id)
         material = bool(latest and latest.get("pending_revalidation"))
         if latest is not None and latest["state"] in ("running", "submitted"):
-            return latest
+            if not material:
+                return latest
+            # The work of this attempt is bound to the material that was
+            # replaced: it is withdrawn and the node runs again.
+            self._invalidate_material_attempt(db, work, latest)
         if latest is not None and latest["state"] == "waiting":
             if not material:
                 # A node that waits for material is stable: the pass
@@ -1294,6 +1309,20 @@ class WorkflowEngine:
         instance["reason"] = "MATERIAL_REPLACED"
         self._cancel_intents(db, work["id"], instance["node"], instance["attempt"])
         self._save_instance(db, work, instance, "WorkflowMaterialWaitInvalidated",
+                            {"reason": "MATERIAL_REPLACED"})
+
+    def _invalidate_material_attempt(self, db, work, instance) -> None:
+        """Withdraw the work of an attempt bound to replaced material.
+
+        The attempt itself stays on the record — it is the history of
+        what the node was working on — but it is closed with the reason
+        it was withdrawn.
+        """
+        instance["state"] = "cancelled"
+        instance["outcome"] = "cancelled"
+        instance["reason"] = "MATERIAL_REPLACED"
+        self._cancel_intents(db, work["id"], instance["node"], instance["attempt"])
+        self._save_instance(db, work, instance, "WorkflowMaterialAttemptInvalidated",
                             {"reason": "MATERIAL_REPLACED"})
 
     def _activate(self, db, work, spec, node_id, instance, now) -> bool:
@@ -3441,9 +3470,11 @@ class WorkflowEngine:
 
         affected = []
         seen = set()
+        # a consumer that is still working on the material is in the
+        # closure too: its acceptance is not settled, but its work is
+        # bound to material that is being replaced
         frontier = [instance for instance in latest.values()
-                    if instance.get("state") == "completed"
-                    and judges(instance, object_name)]
+                    if judges(instance, object_name)]
         while frontier:
             instance = frontier.pop(0)
             key = (instance["node"], instance["attempt"])
