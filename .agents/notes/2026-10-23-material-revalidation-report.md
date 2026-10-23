@@ -232,6 +232,18 @@ The two revisions are never presented as covering one another, and **no
 stale-input check was relaxed** to make the path work: the acceptance
 was already sound, and the gap was the missing regression.
 
+### The review-fix RED/GREEN
+
+| step | RED | GREEN |
+|---|---|---|
+| the published validation judges the new reference | a manifest missing a required field and one with a malformed scope were both **accepted** (2 failures) | `PublishedValidationTestCase` → 2 tests, OK |
+| nothing settles an invalidated attempt | the old downstream result was **accepted** and stored (1 failure) | `InvalidatedAttemptTestCase` → 1 test, OK |
+| the invalidated decision | the old decision was **accepted** (1 failure) | `InvalidatedDecisionTestCase` → 1 test, OK |
+| the waiting node | a node that was not the current waiting one was accepted (1 failure) | `WaitingNodeTestCase` → 1 test, OK |
+| the review of an invalidated attempt | the old review settled nothing, but the case was not covered | `PendingReviewTestCase` → 1 test, OK |
+| the service | the same three refusals at the HTTP surface (3 failures) | `test_workflow_material_revalidation_http` → 17 tests, OK |
+| the acceptance path | **no regression existed** — the acceptance was sound, the coverage was missing | `PositiveRevalidationTestCase` → 1 test, OK |
+
 ### The new refusal codes
 
 | code | status | meaning |
