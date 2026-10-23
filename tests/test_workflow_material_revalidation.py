@@ -136,6 +136,14 @@ class RevalidationTestCase(unittest.TestCase):
             # the third consumer waits for what is still missing
             self.wait()
 
+    def drive(self, node, name, result):
+        """The agent answers the current attempt of the node."""
+        entry = self.instance(node)[-1]
+        submitted = submit(self.engine, self.runtime, self.work, node,
+                           entry["attempt"], name, result,
+                           input_digest=entry["body"].get("input_digest"))
+        return submitted
+
     def settle_first_consumer(self):
         """A hook for a family whose first consumer needs a review."""
 
@@ -313,14 +321,6 @@ class ReplaceMaterialTestCase(RevalidationTestCase):
 
 class MaterialAttemptTestCase(RevalidationTestCase):
     """The affected chain is revalidated on material attempts."""
-
-    def drive(self, node, name, result):
-        """The agent answers the current attempt of the node."""
-        entry = self.instance(node)[-1]
-        submitted = submit(self.engine, self.runtime, self.work, node,
-                           entry["attempt"], name, result,
-                           input_digest=entry["body"].get("input_digest"))
-        return submitted
 
     def test_the_affected_chain_re_runs_on_material_attempts(self):
         receipt = self.replace()
@@ -917,6 +917,69 @@ class WaitingNodeTestCase(RevalidationTestCase):
         refused = self.replace(waiting_ticket="0" * 64)
         self.assertEqual("rejected", refused["decision"], refused)
         self.assertEqual("WORKFLOW_WAITING_TICKET_STALE", refused["code"])
+
+
+class PositiveRevalidationTestCase(RevalidationTestCase):
+    """The whole path: replace, revalidate, finish, accept.
+
+    The source node's historical output (revision 1) deliberately stays
+    accepted, while the current source revision (2) is the manager's
+    attested adoption. The proof must carry both without ever claiming
+    that the old acceptance covers the new revision.
+    """
+
+    VALID_PROPOSAL = {"measures": [{"issueId": "H-001", "measureId": "M-1",
+                                    "measure": "install guard"}]}
+
+    def test_the_workflow_is_accepted_after_the_revalidation(self):
+        receipt = self.replace()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        # the chain revalidates in order, each on a material attempt
+        self.engine.advance(self.work, 2000)
+        self.assertEqual("material", self.instance("n01")[-1]["body"]["trigger"])
+        self.drive("n01", "intake", VALID_INTAKE)
+        self.engine.advance(self.work, 2001)
+        self.assertEqual("material", self.instance("n02")[-1]["body"]["trigger"])
+        self.drive("n02", "analysis", VALID_ANALYSIS)
+        self.engine.advance(self.work, 2002)
+        self.assertEqual("material", self.instance("n03")[-1]["body"]["trigger"])
+        self.drive("n03", "proposal", self.VALID_PROPOSAL)
+        self.engine.advance(self.work, 2003)
+        # the workflow finished
+        work = self.runtime.get_work(self.work)
+        self.assertEqual("finished", work["workflow_status"])
+        self.assertIsNone(work["workflow_current"])
+        # the source node keeps its historical accepted output, and the
+        # current source revision is the manager's attested adoption
+        source = self.instance("s00")[0]
+        self.assertEqual(1, source["body"]["output"]["revision"])
+        self.assertEqual(2, self.object_revision("sources")["revision"])
+        # and the acceptance is granted
+        accepted = self.engine.command(
+            "workflow-runner", uuid.uuid4().hex, self.work,
+            "finalize_workflow_success", {},
+            version_of(self.runtime, self.work))
+        self.assertEqual("accepted", accepted["decision"], accepted)
+        snapshot = accepted["finalization"]
+        # the proof names the material as it stands (the adopted revision)
+        sources = [entry for entry in snapshot["objects"]
+                   if entry["name"] == "sources"][0]
+        self.assertEqual(2, sources["revision"])
+        # and it names the source node's own accepted revision, without
+        # claiming that the old acceptance covers the adopted one
+        nodes = [entry for entry in snapshot["nodes"] if entry["node"] == "s00"][0]
+        self.assertEqual(1, nodes["output"]["revision"])
+        self.assertNotEqual(sources["revision"], nodes["output"]["revision"])
+        # the proof carries the explicit attestation of the adoption
+        attestation = snapshot["materialRevalidation"]["attestation"]
+        self.assertEqual("s00", attestation["sourceNode"])
+        self.assertEqual(1, attestation["from"]["revision"])
+        self.assertEqual(2, attestation["to"]["revision"])
+        self.assertIn("does not cover", attestation["claim"])
+        # the revalidation is settled
+        self.assertEqual("revalidated",
+                         (self.runtime.get_work(self.work)
+                          .get("material_revalidation") or {}).get("state"))
 
 
 if __name__ == "__main__":  # pragma: no cover

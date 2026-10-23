@@ -4190,6 +4190,8 @@ class WorkflowEngine:
                          "digest": work.get("document_digest")},
             "objects": objects,
             "nodes": nodes,
+            "materialRevalidation": _revalidation_view(
+                work.get("material_revalidation")),
             "operations": operations,
             "requirements": requirements,
             "evidence": sorted(entry["id"] for entry in proofs

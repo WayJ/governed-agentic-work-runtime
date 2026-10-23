@@ -158,12 +158,94 @@ WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED / WORKFLOW_REVALIDATION_NO_CONSUMERS
 / WORKFLOW_REVALIDATION_PENDING; `422` WORKFLOW_SOURCE_REFERENCE_INVALID /
 WORKFLOW_SOURCE_REFERENCE_TOO_LARGE.
 
-## The scope boundary (corrected)
+## The review-fix wave
+
+The coordinator reviewed this slice and required three fixes. All three
+are in, with their own RED/GREEN evidence.
+
+### (1) The published validation judges the new reference
+
+The new `{sourceReference: <manifest>}` is now judged by the
+**published** validation of the source node's output — the declared
+`shape` and the pinned `validator` — **before** `_write_object` and
+before a material generation is spent. A manifest that misses a
+required field, or one whose scope is malformed, is refused
+(`WORKFLOW_SOURCE_REFERENCE_REJECTED`, 422) with the shape's or the
+validator's own codes as the findings. Nothing is written: no revision,
+no invalidation, no event, and the material generation is still
+available for the next request.
+
+The reference stays **opaque**: the core never resolves it and never
+fetches anything. The published rules decide whether the envelope is a
+material this source may produce; the platform decides what it points
+at.
+
+### (2) Nothing settles an invalidated attempt
+
+While a revalidation is pending:
+
+| what arrives | what happens | code |
+|---|---|---|
+| a candidate for an invalidated attempt | refused at once, nothing stored | `WORKFLOW_NODE_INVALIDATED` (409) |
+| a candidate for a node the workflow is not working on | refused at once | `WORKFLOW_NODE_NOT_CURRENT` (409) |
+| a decision for an invalidated attempt | refused at once, nothing written | `WORKFLOW_NODE_INVALIDATED` (409) |
+| the review of an invalidated attempt | never settles the node; no check of it is materialized | — |
+
+The old attempt keeps its history: its candidate, its output reference
+and its checks stay on the record, and only its state and its reason
+say that it was withdrawn (`MATERIAL_REPLACED`).
+
+A consumer that is still working keeps its state `running` and its old
+`input_digest` until the cursor reaches it — the invalidation happens
+when its material attempt opens, not before.
+
+### (3) The waiting node must be the current one
+
+`waitingNode` and `waitingTicket`, when supplied, must name the
+**current** node and it must really wait for material: a digest match
+alone is not enough, because the node the manager looked at may be a
+node that has moved on (`WORKFLOW_WAITING_NODE_NOT_CURRENT`, 409). A
+stale ticket is `WORKFLOW_WAITING_TICKET_STALE` (409). The pair may be
+left out — the manager may replace the material of a workflow that waits
+for nothing — but a platform that replaces material on a waiting work
+always sends both.
+
+### The positive path: replace, revalidate, finish, accept
+
+The coordinator asked for the acceptance path that a review could not
+find. It is covered now by
+`PositiveRevalidationTestCase`: the controlled replacement, the
+revalidation of every affected consumer, the normal successor, the
+finished workflow and the **granted** acceptance.
+
+The provenance is exact. The proof carries:
+
+* `objects` — the material as it stands: `sources` revision 2, the
+  manager's attested adoption;
+* `nodes` — the source node's own historical output: `sources`
+  revision 1, the revision it accepted;
+* `materialRevalidation` — the explicit attestation: the source node,
+  the revision it accepted, the revision the manager adopted, and the
+  claim that the previous acceptance does not cover the new one.
+
+The two revisions are never presented as covering one another, and **no
+stale-input check was relaxed** to make the path work: the acceptance
+was already sound, and the gap was the missing regression.
+
+### The new refusal codes
+
+| code | status | meaning |
+|---|---|---|
+| `WORKFLOW_SOURCE_REFERENCE_REJECTED` | 422 | the published validation refused the new reference |
+| `WORKFLOW_NODE_INVALIDATED` | 409 | the attempt was invalidated by a material replacement |
+| `WORKFLOW_NODE_NOT_CURRENT` | 409 | the node is not the one the workflow is working on |
+| `WORKFLOW_WAITING_NODE_NOT_CURRENT` | 409 | the stated waiting node is not the current waiting node |
+
+### The scope boundary (corrected)
 
 An earlier summary of this slice said that the "pre-effect transitive
 revalidation" was still to be dispatched. That was **wrong**: the
-pre-effect revalidation **is implemented** — it is this slice, and it is
-what the coordinator reviews next.
+pre-effect revalidation **is implemented** — it is this slice.
 
 What is intentionally **not** built is a **post-effect amendment**: a
 replacement of the material of a branch that has already produced a

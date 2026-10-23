@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W172)
+### Workflow matrix (W01–W173)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -1013,6 +1013,7 @@ are byte-unchanged by that slice; the boundary rows are in
 | W169 | Nothing settles an invalidated attempt | covered | `InvalidatedAttemptTestCase` — the candidate of a consumer that is still working on the replaced material is refused `WORKFLOW_NODE_INVALIDATED` at once, nothing is written, and the attempt keeps its state and its old input digest until the cursor reaches it; `InvalidatedDecisionTestCase` — a decision for an invalidated human node is refused at once |
 | W170 | The review of an invalidated attempt is never accepted | covered | `PendingReviewTestCase` — the review of the invalidated attempt does not complete the node, no check of it is materialized, and the old attempt keeps its candidate and its output on the record |
 | W171 | The waiting node must be the current one | covered | `WaitingNodeTestCase` — a node that does not wait and a node that does not exist are refused `WORKFLOW_WAITING_NODE_NOT_CURRENT`, and a stale ticket is refused `WORKFLOW_WAITING_TICKET_STALE` |
+| W173 | The accepted workflow after a revalidation | covered | `tests/test_workflow_material_revalidation.py` — `PositiveRevalidationTestCase`: the replacement, the revalidation of every affected consumer, the normal successor, the finished workflow and the granted acceptance; the proof names the adopted revision in `objects`, the source node's historical revision in `nodes`, and the explicit attestation in `materialRevalidation` — never claiming that the old acceptance covers the new revision |
 | W172 | The service refuses the same things | covered | `tests/test_workflow_material_revalidation_http.py` — a manifest the published validation refuses is `422` and writes nothing, a waiting node that is not the current one is `409`, and the old result of an invalidated attempt is `409 WORKFLOW_NODE_INVALIDATED` |
 | W128 | The cancellation read is safe and scoped | covered | `CancellationReadTests` — an active work answers `state=none` with empty operation lists; an unknown work is `404 WORK_UNKNOWN`; the read carries no payload body and no credential |
 | W113 | The default still needs the named record for every decision | covered | `tests/test_workflow_conditional_output.py` — `DefaultSemanticsTests`: a rejection without a record leaves the node running with `WORKFLOW_OUTPUT_MISSING` and the routing does not move; an approval writes the record |
