@@ -17,6 +17,7 @@ import time
 import unittest
 import uuid
 
+from work_runtime.policy import canonical, digest
 from work_runtime.workflow import WorkflowError
 
 try:
@@ -208,6 +209,42 @@ class MaterialWaitTestCase(unittest.TestCase):
         with self.assertRaises(WorkflowError):
             self.wait(reason="x" * 513)
 
+    def test_the_generation_zero_ticket_is_legacy_compatible(self):
+        # A node that never waited keeps exactly the ticket it was given:
+        # the digest of its pinned inputs, as before this slice. An upgrade
+        # must not invalidate a pinned ticket or a review that bound it.
+        entry = instance_of(self.engine, self.runtime, self.work, "n02")
+        self.assertEqual(0, entry["inputGeneration"])
+        self.assertEqual(digest(entry["inputs"]), entry["inputDigest"])
+
+    def upgrade_store(self):
+        """Rewrite the instance the way a pre-upgrade store holds it.
+
+        Before this slice an instance carried no input generation, and its
+        ticket was the digest of its pinned inputs.
+        """
+        db = sqlite3.connect(self.path)
+        try:
+            row = db.execute("SELECT body FROM workflow_nodes WHERE work_id=? "
+                             "AND node='n02' AND attempt=1",
+                             (self.work,)).fetchone()
+            body = json.loads(row[0])
+            body.pop("input_generation", None)
+            body["input_digest"] = digest(body["inputs"])
+            db.execute("UPDATE workflow_nodes SET body=? WHERE work_id=? "
+                       "AND node='n02' AND attempt=1",
+                       (canonical(body), self.work))
+        finally:
+            db.close()
+        return body["input_digest"]
+
+    def test_a_node_persisted_before_the_upgrade_keeps_its_ticket(self):
+        legacy = self.upgrade_store()
+        receipt = submit(self.engine, self.runtime, self.work, "n02",
+                         self.attempt, "analysis", VALID_ANALYSIS,
+                         input_digest=legacy)
+        self.assertEqual("accepted", receipt["decision"], receipt)
+
     def test_a_cancelling_work_refuses_the_wait(self):
         send(self.runtime, OWNER, self.work, "request_cancel",
              {"reason": "duplicated request"})
@@ -331,6 +368,17 @@ class ResumeMaterialWaitTestCase(AdoptMaterialTestCase):
         self.assertEqual("resumed", wait["state"])
         self.assertEqual(OWNER, wait["resumed"]["by"])
 
+    def test_a_resumed_node_stale_raises_the_pre_upgrade_ticket(self):
+        legacy = self.upgrade_store()
+        self.wait()
+        receipt = self.resume()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        refused = submit(self.engine, self.runtime, self.work, "n02",
+                         self.attempt, "analysis", VALID_ANALYSIS,
+                         input_digest=legacy)
+        self.assertEqual("rejected", refused["decision"], refused)
+        self.assertEqual("WORKFLOW_INPUT_STALE", refused["code"])
+
     def test_the_resume_moves_the_input_ticket_even_for_equal_material(self):
         self.wait()
         stale = input_digest_of(self.engine, self.work, "n02")
@@ -440,6 +488,92 @@ class ResumeMaterialWaitTestCase(AdoptMaterialTestCase):
         self.assertEqual(OWNER, wait["requestedBy"])
         self.assertEqual("intake", wait["dependencies"][0]["name"])
         self.assertEqual([], wait["adoptions"])
+
+
+class TransitiveGuardTestCase(unittest.TestCase):
+    """The guard must inspect the nodes that *pin* a changed object.
+
+    The demonstration family produces a chain: n01 writes the intake,
+    n02 reads it and writes the analysis, n03 reads the analysis. When the
+    intake moves on, n02 judged material that is gone, so the analysis it
+    produced rests on it — and a wait that would reuse the analysis must
+    be refused.
+    """
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="gawr-material-chain-")
+        self.addCleanup(shutil.rmtree, self.folder, True)
+        self.path = os.path.join(self.folder, "runtime.sqlite")
+        self.runtime, self.engine = build(self.path)
+        self.work = WORK_ID
+        published = self.engine.publish_template(OWNER, scenario_template())
+        self.assertEqual("accepted", published["decision"], published)
+        instantiate(self.runtime, self.engine, self.work)
+        self.engine.advance(self.work, 1000)
+        for node, name in (("n01", "intake"), ("n02", "analysis")):
+            submitted = submit_valid(self.engine, self.runtime, self.work, node,
+                                     name)
+            self.assertEqual("accepted", submitted["decision"], submitted)
+        # n03 is running and reads the analysis
+        self.attempt = current_attempt(self.engine, self.runtime, self.work, "n03")
+        self.assertEqual(1, self.attempt)
+        self.digest = input_digest_of(self.engine, self.work, "n03")
+
+    def wait(self):
+        return self.engine.command(
+            OWNER, uuid.uuid4().hex, self.work, "request_material_wait",
+            {"node": "n03", "attempt": self.attempt,
+             "input_digest": self.digest,
+             "reason": "the referenced record is missing a page",
+             "request_version": 1},
+            version_of(self.runtime, self.work))
+
+    def resume(self):
+        return self.engine.command(
+            OWNER, uuid.uuid4().hex, self.work, "resume_material_wait",
+            {"node": "n03", "attempt": self.attempt, "request_version": 1},
+            version_of(self.runtime, self.work))
+
+    def test_a_material_read_by_a_completed_node_stale_raises_the_resume(self):
+        waited = self.wait()
+        self.assertEqual("accepted", waited["decision"], waited)
+        # the intake moves on: n02 judged material that is now gone
+        revised = send(self.runtime, OWNER, self.work, "revise_object",
+                       {"name": "intake",
+                        "object": {"records": [{"id": "R-9", "source": "other"}],
+                                   "standard": "STD-1"}})
+        self.assertEqual("accepted", revised["decision"], revised)
+        refused = self.resume()
+        self.assertEqual("rejected", refused["decision"], refused)
+        self.assertEqual("INPUT_DEPENDENCIES_REQUIRE_REVALIDATION",
+                         refused["code"])
+        findings = refused["blockers"]
+        names = [finding["name"] for finding in findings]
+        # the guard names the material that moved on and the node that
+        # judged it — not only the producer of the changed object
+        self.assertIn("intake", names)
+        self.assertIn("analysis", names)
+        judged = [finding for finding in findings
+                  if finding["name"] == "intake" and finding["node"] == "n02"]
+        self.assertTrue(judged, findings)
+        self.assertEqual(1, judged[0]["accepted"]["revision"])
+        self.assertEqual(2, judged[0]["current"]["revision"])
+        # the node that read the changed material is named as well as the
+        # one that produced it: the guard is not producer-only
+        produced = [finding for finding in findings
+                    if finding["name"] == "intake" and finding["node"] == "n01"]
+        self.assertTrue(produced, findings)
+        # the node keeps waiting
+        entry = instance_of(self.engine, self.runtime, self.work, "n03")
+        self.assertEqual("waiting", entry["state"])
+
+    def test_the_unchanged_chain_lets_the_resume_through(self):
+        waited = self.wait()
+        self.assertEqual("accepted", waited["decision"], waited)
+        resumed = self.resume()
+        self.assertEqual("accepted", resumed["decision"], resumed)
+        self.assertEqual("running", resumed["state"])
+        self.assertEqual(1, resumed["attempt"])
 
 
 class FocusedWaitTestCase(unittest.TestCase):

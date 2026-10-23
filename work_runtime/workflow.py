@@ -1180,13 +1180,18 @@ class WorkflowEngine:
                 subject = {"name": name, "revision": row["revision"],
                            "digest": row["digest"]}
         instance["inputs"] = pinned_inputs
-        # The input ticket covers the pinned inputs *and* the node's input
-        # generation. The generation moves on every resume, so a ticket
-        # issued before a wait never satisfies the node after it — even
-        # when the material itself did not change.
-        instance["input_digest"] = digest(
-            {"inputs": pinned_inputs,
-             "generation": int(instance.get("input_generation") or 0)})
+        generation = int(instance.get("input_generation") or 0)
+        if generation:
+            # A node that was resumed asks under a new generation: the
+            # ticket moves even when the material did not, so a ticket
+            # issued before the wait never satisfies the node after it.
+            instance["input_digest"] = digest({"inputs": pinned_inputs,
+                                                "generation": generation})
+        else:
+            # The legacy formula, unchanged: a node that never waited
+            # keeps exactly the ticket it was given, so an upgrade never
+            # invalidates a pinned ticket or a review that bound it.
+            instance["input_digest"] = digest(pinned_inputs)
         instance["input_report"] = input_report
         instance["subject"] = subject
         instance["findings"] = _bounded(findings)
@@ -2797,12 +2802,12 @@ class WorkflowEngine:
         if len(canonical(body).encode("utf-8")) > MAX_OUTPUT_BYTES:
             return self.runtime._reject("WORKFLOW_MATERIAL_TOO_LARGE", version,
                                         [name])
-        # An adoption may not bless a completed upstream's accepted output:
-        # the new revision would be material no completed node ever
-        # accepted, and the upstream acceptance would be stale the moment
-        # it is written. Revalidating the upstream is a separate, bounded
+        # An adoption may not bless material a completed node accepted or
+        # judged: the new revision would be material no completed node
+        # ever accepted, and that acceptance would be stale the moment it
+        # is written. Revalidating the upstream is a separate, bounded
         # step; until it exists, the wait keeps waiting.
-        stale, owned = self._upstream_acceptance(db, work, [name])
+        stale, owned = self._completed_acceptance(db, work, [name])
         if stale or owned:
             return self.runtime._reject("INPUT_DEPENDENCIES_REQUIRE_REVALIDATION",
                                         version, stale or owned)
@@ -2824,48 +2829,99 @@ class WorkflowEngine:
                                       adoption=dict(adoptions[-1]),
                                       wait=copy.deepcopy(wait))
 
-    def _upstream_acceptance(self, db, work, names):
-        """The completed upstream outputs that no longer cover the material.
+    def _completed_acceptance(self, db, work, names):
+        """What the completed nodes of the work still cover.
 
-        A node that completed accepted **one exact revision** of its
-        output. When the object moved on since, that acceptance no longer
-        covers the material, and the engine says so instead of letting a
-        downstream node run on it.
+        The answer has two parts.
 
-        The answer has two parts: the outputs whose acceptance is stale
-        right now, and the outputs that are the accepted output of a
-        completed node at all. The second part matters for an *adoption*:
-        writing a new revision of such an output would immediately make
-        that acceptance stale, so the adoption must be refused rather than
-        write a material no completed node ever accepted.
+        *owned* are the objects a completed node **accepted or judged**.
+        Writing a new revision of such an object would make that
+        acceptance stale the moment it was written, so an adoption of it
+        must be refused rather than write material no completed node ever
+        accepted.
+
+        *stale* are the acceptances that no longer hold. The guard
+        inspects the completed nodes that **pin** a changed object, not
+        only the one that produced it: a node that judged material that
+        moved on holds an acceptance that no longer covers what it
+        judged, and everything it produced rests on it. So the chain of
+        material behind the wait's dependencies is walked, and every node
+        on it is checked.
+
+        The computation is bounded: it reads the stored instances and the
+        objects they name, and it walks the chain of production, which is
+        finite. It rewinds nothing and grants no attempt.
         """
-        stale = []
-        owned = []
+        completed = [instance for instance in self._instances(db, work["id"])
+                     if instance.get("state") == "completed"]
+        holders = {}
+        producers = {}
+        for instance in completed:
+            for ref in self._judged_refs(instance):
+                holders.setdefault(ref.get("name"), []).append((instance, ref))
+            output = instance.get("output")
+            if isinstance(output, dict):
+                producers.setdefault(output.get("name"), []).append((instance, output))
+                holders.setdefault(output.get("name"), []).append((instance, output))
+        # the chain of material behind the dependencies
+        chain = set(names)
+        frontier = list(names)
+        while frontier:
+            name = frontier.pop()
+            for instance, _ in producers.get(name, []):
+                for ref in self._judged_refs(instance):
+                    if ref.get("name") not in chain:
+                        chain.add(ref.get("name"))
+                        frontier.append(ref.get("name"))
         current = {}
-        for name in names:
+        for name in chain:
             row = self._object_row(db, work["id"], name)
             current[name] = (None if row is None else
                              {"revision": row["revision"], "digest": row["digest"]})
-        for instance in self._instances(db, work["id"]):
-            if instance.get("state") != "completed":
-                continue
-            output = instance.get("output")
-            if not isinstance(output, dict):
-                continue
-            name = output.get("name")
-            if name not in current:
-                continue
-            accepted = {"revision": output.get("revision"),
-                        "digest": output.get("digest")}
-            entry = {"name": name, "node": instance["node"],
-                     "attempt": instance["attempt"],
-                     "accepted": accepted, "current": current.get(name)}
-            owned.append(entry)
-            now = current.get(name)
-            if (now is None or now["revision"] != accepted["revision"]
-                    or now["digest"] != accepted["digest"]):
-                stale.append(entry)
+
+        def moved(ref):
+            now = current.get(ref.get("name"))
+            return (now is None
+                    or now["revision"] != ref.get("revision")
+                    or now["digest"] != ref.get("digest"))
+
+        def entry(name, instance, ref):
+            return {"name": name, "node": instance["node"],
+                    "attempt": instance["attempt"],
+                    "accepted": {"revision": ref.get("revision"),
+                                 "digest": ref.get("digest")},
+                    "current": current.get(name)}
+
+        # the material that moved on under a completed node
+        stale = []
+        tainted = set()
+        for name in chain:
+            for instance, ref in holders.get(name, []):
+                if not moved(ref):
+                    continue
+                tainted.add((instance["node"], instance["attempt"]))
+                stale.append(entry(name, instance, ref))
+        # everything a tainted node produced rests on material that is gone
+        for name in names:
+            for instance, ref in producers.get(name, []):
+                if (instance["node"], instance["attempt"]) in tainted:
+                    stale.append(entry(name, instance, ref))
+        owned = []
+        for name in names:
+            for instance, ref in holders.get(name, []):
+                owned.append(entry(name, instance, ref))
         return stale, owned
+
+    def _judged_refs(self, instance):
+        """The material references one node instance judged."""
+        refs = []
+        for entry in (instance.get("inputs") or []):
+            if isinstance(entry, dict):
+                refs.append(entry)
+        subject = instance.get("subject")
+        if isinstance(subject, dict):
+            refs.append(subject)
+        return refs
 
     def _dependency_drift(self, db, work, wait):
         """The dependencies that moved under the wait.
@@ -2937,10 +2993,11 @@ class WorkflowEngine:
             return self.runtime._reject(
                 "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version, drift)
         # A completed upstream node accepted one exact revision of its
-        # output. When the object moved on since, that acceptance no longer
-        # covers the material, and the node must not run on it.
+        # output and judged one exact revision of its inputs. When either
+        # moved on, that acceptance no longer covers the material, and the
+        # node must not run on it.
         names = [entry.get("name") for entry in (wait.get("dependencies") or [])]
-        stale, _ = self._upstream_acceptance(db, work, names)
+        stale, _ = self._completed_acceptance(db, work, names)
         if stale:
             return self.runtime._reject(
                 "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version, stale)
