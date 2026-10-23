@@ -436,7 +436,8 @@ class RevalidationPolicy:
     version = POLICY_VERSION
     goal = POLICY_GOAL
     evidence_sources = {"dispatch_receipt": "business-system",
-                        "accepted": "business-system"}
+                        "accepted": "business-system",
+                        "safety_review": "reviewer-a"}
 
     def validate_document(self, document: dict) -> None:
         if set(document) != {"id", "subject"}:
@@ -448,10 +449,22 @@ class RevalidationPolicy:
 
     def validate_evidence(self, work: dict, candidate: dict) -> bool:
         data = candidate["data"]
-        if candidate["kind"] in ("dispatch_receipt", "accepted"):
+        kind = candidate["kind"]
+        if kind in ("dispatch_receipt", "accepted"):
             return (set(data) == {"digest", "external_id"}
                     and isinstance(data["digest"], str) and bool(data["digest"])
                     and isinstance(data["external_id"], str))
+        if kind == "safety_review":
+            return (set(data) == {"decision", "digest", "revision", "node",
+                                  "attempt", "actor", "items"}
+                    and data["decision"] in ("approved", "rejected",
+                                             "request_material")
+                    and isinstance(data["digest"], str) and bool(data["digest"])
+                    and type(data["revision"]) is int and data["revision"] >= 1
+                    and isinstance(data["node"], str) and bool(data["node"])
+                    and type(data["attempt"]) is int and data["attempt"] >= 1
+                    and isinstance(data["actor"], str) and bool(data["actor"])
+                    and isinstance(data["items"], list))
         return False
 
     def evaluate(self, work: dict, evidence: List[dict]) -> List[dict]:

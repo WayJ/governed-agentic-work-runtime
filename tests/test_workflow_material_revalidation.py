@@ -337,7 +337,10 @@ class MaterialAttemptTestCase(RevalidationTestCase):
         n02 = self.instance("n02")
         self.assertEqual(2, len(n02))
         self.assertEqual("material", n02[1]["body"]["trigger"])
+        # the fan-in node re-pins **both** of its inputs: the analysis it
+        # produced and the source it read
         self.assertEqual(2, n02[1]["body"]["inputs"][0]["revision"])
+        self.assertEqual(2, n02[1]["body"]["inputs"][1]["revision"])
         submitted = self.drive("n02", "analysis", VALID_ANALYSIS)
         self.assertEqual("accepted", submitted["decision"], submitted)
         self.engine.advance(self.work, 2002)
@@ -521,6 +524,102 @@ class EffectBranchTestCase(RevalidationTestCase):
         self.assertEqual(operations,
                          self.rows("SELECT id,body FROM operations WHERE work_id=?",
                                    (self.work,)))
+
+
+def approval_branch_template():
+    """A definition with a human approval behind the consumers."""
+    spec = json.loads(json.dumps(REVALIDATION_TEMPLATE))
+    spec["terminal"] = ["n03"]
+    spec["nodes"]["h01"] = {"kind": "human", "evidence_kind": "safety_review",
+                            "authority": "reviewer-a",
+                            "subject": {"object": "analysis"},
+                            "max_attempts": 1}
+    spec["edges"] = [{"from": "s00", "to": "n01"}, {"from": "n01", "to": "n02"},
+                     {"from": "n02", "to": "h01"}, {"from": "h01", "to": "n03"}]
+    return spec
+
+
+class ApprovalBranchTestCase(RevalidationTestCase):
+    """A branch that already carries a human judgement."""
+
+    template = approval_branch_template()
+    park_wait = False
+
+    def approve(self):
+        """The reviewer approves the analysis the branch judged."""
+        entry = self.instance("h01")[-1]
+        subject = entry["body"].get("subject") or {}
+        decided = send(self.runtime, "reviewer-a", self.work, "record_evidence",
+                       {"event_id": uuid.uuid4().hex, "kind": "safety_review",
+                        "data": {"decision": "approved",
+                                 "digest": subject.get("digest"),
+                                 "revision": subject.get("revision"),
+                                 "node": "h01", "attempt": entry["attempt"],
+                                 "actor": "reviewer-a", "items": []}})
+        self.runtime.verify_pending(self.work)
+        self.engine.advance(self.work, 2000)
+        return decided
+
+    def test_a_human_approval_in_the_branch_blocks_the_revalidation(self):
+        decided = self.approve()
+        self.assertEqual("accepted", decided["decision"], decided)
+        h01 = self.instance("h01")[-1]
+        self.assertEqual("completed", h01["state"])
+        # the branch carries a human judgement: the replacement is refused
+        receipt = self.replace(waiting_node=None)
+        self.assertEqual("rejected", receipt["decision"], receipt)
+        self.assertEqual("WORKFLOW_REVALIDATION_EFFECT_PRESENT",
+                         receipt["code"])
+        self.assertIn("decision", receipt["blockers"][0])
+
+
+def branch_template():
+    """A definition with two consumers of the same source."""
+    spec = json.loads(json.dumps(REVALIDATION_TEMPLATE))
+    spec["terminal"] = ["n03"]
+    spec["nodes"]["n04"] = {"kind": "agent", "executor": "agent-executor",
+                            "max_attempts": 2,
+                            "inputs": [{"object": "sources"}],
+                            "output": {"object": "side",
+                                       "validation": {"shape": {
+                                           "type": "object",
+                                           "properties": {"note": {"type": "string"}},
+                                           "required": ["note"]},
+                                           "validator": "record",
+                                           "validator_version": "1"}},
+                            "checks": [{"id": "N04-1", "method": "PROGRAM",
+                                        "criterion": "The note names itself.",
+                                        "criterion_version": "1",
+                                        "validator": "record",
+                                        "validator_version": "1"}]}
+    spec["edges"] = [{"from": "s00", "to": "n01"}, {"from": "n01", "to": "n02"},
+                     {"from": "n01", "to": "n04"}, {"from": "n02", "to": "n03"}]
+    return spec
+
+
+class BranchClosureTestCase(RevalidationTestCase):
+    """Two consumers of the same source are both invalidated."""
+
+    template = branch_template()
+    park_wait = False
+
+    def test_every_consumer_of_the_source_is_invalidated(self):
+        # the sibling consumer runs before the replacement
+        self.engine.advance(self.work, 2000)
+        receipt = self.replace(waiting_node=None)
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        affected = [entry["node"] for entry in receipt["affected"]]
+        # the consumers that were instantiated, and the node behind them
+        self.assertIn("n01", affected)
+        self.assertIn("n02", affected)
+        self.assertIn("n03", affected)
+        # the chain is ordered: a consumer comes after what it judged
+        self.assertLess(affected.index("n01"), affected.index("n02"))
+        self.assertLess(affected.index("n02"), affected.index("n03"))
+        # the sibling consumer never ran, so it has no history: it is not
+        # invalidated and it proceeds through the ordinary routing
+        self.assertNotIn("n04", affected)
+        self.assertEqual([], self.instance("n04"))
 
 
 if __name__ == "__main__":  # pragma: no cover
