@@ -184,6 +184,9 @@ WORKFLOW_ADOPTION_LIMIT_EXCEEDED.
 | `b6c0acd` | fix: an untouched node keeps its ticket, and the guard reads the whole chain |
 | `2b8fbc6` | feat: the bridge accepts the trusted platform envelope |
 | `996aca9` | docs: the legacy ticket, the transitive guard and the platform envelope |
+| `5c23205` | docs: the worker report of the material wait and the review corrections |
+| `8e435d9` | fix: the drift findings of the material gate are bounded like every other |
+| `8f411ce` | test: the focused family names its own subject |
 
 Nothing was merged and nothing was pushed: the branch is left for the
 integration worker.
