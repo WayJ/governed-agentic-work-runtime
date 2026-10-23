@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W148)
+### Workflow matrix (W01–W153)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -990,6 +990,11 @@ are byte-unchanged by that slice; the boundary rows are in
 | W146 | The bridge exposes the wait lifecycle | covered | `tests/test_workflow_material_wait_http.py` — `MaterialWaitHttpTestCase`: the park answers the instance view with `materialWait`, the adoption of a completed upstream's output is `422`, a material that moved under the wait refuses the resume with the drift, and the receipt reads back under the caller's command id |
 | W147 | The bridge keeps the compare-and-swap and the command identity | covered | `test_a_stale_version_is_a_conflict`, `test_a_replay_returns_the_same_receipt`, `test_a_reused_command_id_with_another_body_is_refused`, `test_an_unknown_version_is_refused` — `STATE_VERSION_CONFLICT`, one event for an identical replay, `COMMAND_ID_REUSED` and `MATERIAL_WAIT_VERSION_UNSUPPORTED` |
 | W148 | The bridge never creates a work it does not have | covered | `test_an_unknown_work_is_not_created_by_waiting_on_it` — `404 WORK_UNKNOWN` and no work row |
+| W149 | The guard inspects the nodes that *pin* a changed object | covered | `test_a_material_read_by_a_completed_node_stale_raises_the_resume` — the intake moves on, so the node that read it and the node that produced it are both named, the analysis that rests on it is refused, and the wait is retained |
+| W150 | A node that never waited keeps its ticket | covered | `test_the_generation_zero_ticket_is_legacy_compatible` — the generation-zero ticket is exactly the digest of the pinned inputs, as before the slice |
+| W151 | A store written before the upgrade still works | covered | `test_a_node_persisted_before_the_upgrade_keeps_its_ticket` — an instance persisted without an input generation keeps its legacy ticket and accepts the candidate bound to it |
+| W152 | The resumed node stale_raises the old ticket | covered | `test_a_resumed_node_stale_raises_the_pre_upgrade_ticket` — the same legacy ticket is refused `WORKFLOW_INPUT_STALE` after the resume |
+| W153 | The platform envelope is accepted, and a contradiction is refused | covered | `test_the_platform_envelope_is_accepted`, `test_a_body_that_names_another_work_is_refused`, `test_a_body_that_names_two_actors_is_refused` — `actorId` and `workId` are accepted, `WORK_MISMATCH` and `ACTOR_CONFLICT` refuse the contradictions |
 | W128 | The cancellation read is safe and scoped | covered | `CancellationReadTests` — an active work answers `state=none` with empty operation lists; an unknown work is `404 WORK_UNKNOWN`; the read carries no payload body and no credential |
 | W113 | The default still needs the named record for every decision | covered | `tests/test_workflow_conditional_output.py` — `DefaultSemanticsTests`: a rejection without a record leaves the node running with `WORKFLOW_OUTPUT_MISSING` and the routing does not move; an approval writes the record |
 | W114 | A published human node may narrow the decisions its output applies to | covered | `NarrowedOutputTests` — a rejection settles the node with no acceptance record, the quality says `exempt`, the decision proof and the check report are preserved, and the declared `on_reject` branch is taken |

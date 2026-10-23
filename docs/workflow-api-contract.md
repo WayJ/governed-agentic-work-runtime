@@ -553,21 +553,34 @@ runtime's own `resume_material_wait`.
 * The **same attempt** continues: no rework attempt is opened and no
   quality allowance is spent.
 * The gate: every dependency the wait accepted must still be the
-  object's current revision and digest, and a completed upstream node's
-  acceptance must still cover the material. Otherwise the resume is
-  `422 INPUT_DEPENDENCIES_REQUIRE_REVALIDATION` with the exact drift as
-  the findings, and **the wait is retained** — the node keeps waiting.
+  object's current revision and digest, and the **completed upstream
+  nodes** must still cover the material. The guard inspects the completed
+  nodes that *pinned* a changed object, not only the one that produced
+  it: a node that judged material that moved on, and everything it
+  produced, is stale. Otherwise the resume is `422
+  INPUT_DEPENDENCIES_REQUIRE_REVALIDATION` with the exact drift as the
+  findings, and **the wait is retained** — the node keeps waiting.
 * Material that no longer passes its declared validator **blocks** the
   node (`200` with `materialResume.state: "blocked"` and the findings on
   the node) instead of running on it.
 
 `200` the instance view with `materialResume: {node, attempt, state,
 inputDigest, wait, resultStateVersion}`. Two things move on a resume even
-when the material did not change: the **input ticket** (the `inputDigest`
-covers the inputs and the node's input generation, so a ticket issued
-before the wait never satisfies the node after it) and the **intent
-identity** (the node asks again under `wf:<work>:<node>:<attempt>:<kind>:<generation>`,
-so an old acknowledgement can never swallow the resumed prompt).
+when the material did not change: the **input ticket** (a resumed node
+carries its input generation in the digest, so a ticket issued before the
+wait never satisfies the node after it — a node that never waited keeps
+exactly the ticket it was given) and the **intent identity** (the node
+asks again under `wf:<work>:<node>:<attempt>:<kind>:<generation>`, so an
+old acknowledgement can never swallow the resumed prompt).
+
+**The platform envelope.** The three routes accept the extra fields the
+trusted platform wire already carries: the principal may be named
+`actor` or `actorId` (a body that names **two different** ones is
+`400 ACTOR_CONFLICT`, and a body that names neither is
+`400 ACTOR_REQUIRED`), and a `workId` in the body is accepted when it
+names the work of the path (a body that names another work is
+`400 WORK_MISMATCH` — the path is authoritative, and a request is never
+applied to a work it does not name).
 
 ### `GET /v1/workflows/instances/{workId}/cancellation`
 

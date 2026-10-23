@@ -258,10 +258,10 @@ submits a candidate with `submit_node_result {node, attempt, object, result}`:
 * the attempt must be the node's current attempt (`WORKFLOW_ATTEMPT_STALE`);
 * the candidate must be bound to the **input digest** the node currently
   pins (`WORKFLOW_INPUT_STALE`): a candidate produced from a superseded
-  input is refused. The input digest covers the declared inputs **and the
-  node's input generation**; the generation moves on every resume, so a
-  ticket issued before a [material wait](#13-the-material-wait) never
-  satisfies the node after it — see [§13](#13-the-material-wait);
+  input is refused. For a node that never waited, the digest is the
+  digest of its pinned inputs, unchanged; a node that was **resumed**
+  carries its input generation in the digest, so the ticket moves on the
+  resume — see [§13](#13-the-material-wait);
 * the payload's `object` must be the node's declared output object
   (`WORKFLOW_OBJECT_MISMATCH`);
 * the result is validated by the shape descriptor and by the registered
@@ -1306,8 +1306,16 @@ The resume is admitted only when **every dependency the wait accepted is
 still the object's current revision and digest**. Two facts are checked:
 
 * the material moved under the wait (`_dependency_drift`), and
-* a **completed upstream node** accepted one exact revision of its output
-  and the object moved on since (`_upstream_acceptance`).
+* the **completed upstream nodes** no longer cover the material
+  (`_completed_acceptance`).
+
+The second one is not producer-only. A completed node accepted one exact
+revision of what it judged, and the guard inspects **the completed nodes
+that pinned a changed object**, not only the one that produced it: a node
+that judged material that moved on holds an acceptance that no longer
+covers what it judged, and everything it produced rests on it. The chain
+of production behind the wait's dependencies is walked, so a change
+further up the chain is caught before the material is reused.
 
 Both refuse with `INPUT_DEPENDENCIES_REQUIRE_REVALIDATION` and the
 exact drift as findings:
@@ -1321,13 +1329,13 @@ exact drift as findings:
 The wait is **retained** on a refusal: the node keeps waiting, and the
 manager decides — adopt the material again, or cancel.
 
-**An adoption may not bless a completed upstream's accepted output.** A
-node that completed accepted one exact revision of its output; writing a
-new revision of that object would be material no completed node ever
-accepted, and the upstream acceptance would be stale the moment it was
-written. Such an adoption is refused with the same code and the same
-findings. Material that **no** completed node accepted — material supplied
-from outside the workflow — may be adopted.
+**An adoption may not bless material a completed node accepted or
+judged.** A node that completed accepted one exact revision of what it
+judged; writing a new revision of such an object would be material no
+completed node ever accepted, and that acceptance would be stale the
+moment it was written. Such an adoption is refused with the same code and
+the same findings. Material that **no** completed node accepted — material
+supplied from outside the workflow — may be adopted.
 
 ### The resume, the ticket and the identity
 
@@ -1338,11 +1346,14 @@ running on it.
 
 Two things move on a resume, even when the material did not change:
 
-* the **input ticket** — the `input_digest` covers the declared inputs
-  *and* the node's input generation, and the generation moves on every
-  resume. A result ticket issued before the wait therefore never
-  satisfies the node after it, even when the object values are equal
-  (`WORKFLOW_INPUT_STALE`);
+* the **input ticket** — the `input_digest` of a node that was resumed
+  covers the declared inputs **and the node's input generation**, and the
+  generation moves on every resume. A result ticket issued before the
+  wait therefore never satisfies the node after it, even when the object
+  values are equal (`WORKFLOW_INPUT_STALE`). A node that never waited
+  keeps **exactly** the ticket it was given: the digest of its pinned
+  inputs, unchanged, so an upgrade never invalidates a pinned ticket or
+  a review that bound it;
 * the **intent identity** — the node asks again under a new identity
   (`wf:<work>:<node>:<attempt>:<kind>:<generation>`). An acknowledgement
   of the withdrawn prompt can never swallow the resumed one: the two are
