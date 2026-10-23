@@ -33,7 +33,8 @@ from .workflow_spec import (EFFECT_POLICIES, EFFECT_POLICY_ONCE,
 # Command kinds the runtime routes to the engine. They are ordinary runtime
 # commands: CAS-guarded, deduplicated and receipt-bearing like every other.
 WORKFLOW_COMMANDS = ("bind_workflow", "revise_object", "submit_node_result",
-                     "record_decision", "finalize_workflow_success")
+                     "record_decision", "finalize_workflow_success",
+                     "request_material_wait")
 
 TERMINAL_NODE_STATES = ("completed", "failed", "expired", "cancelled")
 
@@ -56,6 +57,13 @@ MAX_VIEW_FINDINGS = 16
 MAX_ADVANCE_STEPS = 128
 
 DEFAULT_MAX_ATTEMPTS = 1
+
+# The version of the material-wait request. A caller states the version it
+# speaks, so a later shape is refused instead of half-understood.
+MATERIAL_WAIT_REQUEST_VERSION = 1
+
+# The bound of the reason a manager gives for a wait.
+MAX_WAIT_REASON_CHARS = 512
 
 # The source of the proofs the engine writes itself. It is the engine's own
 # trusted channel, never the ingress source of a signed evidence kind: the
@@ -412,7 +420,7 @@ class WorkflowEngine:
         it still holds: for a decision, the ingress source must still be
         the configured source and the actor must still hold the assignment.
         """
-        if kind in ("bind_workflow", "revise_object"):
+        if kind in ("bind_workflow", "revise_object", "request_material_wait"):
             return self.runtime._manager(actor, work)
         if kind == "submit_node_result":
             return "workflow.execute" in self.runtime.grants.get(actor, set())
@@ -456,6 +464,8 @@ class WorkflowEngine:
                                          command_id)
         if kind == "finalize_workflow_success":
             return self._finalize_success(db, actor, work, payload, version)
+        if kind == "request_material_wait":
+            return self._request_material_wait(db, actor, work, payload, version)
         return self.runtime._reject("COMMAND_UNSUPPORTED", version)
 
     # ------------------------------------------------------------------
@@ -979,6 +989,11 @@ class WorkflowEngine:
             changed = changed or progressed
             persisted = persisted or progressed
             instance = self._latest_instance(db, work["id"], current)
+        elif instance["state"] == "waiting":
+            # A node that waits for material is stable: the pass neither
+            # settles it nor opens anything behind it. The manager resumes
+            # it, adopts the material or cancels the work.
+            return changed, True
         elif instance["state"] in ("running", "submitted"):
             progressed = self._settle(db, work, spec, current, instance, now)
             changed = changed or progressed
@@ -1046,7 +1061,8 @@ class WorkflowEngine:
         for that node is exhausted.
         """
         latest = self._latest_instance(db, work["id"], node_id)
-        if latest is not None and latest["state"] in ("running", "submitted"):
+        if latest is not None and latest["state"] in ("running", "submitted",
+                                                      "waiting"):
             return latest
         attempt = (latest["attempt"] + 1) if latest is not None else 1
         if attempt > self._max_attempts(spec, node_id):
@@ -2471,6 +2487,10 @@ class WorkflowEngine:
         instance = self._latest_instance(db, work["id"], node_id)
         if instance is None or instance["attempt"] != attempt:
             return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        if instance["state"] == "waiting":
+            # The node waits for material: its result is not accepted
+            # until the manager resumes it. Nothing is stored.
+            return self.runtime._reject("WORKFLOW_NODE_WAITING", version, [node_id])
         if instance["state"] != "running":
             return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
         if payload["input_digest"] != instance.get("input_digest"):
@@ -2570,6 +2590,97 @@ class WorkflowEngine:
         return self.runtime._accepted(work, node=node_id, attempt=attempt,
                                       output=reference,
                                       state=instance["state"])
+
+    # ------------------------------------------------------------------
+    # Material waiting
+    # ------------------------------------------------------------------
+
+    def _request_material_wait(self, db, actor, work, payload, version):
+        """Park the current agent node until the manager supplies material.
+
+        Business material is not candidate quality. The wait keeps the
+        attempt, withdraws the agent's durable intent and refuses result
+        acceptance; it opens no rework attempt and spends no quality
+        allowance, so a workflow that waited may still complete on the
+        attempt it started with.
+
+        The request is pinned to the exact node, attempt and input digest
+        the caller observed, so a wait that was decided against a moved
+        work is refused instead of parking the wrong attempt.
+        """
+        if set(payload) != {"node", "attempt", "input_digest", "reason",
+                            "request_version"}:
+            raise WorkflowError("request_material_wait requires exactly node, "
+                                "attempt, input_digest, reason and request_version")
+        node_id = payload["node"]
+        attempt = payload["attempt"]
+        reason = payload["reason"]
+        if not isinstance(node_id, str) or type(attempt) is not int:
+            raise WorkflowError("request_material_wait requires a node id and "
+                                "an attempt")
+        if payload["request_version"] != MATERIAL_WAIT_REQUEST_VERSION:
+            raise WorkflowError("request_material_wait requires request_version "
+                                + str(MATERIAL_WAIT_REQUEST_VERSION))
+        if (not isinstance(reason, str) or not reason
+                or len(reason) > MAX_WAIT_REASON_CHARS):
+            raise WorkflowError("the reason must be a nonempty bounded string")
+        if not isinstance(payload["input_digest"], str) or not payload["input_digest"]:
+            raise WorkflowError("input_digest must be a nonempty string")
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self.runtime._reject("CANCELLATION_ACTIVE", version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        node = spec["nodes"].get(node_id)
+        if node is None:
+            return self.runtime._reject("WORKFLOW_NODE_UNKNOWN", version, [node_id])
+        if node.get("kind") != "agent":
+            # A human node asks for material through its decision; an
+            # automatic node owns an effect. Neither is a manager wait.
+            return self.runtime._reject("WORKFLOW_NODE_NOT_WAITABLE", version,
+                                        [node_id])
+        if work.get("workflow_current") != node_id:
+            return self.runtime._reject("WORKFLOW_NODE_NOT_CURRENT", version,
+                                        [node_id])
+        instance = self._latest_instance(db, work["id"], node_id)
+        if instance is None or instance["attempt"] != attempt:
+            return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        if instance["state"] == "waiting":
+            return self.runtime._reject("WORKFLOW_NODE_WAITING", version, [node_id])
+        if instance["state"] != "running":
+            return self.runtime._reject("WORKFLOW_NODE_NOT_WAITABLE", version,
+                                        [node_id])
+        if payload["input_digest"] != instance.get("input_digest"):
+            # The caller pinned a digest the node does not hold: the
+            # attempt it saw is not the attempt in force.
+            return self.runtime._reject("WORKFLOW_INPUT_STALE", version, [node_id])
+        dependencies = [dict(entry) for entry in (instance.get("inputs") or [])]
+        subject = instance.get("subject")
+        if isinstance(subject, dict):
+            dependencies.append(dict(subject))
+        instance["state"] = "waiting"
+        instance["material_wait"] = {
+            "state": "waiting",
+            "request_version": payload["request_version"],
+            "requested_by": actor,
+            "reason": reason,
+            "requested_at": int(time.time()),
+            "input_digest": instance.get("input_digest"),
+            "dependencies": dependencies,
+            "adoptions": [],
+            "resumed": None,
+        }
+        # The agent's own task is withdrawn: nothing asks the executor to
+        # keep working while the material is missing.
+        self._cancel_intents(db, work["id"], node_id, attempt)
+        work["workflow_status"] = "waiting"
+        self._save_instance(db, work, instance, "WorkflowMaterialWaitRequested",
+                            {"actor": actor, "reason": reason,
+                             "dependencies": dependencies})
+        return self.runtime._accepted(work, node=node_id, attempt=attempt,
+                                      wait=dict(instance["material_wait"]))
 
     # ------------------------------------------------------------------
     # Cancellation
