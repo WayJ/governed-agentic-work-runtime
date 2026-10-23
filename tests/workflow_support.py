@@ -11,7 +11,9 @@ import uuid
 from work_runtime.policy import digest
 from work_runtime.runtime import Runtime
 from work_runtime.workflow import WorkflowEngine
-from work_runtime.workflow_demo import (DemoBusinessSystem, WorkflowDemoPolicy,
+from work_runtime.workflow_demo import (ANALYSIS_SHAPE as DEMO_ANALYSIS_SHAPE,
+                                         INTAKE_SHAPE as DEMO_INTAKE_SHAPE,
+                                         DemoBusinessSystem, WorkflowDemoPolicy,
                                          workflow_demo_grants,
                                          workflow_demo_template,
                                          workflow_demo_validators)
@@ -31,6 +33,37 @@ INTAKE_SHAPE = None
 ANALYSIS_SHAPE = None
 PROPOSAL_SHAPE = None
 REPORT_SHAPE = None
+
+# A definition of its own: one agent node that validates its input and
+# carries a deadline. The demonstration family declares no validation on
+# the input of n02 and no deadline on any agent node, and every object it
+# names is produced by one of its own nodes, so a family of its own is
+# needed for externally supplied material.
+FOCUSED_TEMPLATE = {
+    "id": "material-wait-focused",
+    "version": "test-1",
+    "policy_family": POLICY_ID,
+    "entry": "n01",
+    "terminal": ["n01"],
+    "nodes": {
+        "n01": {"kind": "agent", "executor": "agent-executor", "max_attempts": 2,
+                "deadline_s": 60,
+                "inputs": [{"object": "intake",
+                            "validation": {"shape": DEMO_INTAKE_SHAPE,
+                                           "validator": "intake",
+                                           "validator_version": "1"}}],
+                "output": {"object": "analysis",
+                           "validation": {"shape": DEMO_ANALYSIS_SHAPE,
+                                          "validator": "analysis",
+                                          "validator_version": "1"}},
+                "checks": [{"id": "N01-1", "method": "PROGRAM",
+                            "criterion": "Every finding cites a clause.",
+                            "criterion_version": "1",
+                            "validator": "analysis",
+                            "validator_version": "1"}]},
+    },
+    "edges": [],
+}
 
 
 def build(path, policy=None, grants=None, validators=None, runner=None,

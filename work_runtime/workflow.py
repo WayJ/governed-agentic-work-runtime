@@ -34,7 +34,8 @@ from .workflow_spec import (EFFECT_POLICIES, EFFECT_POLICY_ONCE,
 # commands: CAS-guarded, deduplicated and receipt-bearing like every other.
 WORKFLOW_COMMANDS = ("bind_workflow", "revise_object", "submit_node_result",
                      "record_decision", "finalize_workflow_success",
-                     "request_material_wait", "adopt_material")
+                     "request_material_wait", "adopt_material",
+                     "resume_material_wait")
 
 TERMINAL_NODE_STATES = ("completed", "failed", "expired", "cancelled")
 
@@ -186,6 +187,37 @@ def _receipt_view(stored: Any) -> Optional[Dict[str, Any]]:
         view["capability"] = origin.get("capability")
         view["adapter"] = origin.get("adapter")
     return view
+
+
+def _material_wait_view(wait: Any) -> Optional[Dict[str, Any]]:
+    """The bounded view of a material wait.
+
+    It names the reason, who asked for it, the exact dependencies the wait
+    accepted and the adoptions that followed. It carries no payload body:
+    the material stays readable as the object revision it names.
+    """
+    if not isinstance(wait, dict):
+        return None
+    return {
+        "state": wait.get("state"),
+        "requestVersion": wait.get("request_version"),
+        "requestedBy": wait.get("requested_by"),
+        "reason": wait.get("reason"),
+        "requestedAt": wait.get("requested_at"),
+        "inputDigest": wait.get("input_digest"),
+        "dependencies": [{"name": entry.get("name"),
+                          "revision": entry.get("revision"),
+                          "digest": entry.get("digest"),
+                          "adopted": bool(entry.get("adopted"))}
+                         for entry in (wait.get("dependencies") or [])],
+        "adoptions": [{"name": entry.get("name"),
+                       "revision": entry.get("revision"),
+                       "digest": entry.get("digest"),
+                       "adoptedBy": entry.get("adopted_by"),
+                       "adoptedAt": entry.get("adopted_at")}
+                      for entry in (wait.get("adoptions") or [])],
+        "resumed": wait.get("resumed"),
+    }
 
 
 def _finding(code: str, message: str, **extra) -> Dict[str, Any]:
@@ -424,7 +456,7 @@ class WorkflowEngine:
         the configured source and the actor must still hold the assignment.
         """
         if kind in ("bind_workflow", "revise_object", "request_material_wait",
-                    "adopt_material"):
+                    "adopt_material", "resume_material_wait"):
             return self.runtime._manager(actor, work)
         if kind == "submit_node_result":
             return "workflow.execute" in self.runtime.grants.get(actor, set())
@@ -472,6 +504,8 @@ class WorkflowEngine:
             return self._request_material_wait(db, actor, work, payload, version)
         if kind == "adopt_material":
             return self._adopt_material(db, actor, work, payload, version)
+        if kind == "resume_material_wait":
+            return self._resume_material_wait(db, actor, work, payload, version)
         return self.runtime._reject("COMMAND_UNSUPPORTED", version)
 
     # ------------------------------------------------------------------
@@ -812,18 +846,29 @@ class WorkflowEngine:
                           "ORDER BY node,attempt", (work_id,)).fetchall()
         return [json.loads(row["body"]) for row in rows]
 
-    def _intent_id(self, work_id, node, attempt, kind):
-        return "wf:" + work_id + ":" + node + ":" + str(attempt) + ":" + kind
+    def _intent_id(self, work_id, node, attempt, kind, generation=0):
+        """The stable identity of one durable intent.
 
-    def _write_intent(self, db, work_id, node, attempt, kind, body):
-        intent_id = self._intent_id(work_id, node, attempt, kind)
+        A node that is resumed asks again under a **new** identity: an
+        acknowledgement of the withdrawn prompt can never swallow the
+        resumed one, and the two are two different tasks on the record.
+        """
+        base = "wf:" + work_id + ":" + node + ":" + str(attempt) + ":" + kind
+        if generation:
+            return base + ":" + str(generation)
+        return base
+
+    def _write_intent(self, db, work_id, node, attempt, kind, body,
+                      generation: int = 0):
+        intent_id = self._intent_id(work_id, node, attempt, kind, generation)
         existing = db.execute("SELECT id,status FROM workflow_intents WHERE id=?",
                               (intent_id,)).fetchone()
         if existing is not None:
             return intent_id
         payload = dict(body)
         payload.update({"id": intent_id, "work_id": work_id, "node": node,
-                        "attempt": attempt, "kind": kind, "status": "pending"})
+                        "attempt": attempt, "kind": kind, "status": "pending",
+                        "generation": generation})
         db.execute("INSERT INTO workflow_intents VALUES (?,?,?,?,?,?,?)",
                    (intent_id, work_id, node, attempt, kind, "pending", canonical(payload)))
         return intent_id
@@ -1079,6 +1124,7 @@ class WorkflowEngine:
                     "inputs": [], "subject": None, "output": None,
                     "findings": [], "blockers": [], "actor": None,
                     "operation_id": None, "intent_id": None, "result": None,
+                    "input_generation": 0,
                     "created_at": now}
         db.execute("INSERT INTO workflow_nodes VALUES (?,?,?,?,?)",
                    (work["id"], node_id, attempt, "blocked", canonical(instance)))
@@ -1134,7 +1180,13 @@ class WorkflowEngine:
                 subject = {"name": name, "revision": row["revision"],
                            "digest": row["digest"]}
         instance["inputs"] = pinned_inputs
-        instance["input_digest"] = digest(pinned_inputs)
+        # The input ticket covers the pinned inputs *and* the node's input
+        # generation. The generation moves on every resume, so a ticket
+        # issued before a wait never satisfies the node after it — even
+        # when the material itself did not change.
+        instance["input_digest"] = digest(
+            {"inputs": pinned_inputs,
+             "generation": int(instance.get("input_generation") or 0)})
         instance["input_report"] = input_report
         instance["subject"] = subject
         instance["findings"] = _bounded(findings)
@@ -1180,12 +1232,15 @@ class WorkflowEngine:
         session_id = (work.get("workflow") or {}).get("session_id")
         body = {"session_id": session_id, "executor": spec["nodes"][node_id].get("executor"),
                 "inputs": instance.get("inputs") or [],
+                "input_digest": instance.get("input_digest"),
+                "input_generation": instance.get("input_generation", 0),
                 "output": spec["nodes"][node_id].get("output"),
                 "checks": spec["nodes"][node_id].get("checks") or [],
                 "deadline_at": instance.get("deadline_at"),
                 "created_at": now}
         instance["intent_id"] = self._write_intent(
-            db, work["id"], node_id, instance["attempt"], "agent_task", body)
+            db, work["id"], node_id, instance["attempt"], "agent_task", body,
+            generation=int(instance.get("input_generation") or 0))
 
     def _start_review(self, db, work, spec, node_id, instance, now):
         """The durable review intent of a node that declares a review.
@@ -2742,6 +2797,15 @@ class WorkflowEngine:
         if len(canonical(body).encode("utf-8")) > MAX_OUTPUT_BYTES:
             return self.runtime._reject("WORKFLOW_MATERIAL_TOO_LARGE", version,
                                         [name])
+        # An adoption may not bless a completed upstream's accepted output:
+        # the new revision would be material no completed node ever
+        # accepted, and the upstream acceptance would be stale the moment
+        # it is written. Revalidating the upstream is a separate, bounded
+        # step; until it exists, the wait keeps waiting.
+        stale, owned = self._upstream_acceptance(db, work, [name])
+        if stale or owned:
+            return self.runtime._reject("INPUT_DEPENDENCIES_REQUIRE_REVALIDATION",
+                                        version, stale or owned)
         reference = self._write_object(db, work["id"], name, body)
         entry["revision"] = reference["revision"]
         entry["digest"] = reference["digest"]
@@ -2760,6 +2824,145 @@ class WorkflowEngine:
                                       adoption=dict(adoptions[-1]),
                                       wait=copy.deepcopy(wait))
 
+    def _upstream_acceptance(self, db, work, names):
+        """The completed upstream outputs that no longer cover the material.
+
+        A node that completed accepted **one exact revision** of its
+        output. When the object moved on since, that acceptance no longer
+        covers the material, and the engine says so instead of letting a
+        downstream node run on it.
+
+        The answer has two parts: the outputs whose acceptance is stale
+        right now, and the outputs that are the accepted output of a
+        completed node at all. The second part matters for an *adoption*:
+        writing a new revision of such an output would immediately make
+        that acceptance stale, so the adoption must be refused rather than
+        write a material no completed node ever accepted.
+        """
+        stale = []
+        owned = []
+        current = {}
+        for name in names:
+            row = self._object_row(db, work["id"], name)
+            current[name] = (None if row is None else
+                             {"revision": row["revision"], "digest": row["digest"]})
+        for instance in self._instances(db, work["id"]):
+            if instance.get("state") != "completed":
+                continue
+            output = instance.get("output")
+            if not isinstance(output, dict):
+                continue
+            name = output.get("name")
+            if name not in current:
+                continue
+            accepted = {"revision": output.get("revision"),
+                        "digest": output.get("digest")}
+            entry = {"name": name, "node": instance["node"],
+                     "attempt": instance["attempt"],
+                     "accepted": accepted, "current": current.get(name)}
+            owned.append(entry)
+            now = current.get(name)
+            if (now is None or now["revision"] != accepted["revision"]
+                    or now["digest"] != accepted["digest"]):
+                stale.append(entry)
+        return stale, owned
+
+    def _dependency_drift(self, db, work, wait):
+        """The dependencies that moved under the wait.
+
+        A dependency the wait accepted must still be the object's current
+        revision and digest. Anything else is drift: the material the node
+        would run on is not the material the wait was about, so the engine
+        says so instead of running on it.
+        """
+        drift = []
+        for entry in wait.get("dependencies") or []:
+            name = entry.get("name")
+            row = self._object_row(db, work["id"], name)
+            current = None
+            if row is not None:
+                current = {"revision": row["revision"], "digest": row["digest"]}
+            accepted = {"revision": entry.get("revision"),
+                        "digest": entry.get("digest")}
+            if (current is None
+                    or current["revision"] != accepted["revision"]
+                    or current["digest"] != accepted["digest"]):
+                drift.append({"name": name, "accepted": accepted,
+                              "current": current})
+        return drift
+
+    def _resume_material_wait(self, db, actor, work, payload, version):
+        """Resume the waiting node behind the dependency gate.
+
+        The gate is what makes the resume safe: every dependency the wait
+        accepted must still be the object's current revision and digest.
+        When something moved under the wait, the resume is refused with the
+        exact drift, and the manager decides — adopt the material again or
+        cancel. The engine never reuses a superseded dependency silently
+        and never re-runs a node on its own.
+
+        The attempt is the one the wait kept: the wait spent no quality
+        allowance, so the resume spends none either. The inputs are
+        resolved and judged again, so material that no longer passes its
+        declared validator blocks the node instead of running on it.
+        """
+        if set(payload) != {"node", "attempt", "request_version"}:
+            raise WorkflowError("resume_material_wait requires exactly node, "
+                                "attempt and request_version")
+        node_id = payload["node"]
+        attempt = payload["attempt"]
+        if not isinstance(node_id, str) or type(attempt) is not int:
+            raise WorkflowError("resume_material_wait requires a node id and "
+                                "an attempt")
+        if payload["request_version"] != MATERIAL_WAIT_REQUEST_VERSION:
+            raise WorkflowError("resume_material_wait requires request_version "
+                                + str(MATERIAL_WAIT_REQUEST_VERSION))
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self.runtime._reject("CANCELLATION_ACTIVE", version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        instance = self._latest_instance(db, work["id"], node_id)
+        if instance is None or instance["attempt"] != attempt:
+            return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        wait = instance.get("material_wait")
+        if instance["state"] != "waiting" or not isinstance(wait, dict):
+            return self.runtime._reject("WORKFLOW_NOT_WAITING", version, [node_id])
+        drift = self._dependency_drift(db, work, wait)
+        if drift:
+            # The material moved under the wait. The engine refuses and
+            # names the drift; it does not decide what the manager meant.
+            return self.runtime._reject(
+                "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version, drift)
+        # A completed upstream node accepted one exact revision of its
+        # output. When the object moved on since, that acceptance no longer
+        # covers the material, and the node must not run on it.
+        names = [entry.get("name") for entry in (wait.get("dependencies") or [])]
+        stale, _ = self._upstream_acceptance(db, work, names)
+        if stale:
+            return self.runtime._reject(
+                "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version, stale)
+        wait["state"] = "resumed"
+        wait["resumed"] = {"by": actor, "at": int(time.time())}
+        instance["material_wait"] = wait
+        instance["state"] = "blocked"
+        # The node asks again under a new generation: the input ticket
+        # moves even when the material did not, so a ticket issued before
+        # the wait never satisfies the node after it, and the resumed
+        # prompt is a new intent, never the withdrawn one.
+        instance["input_generation"] = int(instance.get("input_generation") or 0) + 1
+        work["workflow_status"] = "active"
+        self._save_instance(db, work, instance, "WorkflowMaterialWaitResumed",
+                            {"actor": actor})
+        self._activate(db, work, spec, node_id, instance, int(time.time()))
+        instance = self._latest_instance(db, work["id"], node_id)
+        return self.runtime._accepted(work, node=node_id, attempt=attempt,
+                                      state=instance["state"],
+                                      input_digest=instance.get("input_digest"),
+                                      wait=copy.deepcopy(instance.get("material_wait") or {}))
+
     # ------------------------------------------------------------------
     # Cancellation
     # ------------------------------------------------------------------
@@ -2775,7 +2978,7 @@ class WorkflowEngine:
         if not work.get("workflow"):
             return
         for instance in self._instances(db, work["id"]):
-            if instance["state"] in ("running", "blocked", "submitted"):
+            if instance["state"] in ("running", "blocked", "submitted", "waiting"):
                 instance["state"] = "cancelled"
                 instance["outcome"] = "cancelled"
                 instance["reason"] = "WORK_CANCELLED"
@@ -3555,6 +3758,8 @@ class WorkflowEngine:
                     "checkResults": (instance.get("check_results") or [])[:MAX_VIEW_FINDINGS]
                     if instance else [],
                     "inputDigest": instance.get("input_digest") if instance else None,
+                    "inputGeneration": instance.get("input_generation", 0)
+                    if instance else 0,
                     "actor": instance.get("actor") if instance else None,
                     "blockers": (instance.get("blockers") or [])[:MAX_VIEW_FINDINGS]
                     if instance else [],
@@ -3563,6 +3768,8 @@ class WorkflowEngine:
                     "quality": instance.get("quality") if instance else None,
                     "effect": instance.get("effect") if instance else None,
                     "waitMatch": instance.get("wait_match") if instance else None,
+                    "materialWait": _material_wait_view(instance.get("material_wait"))
+                    if instance else None,
                     "receipt": _receipt_view(instance.get("receipt"))
                     if instance else None,
                 })
@@ -3597,6 +3804,13 @@ class WorkflowEngine:
                         allowed.append({"action": "record_decision", "node": current,
                                         "attempt": instance["attempt"],
                                         "required": ["decision", "digest", "revision"]})
+                if instance and instance["state"] == "waiting":
+                    # A waiting node offers no result: it offers the
+                    # manager its own commands.
+                    allowed.append({"action": "resume_material_wait",
+                                    "node": current,
+                                    "attempt": instance["attempt"],
+                                    "required": []})
             return {
                 "workId": work_id,
                 "status": work["status"],
