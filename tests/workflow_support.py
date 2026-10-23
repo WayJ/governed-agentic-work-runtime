@@ -270,6 +270,92 @@ def submit_valid(engine, runtime, work_id, node, name, result=None,
     return submit(engine, runtime, work_id, node, attempt, name, payload, actor=actor)
 
 
+# The envelope a source output carries: a reference, never the material.
+SOURCE_REFERENCE_SHAPE = {
+    "type": "object",
+    "properties": {
+        "sourceReference": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string"},
+                "referenceId": {"type": "string"},
+                "workflowId": {"type": "string"},
+                "sourceNode": {"type": "string"},
+                "documentDigest": {"type": "string"},
+                "snapshotDigest": {"type": "string"},
+                "scope": {"type": "string"},
+            },
+            "required": ["kind", "referenceId", "workflowId", "sourceNode",
+                         "documentDigest", "snapshotDigest", "scope"],
+        },
+    },
+    "required": ["sourceReference"],
+}
+
+
+def source_reference_validator(work, node_ref, result):
+    """The structural validator of a source output.
+
+    The reference must be there, it must name its kind, and it must name
+    the work and the source it belongs to. The material itself is never
+    part of it.
+    """
+    findings = []
+    if not isinstance(result, dict):
+        return {"findings": [{"code": "SOURCE_NOT_OBJECT",
+                              "message": "The source output is not an object"}],
+                "checks": []}
+    reference = result.get("sourceReference")
+    if not isinstance(reference, dict):
+        findings.append({"code": "SOURCE_REFERENCE_MISSING",
+                         "message": "The output carries no source reference"})
+    else:
+        if reference.get("kind") != "business-material-snapshot":
+            findings.append({"code": "SOURCE_REFERENCE_KIND",
+                             "message": "The reference names another kind"})
+        for key in ("referenceId", "workflowId", "sourceNode",
+                    "documentDigest", "snapshotDigest", "scope"):
+            if not isinstance(reference.get(key), str) or not reference[key]:
+                findings.append({"code": "SOURCE_REFERENCE_INCOMPLETE",
+                                 "message": "The reference does not name " + key,
+                                 "location": key})
+    verdict = "failed" if findings else "passed"
+    reason = ("the receipt names the source reference it read" if not findings
+              else "the source reference was not usable")
+    checks = [{"check": check, "verdict": verdict, "reason": reason,
+               "evidence": ["source-reference"]}
+              for check in (node_ref.get("checks") or [])]
+    return {"findings": findings, "checks": checks}
+
+
+class SourceReferenceAdapter:
+    """A stand-in for the system that reads the archived source.
+
+    It returns the same envelope the replacement writes: a reference to
+    what was read, never the material itself.
+    """
+
+    contract = DemoBusinessSystem.contract
+
+    def __init__(self, path: str):
+        self.path = str(path)
+        self.calls = 0
+
+    def execute(self, key: str, document: dict, content_digest: str, *,
+                action=None, compensates=None) -> dict:
+        self.calls += 1
+        return {"status": "accepted", "external_id": "EXT-SOURCE",
+                "digest": content_digest, "action": action,
+                "payload": {"sourceReference": {
+                    "kind": "business-material-snapshot",
+                    "referenceId": "REF-1", "workflowId": document.get("id"),
+                    "sourceNode": "s00", "documentDigest": content_digest,
+                    "snapshotDigest": "s" * 64, "scope": "records"}}}
+
+    def lookup(self, key: str):
+        return None
+
+
 # A family of its own, shaped like the safety workflow: a source read
 # that produces the archived material, two consumers that judge it, and a
 # third that waits for what is still missing. Every consumer declares a
@@ -284,19 +370,14 @@ REVALIDATION_TEMPLATE = {
         "s00": {"kind": "action", "capability": "work.dispatch",
                 "subject": {"object": "request"},
                 "output": {"object": "sources",
-                           "validation": {"shape": {
-                               "type": "object",
-                               "properties": {"recordId": {"type": "string"},
-                                              "action": {"type": "string"},
-                                              "items": {"type": "array",
-                                                        "items": {"type": "string"}}},
-                               "required": ["recordId", "action", "items"]},
-                           "validator": "effect", "validator_version": "1"}},
+                           "validation": {"shape": SOURCE_REFERENCE_SHAPE,
+                                          "validator": "source-reference",
+                                          "validator_version": "1"}},
                 "checks": [{"id": "N00-1", "method": "PROGRAM",
-                            "criterion": "The receipt names the effect it "
-                                         "recorded.",
+                            "criterion": "The receipt names the source "
+                                         "reference it read.",
                             "criterion_version": "1",
-                            "validator": "effect",
+                            "validator": "source-reference",
                             "validator_version": "1"}],
                 "max_attempts": 1},
         "n01": {"kind": "agent", "executor": "agent-executor", "max_attempts": 2,

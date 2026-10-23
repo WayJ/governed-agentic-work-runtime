@@ -23,25 +23,39 @@ from work_runtime.workflow import WorkflowError
 try:
     from workflow_support import (POLICY_GOAL, POLICY_ID, POLICY_VERSION,
                                   REVALIDATION_TEMPLATE, RevalidationPolicy,
-                                  build, current_attempt, document,
-                                  input_digest_of, instance_of, instantiate,
-                                  send, submit, submit_valid, version_of)
-    from workflow_support import DemoBusinessSystem
+                                  SourceReferenceAdapter, build, current_attempt,
+                                  document, input_digest_of, instance_of,
+                                  instantiate, send, source_reference_validator,
+                                  submit, submit_valid, version_of)
+    from workflow_support import workflow_demo_validators
 except ImportError:  # pragma: no cover - repository-root import style
     from tests.workflow_support import (POLICY_GOAL, POLICY_ID, POLICY_VERSION,
                                         REVALIDATION_TEMPLATE, RevalidationPolicy,
-                                        build, current_attempt, document,
+                                        SourceReferenceAdapter, build,
+                                        current_attempt, document,
                                         input_digest_of, instance_of,
-                                        instantiate, send, submit, submit_valid,
-                                        version_of)
+                                        instantiate, send,
+                                        source_reference_validator, submit,
+                                        submit_valid, version_of)
+    from tests.workflow_support import workflow_demo_validators
     from tests.workflow_support import DemoBusinessSystem
 
 OWNER = "coordinator"
 EXECUTOR = "agent-executor"
 WORK_ID = "W-1"
+# The manifest the platform freezes: a reference to the archive it
+# reacquired, never the material itself.
 SOURCE_REFERENCE = {"kind": "business-material-snapshot",
-                    "archiveId": "ARCH-9", "revision": "r7",
-                    "digest": "d" * 64, "capturedAt": 1760000000}
+                    "referenceId": "REF-2", "workflowId": WORK_ID,
+                    "sourceNode": "s00", "documentDigest": "d" * 64,
+                    "snapshotDigest": "e" * 64, "scope": "records"}
+
+
+def revalidation_validators():
+    """The demo validators plus the structural validator of a source."""
+    registry = workflow_demo_validators()
+    registry.register("source-reference", "1", source_reference_validator)
+    return registry
 VALID_INTAKE = {"records": [{"id": "R-1", "source": "site-log"}],
                 "standard": "STD-1"}
 VALID_ANALYSIS = {"findings": [{"issueId": "H-001", "clause": "C-1",
@@ -56,14 +70,17 @@ class RevalidationTestCase(unittest.TestCase):
     """
 
     template = REVALIDATION_TEMPLATE
-    spend_quality_first = False
+    quality_failures = 0
+    park_wait = True
 
     def setUp(self):
         self.folder = tempfile.mkdtemp(prefix="gawr-revalidation-")
         self.addCleanup(shutil.rmtree, self.folder, True)
         self.path = os.path.join(self.folder, "runtime.sqlite")
-        self.adapter = DemoBusinessSystem(os.path.join(self.folder, "effects.db"))
-        self.runtime, self.engine = build(self.path, policy=RevalidationPolicy())
+        self.adapter = SourceReferenceAdapter(
+            os.path.join(self.folder, "effects.db"))
+        self.runtime, self.engine = build(self.path, policy=RevalidationPolicy(),
+                                          validators=revalidation_validators())
         self.work = WORK_ID
         published = self.engine.publish_template(OWNER, self.template)
         self.assertEqual("accepted", published["decision"], published)
@@ -90,10 +107,11 @@ class RevalidationTestCase(unittest.TestCase):
         self.engine.pump(self.adapter, 1000)
         self.source_revision = self.object_revision("sources")
         self.assertEqual(1, self.source_revision["revision"])
-        if self.spend_quality_first:
-            # the first consumer spends its quality allowance on a bad
-            # candidate before it succeeds
-            failed = submit(self.engine, self.runtime, self.work, "n01", 1,
+        for _ in range(self.quality_failures):
+            # the first consumer spends its quality allowance on bad
+            # candidates before it succeeds
+            attempt = current_attempt(self.engine, self.runtime, self.work, "n01")
+            failed = submit(self.engine, self.runtime, self.work, "n01", attempt,
                             "intake", {"records": "not a list"})
             self.assertEqual("rejected", failed["decision"], failed)
             self.engine.advance(self.work, 1500)
@@ -102,8 +120,9 @@ class RevalidationTestCase(unittest.TestCase):
             submitted = submit_valid(self.engine, self.runtime, self.work, node,
                                      name, result)
             self.assertEqual("accepted", submitted["decision"], submitted)
-        # the third consumer waits for what is still missing
-        self.wait()
+        if self.park_wait:
+            # the third consumer waits for what is still missing
+            self.wait()
 
     # -- helpers ---------------------------------------------------------
 
@@ -194,7 +213,7 @@ class ReplaceMaterialTestCase(RevalidationTestCase):
         # historical revision is retained
         current = self.object_revision("sources")
         self.assertEqual(2, current["revision"])
-        self.assertEqual(SOURCE_REFERENCE, current["body"])
+        self.assertEqual({"sourceReference": SOURCE_REFERENCE}, current["body"])
         self.assertEqual(1, self.object_revision("sources", 1)["revision"])
         # the affected consumers are named
         affected = [entry["node"] for entry in receipt["affected"]]
@@ -240,6 +259,21 @@ class ReplaceMaterialTestCase(RevalidationTestCase):
                                                  "blob": "x" * 8000})["code"])
         self.assertEqual("WORKFLOW_WAITING_TICKET_STALE",
                          self.replace(waiting_ticket="0" * 64)["code"])
+        self.assertEqual("WORKFLOW_SOURCE_REFERENCE_INVALID",
+                         self.replace(reference=dict(SOURCE_REFERENCE,
+                                                      workflowId="W-other"))["code"])
+        self.assertEqual("WORKFLOW_SOURCE_REFERENCE_INVALID",
+                         self.replace(reference=dict(SOURCE_REFERENCE,
+                                                      sourceNode="n01"))["code"])
+        self.assertEqual("WORKFLOW_SOURCE_REFERENCE_INVALID",
+                         self.replace(reference=dict(SOURCE_REFERENCE,
+                                                      rawUrl="https://x"))["code"])
+        self.assertEqual("WORKFLOW_SOURCE_REFERENCE_INVALID",
+                         self.replace(reference=dict(SOURCE_REFERENCE,
+                                                      credential="secret"))["code"])
+        self.assertEqual("WORKFLOW_SOURCE_REFERENCE_INVALID",
+                         self.replace(reference=dict(SOURCE_REFERENCE,
+                                                      kind="other"))["code"])
         self.assertEqual(before_objects,
                          self.rows("SELECT name,revision,digest,body FROM workflow_objects"))
         self.assertEqual(before_nodes,
@@ -315,20 +349,24 @@ class MaterialAttemptTestCase(RevalidationTestCase):
         self.assertEqual("cancelled", n03[0]["state"])
         self.assertEqual("MATERIAL_REPLACED", n03[0]["body"]["reason"])
 
-    def test_a_material_attempt_that_fails_on_quality_keeps_the_quality_allowance(self):
+    def test_a_material_attempt_that_fails_on_quality_opens_no_further_attempt(self):
         self.replace()
         self.engine.advance(self.work, 2000)
         failed = self.drive("n01", "intake", {"records": "not a list"})
         self.assertEqual("rejected", failed["decision"], failed)
         self.engine.advance(self.work, 2001)
-        # the material attempt failed on quality: the node fails, and the
-        # quality allowance it still has is spent on a quality rework -
-        # the two budgets are separate, and neither is infinite
+        # the material attempt failed on quality: the node fails and no
+        # further attempt opens. A material attempt has no automatic retry.
         n01 = self.instance("n01")
-        self.assertEqual(3, len(n01))
+        self.assertEqual(2, len(n01))
         self.assertEqual("failed", n01[1]["state"])
         self.assertEqual("material", n01[1]["body"]["trigger"])
-        self.assertEqual("quality", n01[2]["body"]["trigger"])
+        # the routing stopped at the failed node: the workflow is not
+        # finished in the sense of a delivery, and the acceptance refuses it
+        self.assertEqual("finished",
+                         self.runtime.get_work(self.work)["workflow_status"])
+        self.assertEqual("WORKFLOW_RESULT_INVALID",
+                         self.instance("n01")[-1]["body"]["reason"])
 
     def test_a_second_replacement_is_refused(self):
         first = self.replace()
@@ -380,6 +418,110 @@ class SpentQualityTestCase(RevalidationTestCase):
         self.assertEqual(3, len(n01))
         self.assertEqual("material", n01[2]["body"]["trigger"])
         self.assertEqual(2, n01[0]["attempt"] + 1)
+
+def legacy_template():
+    """A definition published before the material budget existed.
+
+    The live safety definition has no ``material_generations`` field and
+    must not be mutated to make a revalidation possible: the core
+    allowance of one generation per workflow applies on its own.
+    """
+    spec = json.loads(json.dumps(REVALIDATION_TEMPLATE))
+    for node in spec["nodes"].values():
+        node.pop("material_generations", None)
+    return spec
+
+
+def spent_quality_template():
+    """A definition whose first consumer has three quality attempts."""
+    spec = json.loads(json.dumps(REVALIDATION_TEMPLATE))
+    spec["nodes"]["n01"]["max_attempts"] = 3
+    return spec
+
+
+def effect_branch_template():
+    """A definition with an automatic node behind the consumers."""
+    spec = json.loads(json.dumps(REVALIDATION_TEMPLATE))
+    spec["terminal"] = ["n04"]
+    spec["nodes"]["n04"] = {"kind": "action", "capability": "work.dispatch",
+                            "subject": {"object": "proposal"},
+                            "output": {"object": "receipt",
+                                       "validation": {"shape": {
+                                           "type": "object",
+                                           "properties": {"recordId": {"type": "string"}},
+                                           "required": ["recordId"]},
+                                           "validator": "effect",
+                                           "validator_version": "1"}},
+                            "max_attempts": 1}
+    spec["edges"].append({"from": "n03", "to": "n04"})
+    return spec
+
+
+class LegacyTemplateTestCase(RevalidationTestCase):
+    """A definition published before the material budget existed."""
+
+    template = legacy_template()
+
+    def test_the_core_allowance_carries_a_legacy_definition(self):
+        for node in self.template["nodes"].values():
+            self.assertNotIn("material_generations", node)
+        receipt = self.replace()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        self.engine.advance(self.work, 2000)
+        n01 = self.instance("n01")
+        self.assertEqual(2, len(n01))
+        self.assertEqual("material", n01[1]["body"]["trigger"])
+
+
+class SpentQualityTestCase(RevalidationTestCase):
+    """A node that used its whole quality allowance."""
+
+    template = spent_quality_template()
+    quality_failures = 2
+
+    def test_a_used_up_node_gets_a_fresh_material_attempt(self):
+        n01 = self.instance("n01")
+        # the node used three of its three quality attempts
+        self.assertEqual(3, len(n01))
+        self.assertEqual(3, n01[-1]["attempt"])
+        receipt = self.replace()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        self.engine.advance(self.work, 2000)
+        n01 = self.instance("n01")
+        # the material attempt is the fourth: the attempt number is
+        # monotonic, and the quality allowance was not raised
+        self.assertEqual(4, len(n01))
+        self.assertEqual(4, n01[3]["attempt"])
+        self.assertEqual("material", n01[3]["body"]["trigger"])
+
+
+class EffectBranchTestCase(RevalidationTestCase):
+    """A branch that already carries a business effect."""
+
+    template = effect_branch_template()
+    park_wait = False
+
+    def test_a_branch_with_a_prepared_effect_is_refused(self):
+        # the third consumer completes and the automatic node behind it
+        # prepares its operation
+        self.engine.advance(self.work, 2000)
+        submitted = submit_valid(self.engine, self.runtime, self.work, "n03",
+                                 "proposal")
+        self.assertEqual("accepted", submitted["decision"], submitted)
+        self.engine.advance(self.work, 2001)
+        operations = self.rows("SELECT id,body FROM operations WHERE work_id=?",
+                               (self.work,))
+        self.assertTrue(operations)
+        # the branch carries a prepared effect: the replacement is refused
+        # and the effect is never replayed
+        receipt = self.replace(waiting_node=None)
+        self.assertEqual("rejected", receipt["decision"], receipt)
+        self.assertEqual("WORKFLOW_REVALIDATION_EFFECT_PRESENT",
+                         receipt["code"])
+        self.assertEqual(operations,
+                         self.rows("SELECT id,body FROM operations WHERE work_id=?",
+                                   (self.work,)))
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

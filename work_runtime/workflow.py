@@ -75,6 +75,21 @@ MAX_WAIT_ADOPTIONS = 16
 # credential.
 MAX_SOURCE_REFERENCE_BYTES = 4096
 
+# The documented fixed core allowance of **one** material replacement
+# generation per workflow. It is a core bound, not a caller-supplied
+# number and not a quality counter: a definition may only tighten it (to
+# zero, which denies the revalidation of that node) and never raise it.
+MATERIAL_GENERATION_ALLOWANCE = 1
+
+# The keys a frozen source reference may never carry: the raw material,
+# a location to fetch it from, or a credential.
+FORBIDDEN_SOURCE_REFERENCE_KEYS = frozenset({
+    "url", "rawurl", "raw_url", "uri", "href", "location", "link",
+    "credential", "credentials", "secret", "token", "password", "apikey",
+    "api_key", "object", "body", "payload", "data", "content", "material",
+    "archive", "bytes", "blob",
+})
+
 # The source of the proofs the engine writes itself. It is the engine's own
 # trusted channel, never the ingress source of a signed evidence kind: the
 # engine must not impersonate a platform channel.
@@ -1018,15 +1033,19 @@ class WorkflowEngine:
     def _material_generations(self, spec, node_id) -> int:
         """How often the material this node judges may be replaced.
 
-        The material budget is separate from the quality allowance: it
-        bounds the **material** attempts, the revalidations a controlled
-        replacement opens. Zero means the node may not be revalidated.
+        The core allowance is **one** generation per workflow. A
+        definition may only **tighten** it: a node that declares zero may
+        not be revalidated at all. A node that says nothing keeps the
+        core allowance, so a definition published before this field
+        existed still works.
         """
         node = spec["nodes"].get(node_id) or {}
         value = node.get("material_generations")
+        if value is None:
+            return MATERIAL_GENERATION_ALLOWANCE
         if type(value) is not int or value < 0:
             return 0
-        return value
+        return min(value, MATERIAL_GENERATION_ALLOWANCE)
 
     def advance(self, work_id: str, now: int) -> Dict[str, Any]:
         """One deterministic routing pass over a work's stored state."""
@@ -2659,6 +2678,11 @@ class WorkflowEngine:
             return node["on_reject"]
         if outcome == "failed":
             if reason == "WORKFLOW_RESULT_INVALID" and node.get("kind") == "agent":
+                if instance.get("trigger") == "material":
+                    # A material attempt has no automatic further retry:
+                    # the revalidation is spent, and the node reports the
+                    # failure instead of trying again.
+                    return None
                 # A rejected candidate is re-executed as a new attempt of the
                 # same node; the bounded allowance decides when to escalate.
                 return node_id
@@ -3257,6 +3281,10 @@ class WorkflowEngine:
             return self.runtime._reject("WORKFLOW_SOURCE_NOT_COMPLETED", version,
                                         [node_id])
         object_name = output["name"]
+        invalid = self._source_reference_problem(reference, work, node_id)
+        if invalid is not None:
+            return self.runtime._reject("WORKFLOW_SOURCE_REFERENCE_INVALID",
+                                        version, [invalid])
         # the ticket the manager observed must still be the current one
         waiting_node = payload["waiting_node"]
         ticket = payload["waiting_ticket"]
@@ -3284,20 +3312,32 @@ class WorkflowEngine:
             # never replayed under its old operation key.
             return self.runtime._reject("WORKFLOW_REVALIDATION_EFFECT_PRESENT",
                                         version, blocked)
-        # the material budget: separate from the quality allowance
-        used = work.get("material_generations_used") or {}
+        # the material budget: a fixed core allowance of one generation per
+        # workflow, which a definition may only tighten (to zero, which
+        # denies the revalidation of that node)
+        spent = int(work.get("material_generations_used") or 0)
+        remaining = max(0, MATERIAL_GENERATION_ALLOWANCE - spent)
         exhausted = []
         for entry in affected:
             node_of = entry["node"]
-            spent = int(used.get(node_of) or 0)
-            if spent + 1 > self._material_generations(spec, node_of):
+            allowed = self._material_generations(spec, node_of)
+            if allowed == 0:
                 exhausted.append({"node": node_of, "used": spent,
-                                  "allowed": self._material_generations(spec, node_of)})
+                                  "allowed": 0,
+                                  "reason": "the definition denies the "
+                                            "revalidation of this node"})
+            elif remaining < 1:
+                exhausted.append({"node": node_of, "used": spent,
+                                  "allowed": remaining,
+                                  "reason": "the workflow has no material "
+                                            "generation left"})
         if exhausted:
             return self.runtime._reject("WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED",
                                         version, exhausted)
-        # the new revision of the material: the manager's frozen reference
-        revision = self._write_object(db, work["id"], object_name, reference)
+        # the new revision of the material: the frozen reference, wrapped in
+        # the same envelope the source output carries
+        revision = self._write_object(db, work["id"], object_name,
+                                      {"sourceReference": reference})
         generation = int((work.get("material_revalidation") or {}).get("generation") or 0) + 1
         attestation = {
             "kind": reference.get("kind"),
@@ -3330,10 +3370,7 @@ class WorkflowEngine:
             self._save_instance(db, work, target, "WorkflowNodeInvalidated",
                                 {"generation": generation,
                                  "source": {"node": node_id, "object": object_name}})
-        used = dict(used)
-        for entry in affected:
-            node_of = entry["node"]
-            used[node_of] = int(used.get(node_of) or 0) + 1
+        used = spent + 1
         work["material_generations_used"] = used
         work["material_revalidation"] = {
             "state": "revalidating",
@@ -3350,6 +3387,28 @@ class WorkflowEngine:
         return self.runtime._accepted(work, attestation=attestation,
                                       affected=affected,
                                       generation=generation)
+
+    def _source_reference_problem(self, reference, work, node_id):
+        """What is wrong with the frozen source reference, if anything.
+
+        The reference is **opaque** to the core: it never resolves it and
+        never fetches anything. The core checks three things and refuses
+        the rest: that it names the kind it claims, that it names the work
+        and the source it belongs to, and that it carries no raw material,
+        no location and no credential.
+        """
+        for key in reference:
+            if str(key).lower() in FORBIDDEN_SOURCE_REFERENCE_KEYS:
+                return "the source reference may not carry " + str(key)
+        if reference.get("kind") != "business-material-snapshot":
+            return "the source reference must be a business-material-snapshot"
+        named_work = reference.get("workflowId")
+        if named_work is not None and named_work != work["id"]:
+            return "the source reference names another work"
+        named_source = reference.get("sourceNode")
+        if named_source is not None and named_source != node_id:
+            return "the source reference names another source"
+        return None
 
     def _consumer_closure(self, db, work, object_name):
         """The consumers of the material, and everything derived from it.
@@ -3467,28 +3526,53 @@ class WorkflowEngine:
 
         A prepared, unknown or confirmed effect is an effect that happened
         or may still happen: the branch is never rewound behind one, and
-        the effect is never replayed under its old operation key.
+        the effect is never replayed under its old operation key. A
+        **human judgement** in the branch is an effect too — an approval
+        granted on the material that is being replaced is a business fact
+        the revalidation would contradict.
         """
         blocked = []
         for instance in self._instances(db, work["id"]):
             if instance["node"] not in branch:
                 continue
             operation_id = instance.get("operation_id")
-            if not operation_id:
-                continue
-            row = db.execute("SELECT body FROM operations WHERE id=?",
-                             (operation_id,)).fetchone()
-            if row is None:
-                continue
-            operation = json.loads(row[0])
-            if operation.get("dispatch_state") == "cancelled":
-                continue
-            blocked.append({"node": instance["node"],
-                            "attempt": instance["attempt"],
-                            "operationId": operation_id,
-                            "status": operation.get("status"),
-                            "dispatchState": operation.get("dispatch_state")})
+            if operation_id:
+                row = db.execute("SELECT body FROM operations WHERE id=?",
+                                 (operation_id,)).fetchone()
+                if row is not None:
+                    operation = json.loads(row[0])
+                    if operation.get("dispatch_state") != "cancelled":
+                        blocked.append({"node": instance["node"],
+                                        "attempt": instance["attempt"],
+                                        "operationId": operation_id,
+                                        "status": operation.get("status"),
+                                        "dispatchState": operation.get("dispatch_state")})
+                        continue
+            for decision in self._settled_decisions(db, work, instance):
+                blocked.append({"node": instance["node"],
+                                "attempt": instance["attempt"],
+                                "decision": decision})
         return blocked
+
+    def _settled_decisions(self, db, work, instance):
+        """The human judgements this node instance settled."""
+        if instance.get("kind") != "human":
+            return []
+        decisions = []
+        for proof in self.runtime._proofs(db, work["id"]):
+            if proof.get("status") != "verified":
+                continue
+            data = proof.get("data") or {}
+            if data.get("node") != instance["node"]:
+                continue
+            if data.get("attempt") != instance["attempt"]:
+                continue
+            verdict = data.get("decision")
+            if verdict in ("approved", "rejected"):
+                decisions.append({"eventId": proof.get("event_id"),
+                                  "verdict": verdict,
+                                  "actor": data.get("actor")})
+        return decisions
 
     # ------------------------------------------------------------------
     # Cancellation
