@@ -2810,7 +2810,7 @@ class WorkflowEngine:
         stale, owned = self._completed_acceptance(db, work, [name])
         if stale or owned:
             return self.runtime._reject("INPUT_DEPENDENCIES_REQUIRE_REVALIDATION",
-                                        version, stale or owned)
+                                        version, _bounded(stale or owned))
         reference = self._write_object(db, work["id"], name, body)
         entry["revision"] = reference["revision"]
         entry["digest"] = reference["digest"]
@@ -2991,7 +2991,8 @@ class WorkflowEngine:
             # The material moved under the wait. The engine refuses and
             # names the drift; it does not decide what the manager meant.
             return self.runtime._reject(
-                "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version, drift)
+                "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version,
+                _bounded(drift))
         # A completed upstream node accepted one exact revision of its
         # output and judged one exact revision of its inputs. When either
         # moved on, that acceptance no longer covers the material, and the
@@ -3000,7 +3001,8 @@ class WorkflowEngine:
         stale, _ = self._completed_acceptance(db, work, names)
         if stale:
             return self.runtime._reject(
-                "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version, stale)
+                "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version,
+                _bounded(stale))
         wait["state"] = "resumed"
         wait["resumed"] = {"by": actor, "at": int(time.time())}
         instance["material_wait"] = wait
