@@ -9,15 +9,23 @@ workflow and session — without re-running the source read, without
 replaying any business effect, without raising `max_attempts`, and without
 an unbounded number of material generations.
 
-**Architecture:** One new runtime command, `replace_material`, that adopts a
-small frozen `sourceReference` as a new revision of the source object,
+**Architecture:** One new runtime command, `replace_material`, that adopts
+a small frozen `sourceReference` as a new revision of the source object,
 computes the **consumer/transitive closure** of that object, refuses when
 the affected branch carries business effects, and then opens one bounded
-**material attempt** per affected node. Material attempts are counted by a
-separate budget (`material_generations` in the published definition), never
-by the quality rework allowance. Attempt identities stay monotonic: the
-attempt number only ever grows, and every attempt records the **trigger**
-that opened it (`initial`, `quality`, `material`).
+**material attempt** per affected node. The material allowance is a
+**core bound of one generation per workflow**, which a definition may
+only tighten (`material_generations: 0` denies) — never the quality rework
+allowance, which is never raised or reset. Attempt identities stay
+monotonic: the attempt number only ever grows, and every attempt records
+the **trigger** that opened it (`initial`, `quality`, `material`).
+
+**The coordinator's three adjustments** (accepted during the work) are
+part of the design: the core allowance is fixed and a legacy definition
+without the field keeps it; the frozen reference is the platform's
+manifest, written in the same envelope the source output carries; and the
+closure holds only the consumers that were instantiated, while a material
+attempt has no automatic further retry.
 
 **Tech Stack:** Python ≥3.9, stdlib `unittest`, SQLite store as-is.
 
@@ -73,9 +81,12 @@ an optional node field, linted), `work_runtime/workflow.py`
 (new), `tests/workflow_support.py` (the revalidation family).
 
 **Interfaces (produces):**
-- Node field `material_generations` (integer ≥ 0, default 0): the number
-  of material attempts (revalidations) the node may ever have. Published,
-  digested and pinned by the binding like every other declared field.
+- Node field `material_generations` (integer ≥ 0, optional): it may only
+  **tighten** the core allowance of one generation per workflow — `0`
+  denies the revalidation of that node, and a node that says nothing
+  keeps the core allowance (so a definition published before the field
+  existed still works). Published, digested and pinned by the binding like
+  every other declared field.
 - `WorkflowEngine._material_generations(spec, node_id) -> int`.
 
 - [ ] RED: lint refuses a negative or non-integer `material_generations`
@@ -97,9 +108,14 @@ the attestation, the invalidation). Test: the new test file.
 - `node` names the **source node** — the node whose completed attempt
   produced the material. The core derives the object from that node; a
   caller cannot name an arbitrary object.
-- `source_reference` is a small immutable object: a dict with a `kind`
-  string and bounded fields, at most 4 KiB of canonical JSON. The core
-  never resolves it.
+- `source_reference` is the platform's **frozen manifest** — a small
+  opaque object (`kind`, `referenceId`, `workflowId`, `sourceNode`,
+  `documentDigest`, `snapshotDigest`, `scope`), at most 4 KiB of
+  canonical JSON. The core never resolves it; it checks the kind, the
+  work and the source it names, and refuses a raw location, a credential
+  or the raw material. The new revision is the manifest **wrapped** as
+  `{"sourceReference": <manifest>}` — the envelope the source output
+  carries.
 - `waiting_ticket` is the input ticket of the waiting node the manager
   observed; it must still be the current one (`WORKFLOW_INPUT_STALE`).
 - The attestation (persisted on the work):
@@ -134,7 +150,8 @@ the attestation, the invalidation). Test: the new test file.
   `material_generation` (the budget it consumed).
 - The quality allowance counts the **non-material** attempts; the attempt
   number is monotonic and may exceed `max_attempts` because of the
-  material attempts.
+  material attempts. A material attempt that fails on quality opens
+  **no further attempt**.
 - The revalidation queue on the work drives the cursor: the affected
   nodes are re-run in dependency order, one material attempt each.
 
