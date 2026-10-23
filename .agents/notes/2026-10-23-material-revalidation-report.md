@@ -21,6 +21,7 @@ definition may only tighten.
 | C4 | `tests/test_workflow_material_revalidation.py` — 19 tests over a real store | shipped |
 | C5 | `tests/test_workflow_material_revalidation_http.py` — 14 tests over a real service on a real store | shipped |
 | C6 | docs — `workflow-runtime.md` (§14), `workflow-api-contract.md`, `verification.md` (W154–W167) | shipped |
+| C7 | `tests/test_workflow_spec.py` — 4 lint tests for the material budget | shipped |
 
 `work_runtime/runtime.py` and `work_runtime/adapters.py` are **untouched**:
 the command rides the existing `WORKFLOW_COMMANDS` seam, so there is no
@@ -111,7 +112,7 @@ pending (`WORKFLOW_REVALIDATION_PENDING`).
 | the coordinator's adjustments | the global ticket formula, the producer-only guard, the invented manifest fields and the automatic retry after a material failure | `test_the_core_allowance_carries_a_legacy_definition`, `test_a_used_up_node_gets_a_fresh_material_attempt`, `test_a_human_approval_in_the_branch_blocks_the_revalidation`, `test_every_consumer_of_the_source_is_invalidated` → OK |
 | the bridge | the route answered 404 | `PYTHONPATH=.:tests python3 -m unittest test_workflow_material_revalidation_http` → **14 tests, OK** |
 | the whole slice | — | `PYTHONPATH=.:tests python3 -m unittest test_workflow_material_revalidation test_workflow_material_revalidation_http` → **33 tests, OK** |
-| the full suite | the baseline before this slice was 1556 tests, OK (skipped=2) | **SUITE_COUNT tests, OK (skipped=2)** |
+| the full suite | the baseline before this slice was 1556 tests, OK (skipped=2) | **1593 tests, OK (skipped=2)** — 1556 + 33 new in the two revalidation files + 4 new lint tests in `tests/test_workflow_spec.py`; the byte pin of `runtime.py` still holds |
 
 The gates: `python3 scripts/check_docs.py` (127 files, 682 links, 0
 broken); `python3 -m compileall -q work_runtime tests scripts`;
