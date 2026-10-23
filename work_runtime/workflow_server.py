@@ -98,6 +98,14 @@ STATUS_BY_CODE = {
     "WORKFLOW_MATERIAL_TOO_LARGE": 422,
     "WORKFLOW_ADOPTION_LIMIT_EXCEEDED": 422,
     "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION": 422,
+    "WORKFLOW_SOURCE_REFERENCE_INVALID": 422,
+    "WORKFLOW_SOURCE_REFERENCE_TOO_LARGE": 422,
+    "WORKFLOW_SOURCE_NOT_PRODUCER": 409,
+    "WORKFLOW_SOURCE_NOT_COMPLETED": 409,
+    "WORKFLOW_WAITING_TICKET_STALE": 409,
+    "WORKFLOW_REVALIDATION_EFFECT_PRESENT": 409,
+    "WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED": 409,
+    "WORKFLOW_REVALIDATION_NO_CONSUMERS": 409,
     "WORKFLOW_NODE_NOT_COMPLETED": 409,
     "WORKFLOW_QUALITY_UNSETTLED": 409,
     "WORKFLOW_CHECK_UNSATISFIED": 409,
@@ -1001,6 +1009,87 @@ class WorkflowService:
                                   "resultStateVersion": receipt.get("result_state_version")}
         return 200, redact(view)
 
+    def replace_material(self, work_id: str,
+                         body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Replace the archived source material and revalidate its consumers.
+
+        The bridge owns no replacement engine of its own: it issues the
+        runtime's own command, so the compare-and-swap, the command dedup
+        and the receipts are the ones every other mutation already has.
+
+        The body carries the **frozen source reference** the platform
+        acquired and froze — a manifest, never the material, never a
+        location and never a credential. The core wraps it in the same
+        envelope the source output carries and writes it as a new revision.
+        """
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
+        node_id = body.get("node")
+        reference = body.get("sourceReference")
+        reason = body.get("reason")
+        waiting_node = body.get("waitingNode")
+        waiting_ticket = body.get("waitingTicket")
+        if not isinstance(node_id, str) or not node_id:
+            return 400, _error("MATERIAL_REPLACE_INVALID",
+                               "node is required: the source node whose "
+                               "material is replaced")
+        if not isinstance(reference, dict) or not reference:
+            return 400, _error("MATERIAL_REPLACE_INVALID",
+                               "sourceReference is required: the frozen "
+                               "reference the platform acquired")
+        if not isinstance(reason, str) or not reason:
+            return 400, _error("MATERIAL_REPLACE_INVALID", "reason is required")
+        if waiting_node is not None and not isinstance(waiting_node, str):
+            return 400, _error("MATERIAL_REPLACE_INVALID",
+                               "waitingNode must be a node id or absent")
+        if waiting_ticket is not None and not isinstance(waiting_ticket, str):
+            return 400, _error("MATERIAL_REPLACE_INVALID",
+                               "waitingTicket must be the ticket the manager "
+                               "observed or absent")
+        version = self._request_version(body)
+        if version is None:
+            return 400, _error("MATERIAL_WAIT_VERSION_UNSUPPORTED",
+                               "requestVersion 1 is the supported version")
+        actor, error = self._request_actor(body)
+        if error is not None:
+            return 400, error
+        if not self._body_names_this_work(work_id, body):
+            return 400, _error("WORK_MISMATCH",
+                               "the request body names another work")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        receipt = self._material_command(
+            actor, command_id, work_id, "replace_material",
+            {"node": node_id, "source_reference": reference, "reason": reason,
+             "request_version": version, "waiting_node": waiting_node,
+             "waiting_ticket": waiting_ticket}, expected_version)
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(
+                receipt.get("code", "REJECTED"),
+                "The source material was not replaced", receipt.get("blockers"))
+        self._settle(work_id)
+        status, view = self.instance(work_id)
+        plan = view.get("materialRevalidation") or {}
+        view["materialReplacement"] = {
+            "node": node_id,
+            "attestation": plan.get("attestation"),
+            "affected": receipt.get("affected"),
+            "generation": receipt.get("generation"),
+            "resultStateVersion": receipt.get("result_state_version")}
+        return 200, redact(view)
+
     def finalize(self, work_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         """Accept a successful workflow and freeze it.
 
@@ -1685,6 +1774,8 @@ class WorkflowRequestHandler(BaseHTTPRequestHandler):
                 return service.adopt_material(work_id, body)
             if method == "POST" and tail == ["material", "resume"]:
                 return service.resume_material_wait(work_id, body)
+            if method == "POST" and tail == ["material", "replace"]:
+                return service.replace_material(work_id, body)
             if method == "GET" and tail == ["completion"]:
                 return service.completion(work_id)
             if (method == "GET" and len(tail) == 4 and tail[0] == "objects"
