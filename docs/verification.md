@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W131)
+### Workflow matrix (W01–W148)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -973,6 +973,23 @@ are byte-unchanged by that slice; the boundary rows are in
 | W129 | A refused cancellation mutates nothing | covered | `AuthorizationOrderingTests` — a denied actor, a malformed request and a duplicate request each leave the node rows, the intent rows, the operation rows, the events and the state version byte for byte unchanged (the ordering fix in `runtime.py`: authority and the duplicate gate run before the workflow cancellation hook) |
 | W130 | A work may be cancelled between its creation stages | covered | `PartialCreationTests` — a work that exists without a bound workflow is cancelled with the summary and `instanceView: "unavailable"`, the immutable receipt reads back accepted, and the read shows `state: requested` |
 | W131 | Cancelling an unknown work creates nothing | covered | `test_an_unknown_work_is_not_created_by_cancelling_it` — `404 WORK_UNKNOWN`, no work row, and the read answers the same 404 |
+| W132 | A manager may park the current agent node for business material | covered | `tests/test_workflow_material_wait.py` — `MaterialWaitTestCase`: the node enters the state `waiting` on its own attempt, the agent's intent is withdrawn, the work reports `waiting`, and the request is pinned to the exact node, attempt and input digest |
+| W133 | A wait spends no quality allowance and no attempt | covered | `test_the_wait_resumes_the_same_attempt` — the attempt is the one the wait kept, the node is `running` again after the resume, and no rework attempt is opened |
+| W134 | A wait survives a restart and a routing pass | covered | `test_the_wait_persists_across_a_restart_and_a_routing_pass` — a fresh engine and a routing pass leave the node rows, the intents, the objects, the events and the state version byte for byte unchanged |
+| W135 | A result submitted while the node waits is refused | covered | `test_a_result_submitted_while_waiting_is_refused_and_stores_nothing` — `WORKFLOW_NODE_WAITING` and no object row, no event and no version move |
+| W136 | A refused wait mutates nothing | covered | `test_refused_wait_requests_mutate_nothing` — a denied actor, an unknown node, a node that is not current, a node that is not waitable, a stale attempt and a stale digest each leave the store unchanged |
+| W137 | An adopted material is a new immutable revision | covered | `test_the_manager_adopts_external_material_and_resumes` — the adopted body is a new revision, the historical revision is retained and still readable, the wait accepts the adopted revision, and the node keeps waiting until the resume |
+| W138 | An adoption is bounded and confined to the wait's material | covered | `test_the_number_of_adoptions_is_bounded`, `test_an_oversized_adoption_is_refused` — `WORKFLOW_ADOPTION_LIMIT_EXCEEDED` after sixteen adoptions, `WORKFLOW_MATERIAL_TOO_LARGE` above 64 KiB, and `WORKFLOW_MATERIAL_NOT_DEPENDENCY` for another object |
+| W139 | An adoption may not bless a completed upstream's accepted output | covered | `test_the_adoption_of_a_completed_upstream_output_is_refused` — `INPUT_DEPENDENCIES_REQUIRE_REVALIDATION` naming the upstream node, its attempt and both revisions; no revision is written and the wait keeps waiting |
+| W140 | The resume is gated on the accepted dependencies | covered | `test_a_dependency_revised_during_the_wait_blocks_the_resume` — the revision leaves the waiting node in place, the resume is refused with the exact drift, and the adoption that would bless the upstream's output is refused as well |
+| W141 | The resume moves the ticket even for equal material | covered | `test_the_resume_moves_the_input_ticket_even_for_equal_material` — the `inputDigest` changes on the resume and a result ticket issued before the wait is refused `WORKFLOW_INPUT_STALE` |
+| W142 | The resume asks again under a new intent identity | covered | `test_the_resume_asks_again_under_a_new_intent_identity` — the withdrawn intent is `cancelled` and the resumed one is `pending` under `wf:<work>:<node>:<attempt>:<kind>:<generation>`, so an old acknowledgement cannot swallow the resumed prompt |
+| W143 | Material that fails its validator blocks the resume | covered | `test_material_that_fails_its_validator_blocks_the_resume`, `test_material_that_does_not_match_the_shape_blocks_the_resume` — the node is `blocked` with `INTAKE_EMPTY` or `SHAPE_TYPE`, the attempt is unchanged, and no intent is issued for the refused material |
+| W144 | A waiting node neither expires nor completes | covered | `test_the_deadline_is_suspended_while_the_node_waits`, `test_the_acceptance_refuses_a_waiting_workflow` — the waiting node does not expire far beyond its deadline, and the acceptance is refused `WORKFLOW_NOT_FINISHED` |
+| W145 | A cancellation cancels the waiting node | covered | `test_a_cancelled_work_cancels_the_waiting_node` — the node is `cancelled` with `WORK_CANCELLED`, and the resume of a cancelling work is refused `CANCELLATION_ACTIVE` |
+| W146 | The bridge exposes the wait lifecycle | covered | `tests/test_workflow_material_wait_http.py` — `MaterialWaitHttpTestCase`: the park answers the instance view with `materialWait`, the adoption of a completed upstream's output is `422`, a material that moved under the wait refuses the resume with the drift, and the receipt reads back under the caller's command id |
+| W147 | The bridge keeps the compare-and-swap and the command identity | covered | `test_a_stale_version_is_a_conflict`, `test_a_replay_returns_the_same_receipt`, `test_a_reused_command_id_with_another_body_is_refused`, `test_an_unknown_version_is_refused` — `STATE_VERSION_CONFLICT`, one event for an identical replay, `COMMAND_ID_REUSED` and `MATERIAL_WAIT_VERSION_UNSUPPORTED` |
+| W148 | The bridge never creates a work it does not have | covered | `test_an_unknown_work_is_not_created_by_waiting_on_it` — `404 WORK_UNKNOWN` and no work row |
 | W128 | The cancellation read is safe and scoped | covered | `CancellationReadTests` — an active work answers `state=none` with empty operation lists; an unknown work is `404 WORK_UNKNOWN`; the read carries no payload body and no credential |
 | W113 | The default still needs the named record for every decision | covered | `tests/test_workflow_conditional_output.py` — `DefaultSemanticsTests`: a rejection without a record leaves the node running with `WORKFLOW_OUTPUT_MISSING` and the routing does not move; an approval writes the record |
 | W114 | A published human node may narrow the decisions its output applies to | covered | `NarrowedOutputTests` — a rejection settles the node with no acceptance record, the quality says `exempt`, the decision proof and the check report are preserved, and the declared `on_reject` branch is taken |
@@ -1111,8 +1128,30 @@ are byte-unchanged by that slice; the boundary rows are in
   The dispatch receipt becomes the named order the field report and the
   independent review judge, and the dispatch wait matches only the bound
   proof of the attempt that produced it.
+- **Material waiting** (`tests/test_workflow_material_wait.py`, 51 tests;
+  `tests/test_workflow_material_wait_http.py`, 15 tests): a trusted
+  manager parks the current agent node for business material — the attempt
+  is kept, the agent's intent is withdrawn, result acceptance is refused,
+  the wait survives a restart and a routing pass, and the node neither
+  expires nor completes. The adopted material becomes a new immutable
+  revision (the historical revisions and the decisions on them are
+  retained, nothing is re-run), and the resume continues the same attempt
+  behind a gate: every dependency the wait accepted must still be the
+  object's current revision and digest, and a completed upstream node's
+  acceptance must still cover the material. A refusal names the exact
+  drift and **retains the wait**. The resume moves the input ticket and
+  the intent identity even when the material did not change, so a result
+  ticket issued before the wait never satisfies the node after it and an
+  old acknowledgement cannot swallow the resumed prompt.
 
 ### Explicitly not covered
+
+- **No transitive invalidation and no rewind.** When the material of a
+  completed upstream node moved on, the wait stays refused
+  (`INPUT_DEPENDENCIES_REQUIRE_REVALIDATION`) and the upstream needs a
+  separate, bounded revalidation. This slice does not rewind a completed
+  node, does not grant a new attempt for it, and does not raise any
+  configured `max_attempts`. A generic rewind engine is out of scope.
 
 - **No authentication and no tenant isolation.** The bridge resolves the
   approving principal from the published node and the policy's source

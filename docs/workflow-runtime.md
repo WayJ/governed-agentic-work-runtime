@@ -258,7 +258,10 @@ submits a candidate with `submit_node_result {node, attempt, object, result}`:
 * the attempt must be the node's current attempt (`WORKFLOW_ATTEMPT_STALE`);
 * the candidate must be bound to the **input digest** the node currently
   pins (`WORKFLOW_INPUT_STALE`): a candidate produced from a superseded
-  input is refused;
+  input is refused. The input digest covers the declared inputs **and the
+  node's input generation**; the generation moves on every resume, so a
+  ticket issued before a [material wait](#13-the-material-wait) never
+  satisfies the node after it — see [§13](#13-the-material-wait);
 * the payload's `object` must be the node's declared output object
   (`WORKFLOW_OBJECT_MISMATCH`);
 * the result is validated by the shape descriptor and by the registered
@@ -601,6 +604,7 @@ version bump, no event.
 | node ready | the node instance opens, its inputs and subject are resolved and pinned, and its kind-specific work starts |
 | input or subject missing | the node is `blocked` with a bounded finding (`INPUT_MISSING`, `SUBJECT_MISSING`); it re-resolves on the next pass |
 | a decision or a candidate is missing | the node keeps waiting; a deadline turns it into `expired` |
+| the node waits for material | the node stays `waiting`: the routing pass settles nothing and opens nothing, the result acceptance is refused, and the wait survives a restart until the manager adopts the material and resumes (see [§13](#13-the-material-wait)) |
 | human decision `rejected` | the node's `on_reject` branch is taken |
 | agent candidate invalid | the node fails with `WORKFLOW_RESULT_INVALID` and the same node is re-opened as a **new attempt**; the bounded `max_attempts` decides when the work escalates to `needs_attention` (`WorkflowReworkLimitExceeded`) |
 | operation confirmed failed | the node fails; `on_failure` is taken |
@@ -652,6 +656,11 @@ id, without a second session and without a poll loop.
 Intents are cancelled when their node is cancelled, when the object they
 pinned is superseded, or when the work is cancelled.
 
+An intent identity is stable per attempt: `wf:<workId>:<node>:<attempt>:<kind>`.
+A node that is **resumed** asks again under a **new** identity
+(`…:<kind>:<generation>`), so an acknowledgement of the withdrawn prompt
+can never swallow the resumed one.
+
 An adapter that receives only the native business key has no intent to read:
 it holds a key, not a node. [The native action context](#11-the-native-action-context)
 answers what that key is.
@@ -684,6 +693,9 @@ The exact wire contract, with the request and response fixtures, is
 | `POST` | `/v1/workflows/intents/{intentId}/ack` | acknowledge an intent |
 | `POST` | `/v1/workflows/instances/{workId}/cancel` | request the cancellation (the runtime's own command) |
 | `GET` | `/v1/workflows/instances/{workId}/cancellation` | the safe cancellation state |
+| `POST` | `/v1/workflows/instances/{workId}/material/wait` | park the current agent node for business material |
+| `POST` | `/v1/workflows/instances/{workId}/material/adopt` | adopt externally provided material under the wait |
+| `POST` | `/v1/workflows/instances/{workId}/material/resume` | resume the waiting node behind the dependency gate |
 | `POST` | `/v1/workflows/instances/{workId}/cancel/finalize` | close a cancelled work (the runtime's own command) |
 | `POST` | `/v1/workflows/instances/{workId}/advance` | settle on demand |
 
@@ -1222,7 +1234,141 @@ The work's ledger, its state version and its requirement evaluation may
 still change under the runtime's ordinary late-evidence rules, and the
 snapshot does not follow them.
 
-## 13. What is deliberately not here
+## 13. The material wait
+
+Business material is not candidate quality. A manager may park the
+workflow's **current agent node** because the material it needs is
+missing, adopt the supplemented material when it arrives, and resume the
+node — all without spending the node's quality allowance and without
+re-running anything behind the wait.
+
+The wait is a **core lifecycle state**, not a host convention: GAWR owns
+it, persists it and refuses everything that would contradict it.
+
+### The three commands
+
+They are ordinary runtime commands: a compare-and-swap on
+`state_version`, a durable receipt under `(actor, commandId)`, one
+transaction, and a replay that is admitted only while the manager
+authority still holds.
+
+| command | payload | effect |
+|---|---|---|
+| `request_material_wait` | `{node, attempt, input_digest, reason, request_version}` | the node instance enters the state `waiting` |
+| `adopt_material` | `{node, attempt, name, object, request_version}` | the named material becomes a **new immutable revision**; the wait accepts it |
+| `resume_material_wait` | `{node, attempt, request_version}` | the same attempt continues behind the dependency gate |
+
+`request_version` is `1`. A caller that states another version is
+refused: a request is never half-understood.
+
+The manager is the work's owner with `work.manage` — the same trusted
+local configuration every other management mutation uses. The transport
+grants nothing: the core decides.
+
+### What the wait does
+
+* It parks the **current** node, and only an **agent** node in the state
+  `running`, pinned to the exact attempt and the exact `input_digest` the
+  caller observed. A wait decided against a moved work is refused
+  (`WORKFLOW_NODE_NOT_CURRENT`, `WORKFLOW_ATTEMPT_STALE`,
+  `WORKFLOW_INPUT_STALE`).
+* It **keeps the attempt**. No rework attempt is opened, no
+  `max_attempts` is raised, and the node's quality allowance is not
+  spent: a workflow that waited may still complete on the attempt it
+  started with.
+* It **withdraws the agent's durable intent** and refuses result
+  acceptance: a candidate submitted while the node waits is refused
+  (`WORKFLOW_NODE_WAITING`) and nothing is stored.
+* It **persists across a restart**. The routing pass is a no-op for a
+  waiting node, so a pass changes nothing: no version bump, no event, no
+  re-opened node.
+* It **suspends the deadline**. A waiting node does not expire; the
+  deadline is recomputed from the resume.
+* The work reports `workflowStatus: "waiting"`. The read model names the
+  reason, the requester, the exact dependencies the wait accepted and the
+  adoptions that followed (`materialWait`).
+
+### What the adoption does
+
+The adopted material becomes a **new immutable revision** of the named
+object. The historical revisions and the decisions that were made on them
+stay on the record, nothing is superseded, and the adoption re-runs
+nothing: the node keeps waiting until the manager resumes it.
+
+The adoption is bounded: the body is at most 64 KiB of canonical JSON
+and a wait carries at most sixteen adoptions. Only the material the wait
+is actually about may be adopted — an adoption of anything else would be
+a silent write (`WORKFLOW_MATERIAL_NOT_DEPENDENCY`).
+
+### The dependency gate
+
+The resume is admitted only when **every dependency the wait accepted is
+still the object's current revision and digest**. Two facts are checked:
+
+* the material moved under the wait (`_dependency_drift`), and
+* a **completed upstream node** accepted one exact revision of its output
+  and the object moved on since (`_upstream_acceptance`).
+
+Both refuse with `INPUT_DEPENDENCIES_REQUIRE_REVALIDATION` and the
+exact drift as findings:
+
+```json
+[{"name": "intake", "node": "n01", "attempt": 1,
+  "accepted": {"revision": 1, "digest": "…"},
+  "current": {"revision": 2, "digest": "…"}}]
+```
+
+The wait is **retained** on a refusal: the node keeps waiting, and the
+manager decides — adopt the material again, or cancel.
+
+**An adoption may not bless a completed upstream's accepted output.** A
+node that completed accepted one exact revision of its output; writing a
+new revision of that object would be material no completed node ever
+accepted, and the upstream acceptance would be stale the moment it was
+written. Such an adoption is refused with the same code and the same
+findings. Material that **no** completed node accepted — material supplied
+from outside the workflow — may be adopted.
+
+### The resume, the ticket and the identity
+
+The resume continues the **same attempt**. The inputs are resolved and
+judged again, so material that no longer passes its declared validator
+**blocks** the node (`SHAPE_TYPE`, the validator's own codes) instead of
+running on it.
+
+Two things move on a resume, even when the material did not change:
+
+* the **input ticket** — the `input_digest` covers the declared inputs
+  *and* the node's input generation, and the generation moves on every
+  resume. A result ticket issued before the wait therefore never
+  satisfies the node after it, even when the object values are equal
+  (`WORKFLOW_INPUT_STALE`);
+* the **intent identity** — the node asks again under a new identity
+  (`wf:<work>:<node>:<attempt>:<kind>:<generation>`). An acknowledgement
+  of the withdrawn prompt can never swallow the resumed one: the two are
+  two different tasks on the record.
+
+### The limits of this slice
+
+* **No transitive invalidation.** The engine does not rewind a completed
+  upstream node. When the material of a completed upstream moved on, the
+  wait stays refused and the upstream needs a separate, bounded
+  revalidation. A generic rewind engine is deliberately out of scope.
+* **`revise_object` is not invalidation.** It cancels the node instances
+  that are `running`, `blocked` or `submitted` and pins the superseded
+  object; a **waiting** instance is not among them, so a revision during
+  a wait leaves the wait in place and the dependency gate — not the
+  revision — decides the resume.
+* **No node is ever re-run silently.** A wait never opens an attempt, a
+  resume never opens one either, and a side-effect node is never
+  re-entered by a wait.
+* The wait is refused on a cancelling work (`CANCELLATION_ACTIVE`), and
+  a cancellation cancels the waiting node (`WORK_CANCELLED`) instead of
+  restarting it.
+* The workflow acceptance refuses a waiting workflow: a waiting node is
+  never terminal, so the workflow is not finished.
+
+## 14. What is deliberately not here
 
 * No authentication, no tenant isolation, no distributed leases or fencing.
   Principals are trusted local configuration.

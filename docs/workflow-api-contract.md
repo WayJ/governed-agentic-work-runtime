@@ -477,6 +477,98 @@ reason, resultStateVersion}`. An effect that was already dispatched or of
 unknown outcome is **not** rolled back: it stays on the work and is
 resolved by the ordinary lookup and recovery.
 
+### `POST /v1/workflows/instances/{workId}/material/wait`
+
+Park the workflow's **current agent node** for business material. The
+command is the runtime's own `request_material_wait`: it is admitted
+against the version the caller observed, under the caller's own
+`commandId`, in one transaction.
+
+```json
+{"actor": "coordinator", "requestVersion": 1, "node": "n02", "attempt": 1,
+ "inputDigest": "…", "reason": "the referenced record is missing a page",
+ "commandId": "wait-1", "expectedVersion": 7}
+```
+
+* `node` is the **current** node and `attempt` its current attempt; a
+  node that is not current is `409 WORKFLOW_NODE_NOT_CURRENT`, a stale
+  attempt is `409 WORKFLOW_ATTEMPT_STALE` and an `inputDigest` the node
+  does not hold is `422 WORKFLOW_INPUT_STALE`.
+* `reason` is required: the wait says why it waits.
+* `requestVersion` is `1`; any other value is
+  `400 MATERIAL_WAIT_VERSION_UNSUPPORTED`.
+* The `actor` must be the work's owner with `work.manage`; anybody else
+  is `403 AUTHORITY_DENIED` and nothing changes.
+
+`200` the instance view with `materialWait: {node, attempt, wait,
+resultStateVersion}`. The node's own `materialWait` in the view names the
+reason, the requester, the dependencies the wait accepted and the
+adoptions that followed. The work reports `workflowStatus: "waiting"`.
+
+While the node waits: a result submitted for it is `409
+WORKFLOW_NODE_WAITING` and nothing is stored; the node's durable intent
+is withdrawn; the wait survives a restart; the deadline is suspended.
+
+### `POST /v1/workflows/instances/{workId}/material/adopt`
+
+Adopt externally provided material under an active wait. The command is
+the runtime's own `adopt_material`: the adopted material becomes a **new
+immutable revision** of the named object, the historical revisions and
+the decisions made on them stay on the record, and nothing is re-run.
+
+```json
+{"actor": "coordinator", "requestVersion": 1, "node": "n02", "attempt": 1,
+ "name": "intake", "object": {"records": [], "standard": "STD-1"},
+ "commandId": "adopt-1", "expectedVersion": 8}
+```
+
+* `name` must be one of the dependencies the wait accepted; anything else
+  is `422 WORKFLOW_MATERIAL_NOT_DEPENDENCY` — an adoption of anything
+  else would be a silent write.
+* `object` is at most 64 KiB of canonical JSON; a larger body is `422
+  WORKFLOW_MATERIAL_TOO_LARGE`. A wait carries at most sixteen
+  adoptions (`422 WORKFLOW_ADOPTION_LIMIT_EXCEEDED`).
+* Adopting without a wait is `409 WORKFLOW_NOT_WAITING`.
+* **An adoption may not bless a completed upstream's accepted output**: a
+  node that completed accepted one exact revision of its output, and a
+  new revision of that object would be material no completed node ever
+  accepted. Such an adoption is `422
+  INPUT_DEPENDENCIES_REQUIRE_REVALIDATION` with the upstream node, its
+  attempt and both revisions as the findings.
+
+`200` the instance view with `materialAdoption: {node, attempt, adoption,
+wait, resultStateVersion}`. The node keeps waiting: the adoption supplies
+the material, the resume starts the work.
+
+### `POST /v1/workflows/instances/{workId}/material/resume`
+
+Resume the waiting node behind the dependency gate. The command is the
+runtime's own `resume_material_wait`.
+
+```json
+{"actor": "coordinator", "requestVersion": 1, "node": "n02", "attempt": 1,
+ "commandId": "resume-1", "expectedVersion": 9}
+```
+
+* The **same attempt** continues: no rework attempt is opened and no
+  quality allowance is spent.
+* The gate: every dependency the wait accepted must still be the
+  object's current revision and digest, and a completed upstream node's
+  acceptance must still cover the material. Otherwise the resume is
+  `422 INPUT_DEPENDENCIES_REQUIRE_REVALIDATION` with the exact drift as
+  the findings, and **the wait is retained** — the node keeps waiting.
+* Material that no longer passes its declared validator **blocks** the
+  node (`200` with `materialResume.state: "blocked"` and the findings on
+  the node) instead of running on it.
+
+`200` the instance view with `materialResume: {node, attempt, state,
+inputDigest, wait, resultStateVersion}`. Two things move on a resume even
+when the material did not change: the **input ticket** (the `inputDigest`
+covers the inputs and the node's input generation, so a ticket issued
+before the wait never satisfies the node after it) and the **intent
+identity** (the node asks again under `wf:<work>:<node>:<attempt>:<kind>:<generation>`,
+so an old acknowledgement can never swallow the resumed prompt).
+
 ### `GET /v1/workflows/instances/{workId}/cancellation`
 
 The safe cancellation state of one work — no payload body, no credential.
