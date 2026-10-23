@@ -18,8 +18,8 @@ definition may only tighten.
 | C1 | `work_runtime/workflow.py` — the command `replace_material`, the consumer/transitive closure, the attestation, the material attempt, the queue-driven revalidation | shipped |
 | C2 | `work_runtime/workflow_spec.py` — the optional node field `material_generations` | shipped |
 | C3 | `work_runtime/workflow_server.py` — the route `POST …/material/replace`, the status table, the view | shipped |
-| C4 | `tests/test_workflow_material_revalidation.py` — 19 tests over a real store | shipped |
-| C5 | `tests/test_workflow_material_revalidation_http.py` — 14 tests over a real service on a real store | shipped |
+| C4 | `tests/test_workflow_material_revalidation.py` — 26 tests over a real store (19 in the slice, 7 in the review-fix wave) | shipped |
+| C5 | `tests/test_workflow_material_revalidation_http.py` — 17 tests over a real service on a real store (14 in the slice, 3 in the review-fix wave) | shipped |
 | C6 | docs — `workflow-runtime.md` (§14), `workflow-api-contract.md`, `verification.md` (W154–W167) | shipped |
 | C7 | `tests/test_workflow_spec.py` — 4 lint tests for the material budget | shipped |
 
@@ -113,6 +113,7 @@ pending (`WORKFLOW_REVALIDATION_PENDING`).
 | the bridge | the route answered 404 | `PYTHONPATH=.:tests python3 -m unittest test_workflow_material_revalidation_http` → **14 tests, OK** |
 | the whole slice | — | `PYTHONPATH=.:tests python3 -m unittest test_workflow_material_revalidation test_workflow_material_revalidation_http` → **33 tests, OK** |
 | the full suite | the baseline before this slice was 1556 tests, OK (skipped=2) | **1593 tests, OK (skipped=2)** — 1556 + 33 new in the two revalidation files + 4 new lint tests in `tests/test_workflow_spec.py`; the byte pin of `runtime.py` still holds |
+| the full suite, after the review-fix wave | 1593 before the wave | **1603 tests, OK (skipped=2)** — 1593 + 9 new (6 core + 3 service) + 1 positive path; the byte pin of `runtime.py` still holds |
 
 The gates: `python3 scripts/check_docs.py` (127 files, 682 links, 0
 broken); `python3 -m compileall -q work_runtime tests scripts`;
