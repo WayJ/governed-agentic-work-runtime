@@ -1505,6 +1505,30 @@ The old attempt keeps its history: its candidate, its checks and its
 receipts stay on the record, and only its state and its reason say that
 it was withdrawn.
 
+### The status transition and the stale-waiting reconciliation
+
+The accepted replacement ends the wait it invalidates: a work whose
+`workflow_status` was `waiting` — because its current node was parked
+for exactly the material being replaced — returns to `active` **by the
+acceptance itself**, so a platform that imports an agent intent only for
+an active workflow finds the corrected status after the replacement. A
+work that waits for nothing keeps the status it had.
+
+A replacement accepted before this transition existed could leave a
+persisted `waiting` status behind while the revalidation had already
+opened the head of its queue on a material attempt: the work is working
+but looks parked, and the original session never resumes. One **normal
+advance** reconciles exactly that state — only while a revalidation is
+`revalidating`, only for the head of its queue, only when that node's
+current attempt is a **material** attempt that is really `running`,
+`submitted` or `blocked`, and never when the current node genuinely
+waits for material, is cancelling or is finalized (those are turned away
+before the pass). The correction is recorded once as
+`WorkflowMaterialRevalidationResumed`; a pass that finds nothing to
+repair writes nothing, and repeated passes produce no event and no
+version churn. No script and no manual store edit is involved: a
+deployed store is repaired by the ordinary routing pass alone.
+
 ### What blocks the revalidation
 
 | the replacement is refused when | code |

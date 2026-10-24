@@ -866,7 +866,7 @@ it answers with. `work_runtime/runtime.py` and `work_runtime/adapters.py`
 are byte-unchanged by that slice; the boundary rows are in
 [runtime-boundaries.md](runtime-boundaries.md).
 
-### Workflow matrix (W01–W173)
+### Workflow matrix (W01–W175)
 
 | Case | Behaviour | Status | Evidence |
 |---|---|---|---|
@@ -1015,6 +1015,8 @@ are byte-unchanged by that slice; the boundary rows are in
 | W171 | The waiting node must be the current one | covered | `WaitingNodeTestCase` — a node that does not wait and a node that does not exist are refused `WORKFLOW_WAITING_NODE_NOT_CURRENT`, and a stale ticket is refused `WORKFLOW_WAITING_TICKET_STALE` |
 | W173 | The accepted workflow after a revalidation | covered | `tests/test_workflow_material_revalidation.py` — `PositiveRevalidationTestCase`: the replacement, the revalidation of every affected consumer, the normal successor, the finished workflow and the granted acceptance; the proof names the adopted revision in `objects`, the source node's historical revision in `nodes`, and the explicit attestation in `materialRevalidation` — never claiming that the old acceptance covers the new revision |
 | W172 | The service refuses the same things | covered | `tests/test_workflow_material_revalidation_http.py` — a manifest the published validation refuses is `422` and writes nothing, a waiting node that is not the current one is `409`, and the old result of an invalidated attempt is `409 WORKFLOW_NODE_INVALIDATED` |
+| W174 | The accepted replacement ends the wait it invalidates | covered | `tests/test_workflow_material_revalidation.py` — `ReplacementStatusTransitionTestCase`: the runtime command alone, with no settle pass and no advance, returns a `waiting` work to `active`; `tests/test_workflow_material_revalidation_http.py` — `ReplacementLifecycleHttpTestCase`: over a real service, the full wait → replace → advance path answers `workflowStatus: active` with the head re-running on a material attempt, and exactly one new `agent_task` intent is pending for the original bound session |
+| W175 | A stale pre-transition `waiting` status is repaired by one normal advance | covered | `StaleWaitingRepairTestCase` — the persisted pre-fix shape (revalidation `revalidating`, queue head on a running material attempt, status `waiting`) is corrected once by an ordinary `advance` as `WorkflowMaterialRevalidationResumed`, with the objects, the operations, the intents, the material generation and the queue unchanged and a second pass a byte-stable no-op; `test_a_genuine_wait_of_the_current_node_is_never_overridden` — a genuine wait recorded through the ordinary command keeps `waiting` across passes |
 | W128 | The cancellation read is safe and scoped | covered | `CancellationReadTests` — an active work answers `state=none` with empty operation lists; an unknown work is `404 WORK_UNKNOWN`; the read carries no payload body and no credential |
 | W113 | The default still needs the named record for every decision | covered | `tests/test_workflow_conditional_output.py` — `DefaultSemanticsTests`: a rejection without a record leaves the node running with `WORKFLOW_OUTPUT_MISSING` and the routing does not move; an approval writes the record |
 | W114 | A published human node may narrow the decisions its output applies to | covered | `NarrowedOutputTests` — a rejection settles the node with no acceptance record, the quality says `exempt`, the decision proof and the check report are preserved, and the declared `on_reject` branch is taken |

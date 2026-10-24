@@ -367,5 +367,141 @@ class ReplaceMaterialHttpTestCase(unittest.TestCase):
         self.assertEqual("accepted", receipt["receipt"]["decision"])
 
 
+class ReplacementLifecycleHttpTestCase(unittest.TestCase):
+    """The full wait → replace → advance path over a real service.
+
+    A platform dispatcher imports an agent intent only while the workflow
+    is active, and it filters by the session the work was bound with: a
+    replacement that leaves the status waiting strands the original
+    session behind an intent the platform may never take over.
+    """
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="gawr-replace-life-")
+        self.addCleanup(shutil.rmtree, self.folder, True)
+        self.path = os.path.join(self.folder, "runtime.sqlite")
+        self.grants = {"coordinator": {"work.manage", "work.dispatch"},
+                       "agent-executor": {"workflow.execute"},
+                       "business-system": {"evidence.write"}}
+        self.adapter = SourceReferenceAdapter(
+            os.path.join(self.folder, "effects.db"))
+        self.runtime, self.engine = build(
+            self.path, policy=RevalidationPolicy(), grants=self.grants,
+            validators=revalidation_validators())
+        published = self.engine.publish_template(OWNER, REVALIDATION_TEMPLATE)
+        self.assertEqual("accepted", published["decision"], published)
+        self.server, self.ticker, self.lock = serve(
+            self.runtime, self.engine, None, host="127.0.0.1", port=0,
+            interval_s=0.05)
+        self.host, self.port = (self.server.server_address[0],
+                                self.server.server_address[1])
+        self.counter = 0
+        send(self.runtime, OWNER, WORK_ID, "create_work",
+             {"document": document()})
+        send(self.runtime, OWNER, WORK_ID, "bind_contract",
+             {"policy_id": POLICY_ID, "policy_version": POLICY_VERSION,
+              "goal": POLICY_GOAL})
+        send(self.runtime, OWNER, WORK_ID, "revise_plan",
+             {"steps": ["s00", "n01", "n02", "n03"],
+              "open_requirements": [], "replan_when": []})
+        send(self.runtime, OWNER, WORK_ID, "revise_object",
+             {"name": "request", "object": {"id": "REQ-1"}})
+        bound = self.engine.command(
+            OWNER, "bind-1", WORK_ID, "bind_workflow",
+            {"template_id": REVALIDATION_TEMPLATE["id"],
+             "template_version": REVALIDATION_TEMPLATE["version"],
+             "parameters": {"subject": "east parapet"},
+             "session_id": "sess-original"},
+            version_of(self.runtime, WORK_ID))
+        self.assertEqual("accepted", bound["decision"], bound)
+        self.engine.pump(self.adapter, 1000)
+        submitted = submit_valid(self.engine, self.runtime, WORK_ID, "n01",
+                                 "intake",
+                                 {"records": [{"id": "R-1", "source": "s"}],
+                                  "standard": "STD-1"})
+        self.assertEqual("accepted", submitted["decision"], submitted)
+        parked = self.engine.command(
+            OWNER, "wait-1", WORK_ID, "request_material_wait",
+            {"node": "n02", "attempt": 1,
+             "input_digest": input_digest_of(self.engine, WORK_ID, "n02"),
+             "reason": "the referenced standard is missing",
+             "request_version": 1},
+            version_of(self.runtime, WORK_ID))
+        self.assertEqual("accepted", parked["decision"], parked)
+        self.ticket = input_digest_of(self.engine, WORK_ID, "n02")
+
+    def tearDown(self):
+        self.ticker.stop()
+        self.server.shutdown()
+        self.server.server_close()
+        if self.lock is not None:
+            self.lock.release()
+
+    # -- helpers ---------------------------------------------------------
+
+    def call(self, method, path, body=None):
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=10)
+        try:
+            payload = json.dumps(body).encode("utf-8") if body is not None else None
+            headers = {"Content-Type": "application/json"} if payload else {}
+            connection.request(method, path, payload, headers)
+            response = connection.getresponse()
+            raw = response.read().decode("utf-8")
+            return response.status, (json.loads(raw) if raw else {})
+        finally:
+            connection.close()
+
+    def next_id(self, label="replace"):
+        self.counter += 1
+        return label + "-" + str(self.counter)
+
+    # -- the surface -----------------------------------------------------
+
+    def test_the_replacement_returns_the_original_session_to_the_dispatcher(self):
+        # the work waits: the dispatcher imports no agent intent
+        status, before = self.call("GET", BASE)
+        self.assertEqual(200, status, before)
+        self.assertEqual("waiting", before["workflowStatus"])
+
+        # the platform replaces the source material of the waiting work
+        body = {"actor": OWNER, "commandId": self.next_id(),
+                "expectedVersion": before["stateVersion"],
+                "requestVersion": 1, "node": "s00",
+                "sourceReference": SOURCE_REFERENCE,
+                "reason": "the archive was refreshed",
+                "waitingNode": "n02", "waitingTicket": self.ticket}
+        status, view = self.call("POST", BASE + "/material/replace", body)
+        self.assertEqual(200, status, view)
+        # the work is working again: the dispatcher may import the intent
+        self.assertEqual("active", view["workflowStatus"])
+        self.assertEqual(1, view["materialReplacement"]["generation"])
+
+        # the explicit advance keeps the corrected status
+        status, advanced = self.call("POST", BASE + "/advance")
+        self.assertEqual(200, status, advanced)
+        self.assertEqual("active", advanced["workflowStatus"])
+
+        # the current node re-runs on a material attempt
+        status, view = self.call("GET", BASE)
+        self.assertEqual(200, status, view)
+        self.assertEqual("active", view["workflowStatus"])
+        self.assertEqual("n01", view["currentNode"])
+        current = next(entry for entry in view["nodes"]
+                       if entry["node"] == "n01")
+        self.assertEqual("running", current["state"])
+        self.assertEqual("material", current["trigger"])
+
+        # the new agent task is pending for the original session
+        status, listed = self.call(
+            "GET", BASE + "/intents?kind=agent_task&sessionId=sess-original")
+        self.assertEqual(200, status, listed)
+        pending = [intent for intent in listed["intents"]
+                   if intent["status"] == "pending"]
+        self.assertEqual(1, len(pending), listed["intents"])
+        self.assertEqual("n01", pending[0]["node"])
+        self.assertEqual(2, pending[0]["attempt"])
+        self.assertEqual("sess-original", pending[0]["sessionId"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

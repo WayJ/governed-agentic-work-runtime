@@ -1084,10 +1084,11 @@ class WorkflowEngine:
                 # fact anybody could rely on.
                 return {"decision": "noop", "work_id": work_id,
                         "status": work.get("workflow_status")}
+            changed = self._repair_stale_waiting(db, work)
             spec = self._spec_in(db, work)
             if spec is None:
-                return {"decision": "noop", "work_id": work_id}
-            changed = False
+                return {"decision": "advanced" if changed else "noop",
+                        "work_id": work_id}
             for _ in range(MAX_ADVANCE_STEPS):
                 stepped, stop = self._step(db, work, spec, now)
                 changed = changed or stepped
@@ -1096,6 +1097,46 @@ class WorkflowEngine:
             return {"decision": "advanced" if changed else "noop",
                     "work_id": work_id, "current": work.get("workflow_current"),
                     "status": work.get("workflow_status")}
+
+    def _repair_stale_waiting(self, db, work) -> bool:
+        """Reconcile a stale ``waiting`` status left by a replaced wait.
+
+        A replacement accepted before the active transition existed could
+        leave ``workflow_status = waiting`` while the revalidation had
+        already opened the head of its queue on a material attempt: the
+        work is working but looks parked, and a platform that imports an
+        agent intent only for an active workflow never resumes the
+        session. One normal pass reconciles exactly that — only the head
+        of the revalidation queue, only a material attempt that is really
+        working, never a genuine wait, a cancellation or a finalization
+        (those are turned away before this runs). The correction happens
+        once: a pass that finds nothing to repair writes nothing, so
+        repeated passes produce no event and no version churn.
+        """
+        if work.get("workflow_status") != "waiting":
+            return False
+        plan = work.get("material_revalidation") or {}
+        if plan.get("state") != "revalidating":
+            return False
+        queue = plan.get("queue") or []
+        current = work.get("workflow_current")
+        if current is None or not queue or queue[0] != current:
+            return False
+        instance = self._latest_instance(db, work["id"], current)
+        if instance is None:
+            return False
+        if instance.get("trigger") != "material":
+            return False
+        if instance.get("state") not in ("running", "submitted", "blocked"):
+            # A node that genuinely waits for material keeps its wait: the
+            # status is the fact it says it is.
+            return False
+        wait = instance.get("material_wait")
+        if isinstance(wait, dict) and wait.get("state") == "waiting":
+            return False
+        work["workflow_status"] = "active"
+        return self._persist(db, work, "WorkflowMaterialRevalidationResumed",
+                             {"node": current})
 
     def _step(self, db, work, spec, now) -> Tuple[bool, bool]:
         changed = False
@@ -3458,6 +3499,15 @@ class WorkflowEngine:
             "queue": [entry["node"] for entry in affected],
         }
         work["workflow_current"] = affected[0]["node"]
+        if work.get("workflow_status") == "waiting":
+            # The replacement ends the wait it invalidates: the node that
+            # waited for the replaced material is withdrawn and re-runs
+            # on a material attempt, so the work is working again. A
+            # platform that imports an agent intent only for an active
+            # workflow must find the status already corrected by the
+            # acceptance itself. A work that waits for nothing keeps the
+            # status it had.
+            work["workflow_status"] = "active"
         self.runtime._save(db, work, "WorkflowMaterialReplaced", {
             "generation": generation, "source_node": node_id,
             "object": object_name, "revision": revision["revision"],

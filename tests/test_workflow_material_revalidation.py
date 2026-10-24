@@ -18,6 +18,7 @@ import tempfile
 import unittest
 import uuid
 
+from work_runtime.policy import canonical
 from work_runtime.workflow import WorkflowError
 
 try:
@@ -980,6 +981,135 @@ class PositiveRevalidationTestCase(RevalidationTestCase):
         self.assertEqual("revalidated",
                          (self.runtime.get_work(self.work)
                           .get("material_revalidation") or {}).get("state"))
+
+
+class ReplacementStatusTransitionTestCase(RevalidationTestCase):
+    """The accepted replacement itself ends the wait it invalidates.
+
+    A platform dispatcher imports an agent intent only while the workflow
+    is active: a replacement that leaves a waiting work waiting strands
+    the original session behind an intent the platform may never take.
+    """
+
+    def test_the_replacement_returns_a_waiting_work_to_active(self):
+        # the work waits for material the manager is about to replace
+        self.assertEqual("waiting",
+                         self.runtime.get_work(self.work)["workflow_status"])
+        ticket = input_digest_of(self.engine, self.work, "n03")
+        payload = {"node": "s00", "source_reference": SOURCE_REFERENCE,
+                   "reason": "the archive was refreshed", "request_version": 1,
+                   "waiting_node": "n03", "waiting_ticket": ticket}
+        # the runtime command alone — no settle pass, no advance — is the
+        # transition: the acceptance is what returns the work to active
+        receipt = self.runtime.command(OWNER, uuid.uuid4().hex, self.work,
+                                       "replace_material", payload,
+                                       version_of(self.runtime, self.work))
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        self.assertEqual("active",
+                         self.runtime.get_work(self.work)["workflow_status"])
+
+
+class StaleWaitingRepairTestCase(RevalidationTestCase):
+    """A replacement persisted before the transition left the status waiting.
+
+    The revalidation itself is real and accepted: the source was replaced,
+    the queue was recorded and the head's material attempt is running.
+    Only the status correction never ran, so a working work looks parked.
+    One normal advance reconciles it — nothing is replayed, no generation
+    is spent, and a second pass changes nothing.
+    """
+
+    def force_stale_waiting_status(self):
+        """Write the pre-fix persisted shape into this test store.
+
+        The rows are exactly what the accepted replacement wrote; only the
+        ``workflow_status`` field is the stale one the pre-fix command
+        left behind. Production never writes this: a deployed store is
+        repaired by the routing pass the test exercises next, never by a
+        script or a hand-edited row.
+        """
+        db = sqlite3.connect(self.path)
+        try:
+            state = json.loads(db.execute(
+                "SELECT state FROM works WHERE id=?",
+                (self.work,)).fetchone()[0])
+            state["workflow_status"] = "waiting"
+            db.execute("UPDATE works SET state=? WHERE id=?",
+                       (canonical(state), self.work))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_the_next_normal_advance_repairs_the_stale_status_once(self):
+        receipt = self.replace()
+        self.assertEqual("accepted", receipt["decision"], receipt)
+        self.engine.advance(self.work, 2000)
+        # the revalidation is running on a material attempt, and the
+        # status is the stale one the pre-fix replacement left
+        self.force_stale_waiting_status()
+        self.assertEqual("waiting",
+                         self.runtime.get_work(self.work)["workflow_status"])
+        before_version = version_of(self.runtime, self.work)
+        before_intents = self.rows("SELECT id,status FROM workflow_intents "
+                                   "ORDER BY id", ())
+        before_objects = self.rows("SELECT name,revision,digest,body FROM "
+                                   "workflow_objects ORDER BY name,revision")
+        before_operations = self.rows("SELECT id,body FROM operations "
+                                      "WHERE work_id=?", (self.work,))
+        # one normal advance corrects the status, and nothing else moves:
+        # no replay of the source, the replacement or an adoption, no
+        # counter reset, no new attempt, no new intent
+        result = self.engine.advance(self.work, 2001)
+        self.assertEqual("advanced", result["decision"], result)
+        work = self.runtime.get_work(self.work)
+        self.assertEqual("active", work["workflow_status"])
+        self.assertEqual(before_version + 1,
+                         version_of(self.runtime, self.work))
+        self.assertEqual(
+            1, self.events().count("WorkflowMaterialRevalidationResumed"))
+        self.assertEqual(before_intents,
+                         self.rows("SELECT id,status FROM workflow_intents "
+                                   "ORDER BY id", ()))
+        self.assertEqual(before_objects,
+                         self.rows("SELECT name,revision,digest,body FROM "
+                                   "workflow_objects ORDER BY name,revision"))
+        self.assertEqual(before_operations,
+                         self.rows("SELECT id,body FROM operations "
+                                   "WHERE work_id=?", (self.work,)))
+        self.assertEqual(1, work["material_generations_used"])
+        self.assertEqual(["n01", "n02", "n03"],
+                         work["material_revalidation"]["queue"])
+        # a second pass is a stable no-op: no event, no version, no churn
+        stable_version = version_of(self.runtime, self.work)
+        stable_events = self.events()
+        again = self.engine.advance(self.work, 2002)
+        self.assertEqual("noop", again["decision"], again)
+        self.assertEqual("active",
+                         self.runtime.get_work(self.work)["workflow_status"])
+        self.assertEqual(stable_version, version_of(self.runtime, self.work))
+        self.assertEqual(stable_events, self.events())
+
+    def test_a_genuine_wait_of_the_current_node_is_never_overridden(self):
+        self.replace()
+        self.engine.advance(self.work, 2000)
+        # the manager parks the revalidated node again: a genuine wait of
+        # the current node, recorded through the ordinary command
+        parked = self.engine.command(
+            OWNER, uuid.uuid4().hex, self.work, "request_material_wait",
+            {"node": "n01", "attempt": 2,
+             "input_digest": input_digest_of(self.engine, self.work, "n01"),
+             "reason": "the standard is still missing", "request_version": 1},
+            version_of(self.runtime, self.work))
+        self.assertEqual("accepted", parked["decision"], parked)
+        self.assertEqual("waiting",
+                         self.runtime.get_work(self.work)["workflow_status"])
+        before_events = self.events()
+        before_version = version_of(self.runtime, self.work)
+        self.engine.advance(self.work, 2001)
+        work = self.runtime.get_work(self.work)
+        self.assertEqual("waiting", work["workflow_status"])
+        self.assertEqual(before_events, self.events())
+        self.assertEqual(before_version, version_of(self.runtime, self.work))
 
 
 if __name__ == "__main__":  # pragma: no cover
