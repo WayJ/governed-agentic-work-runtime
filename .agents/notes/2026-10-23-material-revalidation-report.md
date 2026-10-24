@@ -308,6 +308,68 @@ exists, not a gap to be filled later.
 | `7f74bdb` | fix: the published validation judges the new reference, and nothing settles an invalidated attempt |
 | `6609bef` | test: the accepted workflow after a controlled revalidation |
 | `4dd7408` | docs: the report records the review-fix evidence |
+| `2f77fda` | fix: the replacement returns a waiting work to active, and one advance repairs the stale status |
+
+## The lifecycle fix wave (2026-10-24)
+
+A deployed instance exposed it: `request_material_wait` set
+`workflow_status = waiting`, a later `POST /material/replace` was
+accepted and the revalidation opened the head's material attempt — but
+the status stayed `waiting`, because `_replace_material` set the cursor
+without a status transition and neither `_open_attempt` nor `_activate`
+writes one. A platform dispatcher that imports an agent intent only for
+an active workflow therefore never resumed the original session.
+
+Two narrow repairs, both in `work_runtime/workflow.py`:
+
+1. **The acceptance is the transition.** `_replace_material` returns a
+   `waiting` work to `active` — only `waiting → active`, and only
+   because the replacement invalidates exactly the wait that set it. A
+   work that waits for nothing keeps the status it had.
+2. **One normal advance reconciles the persisted pre-fix shape.** For a
+   store where the replacement was already accepted under the old code,
+   `advance` repairs a stale `waiting` — only while the revalidation is
+   `revalidating`, only for the head of its queue, only when that
+   node's current attempt is a **material** attempt that is really
+   `running`, `submitted` or `blocked`, and never when the current node
+   genuinely waits for material (a cancelling or finalized work is
+   turned away before the pass). The correction is recorded once as
+   `WorkflowMaterialRevalidationResumed`; a pass that finds nothing to
+   repair writes nothing. No SQL patch, no new generation, no re-run of
+   the source, the replacement or an adoption, and no counter reset.
+
+`work_runtime/runtime.py` and `work_runtime/adapters.py` are untouched.
+
+### The lifecycle-fix RED/GREEN
+
+| step | RED | GREEN |
+|---|---|---|
+| the transition | the raw accepted command left `workflow_status = waiting` (1 failure) | `ReplacementStatusTransitionTestCase` → OK |
+| the stale persisted shape | the next normal advance was a no-op over `waiting` (1 failure) | `StaleWaitingRepairTestCase` → the repair fires once, the objects/operations/intents/generation/queue are unchanged, and the second pass is byte-stable |
+| the HTTP surface | the view answered `workflowStatus: waiting` after replace and advance (1 failure) | `ReplacementLifecycleHttpTestCase` → `active`, the head on a material attempt, exactly one new pending `agent_task` intent for the original bound session |
+| the genuine wait | — (guard pin, green before and after) | `test_a_genuine_wait_of_the_current_node_is_never_overridden` → the ordinary park keeps `waiting` across passes, no repair event |
+
+3 failures, 1 green guard observed against `2f77fda^`; after the fix the
+focused regressions are green: `test_workflow_material_revalidation`
+(**29 tests**, 26 + 3), `test_workflow_material_revalidation_http`
+(**18 tests**, 17 + 1), plus the adjacent `test_workflow_material_wait`
+(60), `test_workflow_material_wait_http` (19), `test_workflow_spec` (35)
+— **161 tests, OK** — and `test_workflow_engine`,
+`test_workflow_finalization`, `test_workflow_http` — **114 tests, OK**.
+Gates: `check_docs.py` (127 files, 682 links, 0 broken), `compileall`,
+`demo` — all clean. The full-suite count moves 1603 → 1607; the byte pin
+of `runtime.py` still holds.
+
+The stale persisted shape is manufactured **in the test store only**
+(`force_stale_waiting_status` rewrites the work row exactly as the
+pre-fix command left it); production code never writes the store outside
+its ordinary command and routing paths.
+
+### The exact wire impact
+
+None. No route, field, code or status value changes: a replacement that
+already behaved correctly behaves identically, and the only observable
+difference is the corrected `workflowStatus` on the paths above.
 
 Nothing was merged and nothing was pushed: the branch is left for the
 integration worker.
