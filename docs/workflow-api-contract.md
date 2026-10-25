@@ -686,6 +686,15 @@ rule override — the cap is a fixed core bound of one per workflow.
  "commandId": "rework-1", "expectedVersion": 42}
 ```
 
+The envelope is **exact**: the accepted fields are `actor` (or
+`actorId`), `workId`, `commandId`, `expectedVersion`, `node`, `attempt`,
+`inputDigest` and `reason` — nothing else. There is no `requestVersion`
+on this route, and any unknown field — a caller `budget`, `maxAttempts`,
+`forcePass`, a rule override, or a stray `requestVersion` — is a `400
+REWORK_INVALID` naming the refused fields, **before any command is
+issued and before anything is written**. A whitespace-only `reason` is
+`400 REWORK_INVALID` the same way: the owner's own words are required.
+
 * `node`, `attempt` and `inputDigest` name exactly the terminally
   failed agent attempt — the values the `candidateRework` projection of
   the instance view already publishes. A wrong attempt is `409

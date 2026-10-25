@@ -144,12 +144,44 @@ real owner identity stays in its own signed command audit), and the
 rework attempt inherits the failed attempt's `material_generation`
 (asserted in `AuthorizedPathTestCase`).
 
+## The second review wave (the strict envelope)
+
+The root's rerun accepted the slice (19 tests OK, the input-drift guard
+included) and named one HTTP contract gap: the service mapped the known
+fields into the strict core payload but **ignored unknown body keys**,
+so a private request carrying `budget`/`maxAttempts`/`forcePass` was
+accepted (and silently ignored) — contrary to the no-caller-budget
+contract.
+
+The envelope is now exact at the bridge: the accepted fields are
+`actor` (or `actorId`), `workId`, `commandId`, `expectedVersion`,
+`node`, `attempt`, `inputDigest` and `reason`. Any other key — including
+a `requestVersion`, which this route does not speak — is a
+`400 REWORK_INVALID` naming the refused fields, before any command is
+issued and before anything is written. A whitespace-only `reason` is
+refused the same way at the bridge, and the core's own
+`authorize_rework` rejects it as a shape misuse (`WorkflowError`) so the
+strictness does not depend on the caller's path. The material-wait
+commands' reason rules are untouched.
+
+RED: the crafted negatives — `budget`, `maxAttempts`, `forcePass`,
+`ruleOverride`, `requestVersion` extras and a `"   "` reason — were
+**accepted** (HTTP failures), and the core raised nothing on the blank
+reason. GREEN: `test_workflow_rework` → **15 tests, OK** and
+`test_workflow_rework_http` → **5 tests, OK** (20 together), plus the
+adjacent `test_workflow_material_revalidation`, `…_http`,
+`test_workflow_material_wait`, `…_http`, `test_workflow_spec`,
+`test_workflow_http` → **208 tests, OK**. The valid platform request
+(`actor=platform` alone with `workId`), the exact dedup and every
+counter behaviour are unchanged.
+
 ## The commits
 
 | commit | content |
 |---|---|
 | `fa12ab1` | feat: the owner may authorize one controlled candidate rework after a terminal failure |
 | `9567a42` | fix: the rework judges the material the failure judged, never a silently adopted revision |
+| `<envelope wave>` | fix: the rework envelope is exact — no caller budget, no force, no rule override, no blank reason |
 
 Nothing was merged and nothing was pushed: the branch is left for the
 integration worker.

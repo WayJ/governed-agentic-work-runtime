@@ -41,6 +41,13 @@ MAX_LIST_LIMIT = 64
 SECRET_FIELDS = ("token", "secret", "password", "passwd", "credential",
                  "authorization", "api_key", "apikey", "cookie", "session_key")
 
+# The exact rework envelope the private route accepts. There is no
+# requestVersion on this route, and nothing that could carry a caller
+# budget or an override: an unknown key is a 400 before any command.
+REWORK_ENVELOPE_FIELDS = frozenset(
+    {"actor", "actorId", "workId", "commandId", "expectedVersion",
+     "node", "attempt", "inputDigest", "reason"})
+
 # Engine rejection code -> HTTP status. Unknown codes are reported as 422
 # (a business rejection) rather than as a server fault.
 STATUS_BY_CODE = {
@@ -1115,6 +1122,15 @@ class WorkflowService:
             return 409, _error("WORKFLOW_FINALIZED",
                                "The workflow was accepted and frozen; it accepts "
                                "no further mutation")
+        # the envelope is exact: no caller budget, no force, no rule
+        # override and no requestVersion may ride this route, not even
+        # as an ignored extra — an unknown field is refused before any
+        # command is issued and nothing is written
+        unknown = sorted(set(body) - REWORK_ENVELOPE_FIELDS)
+        if unknown:
+            return 400, _error("REWORK_INVALID",
+                               "unknown fields are refused: "
+                               + ", ".join(unknown))
         node_id = body.get("node")
         attempt = body.get("attempt")
         digest_value = body.get("inputDigest")
@@ -1130,7 +1146,7 @@ class WorkflowService:
             return 400, _error("REWORK_INVALID",
                                "inputDigest is required: the failed "
                                "attempt's current input digest")
-        if not isinstance(reason, str) or not reason:
+        if not isinstance(reason, str) or not reason.strip():
             return 400, _error("REWORK_INVALID",
                                "reason is required: the owner's own words")
         actor, error = self._request_actor(body)

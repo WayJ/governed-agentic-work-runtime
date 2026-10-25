@@ -3609,8 +3609,9 @@ class WorkflowEngine:
         if not isinstance(node_id, str) or type(attempt) is not int:
             raise WorkflowError("authorize_rework requires a node id and "
                                 "an attempt")
-        if (not isinstance(reason, str) or not reason
+        if (not isinstance(reason, str) or not reason.strip()
                 or len(reason) > MAX_WAIT_REASON_CHARS):
+            # the owner's own words: whitespace is not a reason
             raise WorkflowError("the reason must be a nonempty bounded string")
         if (not isinstance(payload["input_digest"], str)
                 or not payload["input_digest"]):

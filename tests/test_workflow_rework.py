@@ -309,6 +309,8 @@ class ReworkGuardTestCase(ReworkTestCase):
         with self.assertRaises(WorkflowError):
             self.authorize(reason="")
         with self.assertRaises(WorkflowError):
+            self.authorize(reason="   ")
+        with self.assertRaises(WorkflowError):
             self.engine.command(
                 OWNER, uuid.uuid4().hex, self.work, "authorize_rework",
                 {"node": "n01", "attempt": 4,

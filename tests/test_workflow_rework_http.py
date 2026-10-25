@@ -272,6 +272,27 @@ class ReworkHttpTestCase(unittest.TestCase):
         self.assertEqual("finished", work["workflow_status"])
         self.assertNotIn("candidate_rework", work)
 
+    def test_unknown_fields_and_a_blank_reason_are_refused(self):
+        # the envelope is exact: no caller budget, no force, no rule
+        # override, and no requestVersion on this route
+        for extra in ({"budget": 1}, {"maxAttempts": 9},
+                      {"forcePass": True}, {"ruleOverride": "skip"},
+                      {"requestVersion": 1}):
+            status, body = self.call("POST", BASE + "/rework",
+                                     self.rework_body(**extra))
+            self.assertEqual(400, status, body)
+            self.assertEqual("REWORK_INVALID", body["error"]["code"])
+        # a whitespace-only reason is no reason
+        status, body = self.call("POST", BASE + "/rework",
+                                 self.rework_body(reason="   "))
+        self.assertEqual(400, status, body)
+        self.assertEqual("REWORK_INVALID", body["error"]["code"])
+        # nothing was written by any refusal
+        work = self.runtime.get_work(WORK_ID)
+        self.assertEqual("finished", work["workflow_status"])
+        self.assertNotIn("candidate_rework", work)
+        self.assertEqual(4, self.current_attempt("n01"))
+
     def test_the_wrong_attempt_ticket_and_node(self):
         status, body = self.call("POST", BASE + "/rework",
                                  self.rework_body(attempt=3))
