@@ -20,7 +20,7 @@ completes; and a failed reworked attempt is terminal.
 |---|---|---|
 | C1 | `work_runtime/workflow.py` — the command `authorize_rework`, the `rework` trigger honoured by the routing, the `candidateRework` projection | shipped |
 | C2 | `work_runtime/workflow_server.py` — `POST /v1/workflows/instances/{workId}/rework` + the `rework` reply block | shipped |
-| C3 | `tests/test_workflow_rework.py` — 14 tests over a real store in the deployed terminal shape | shipped |
+| C3 | `tests/test_workflow_rework.py` — 15 tests over a real store in the deployed terminal shape | shipped |
 | C4 | `tests/test_workflow_rework_http.py` — 4 tests over a real service on a real store | shipped |
 | C5 | docs — `workflow-runtime.md` (§14), `workflow-api-contract.md`, `verification.md` (W176–W177) | shipped |
 
@@ -116,11 +116,40 @@ attempt 4 failing the published validation, and the terminal
   observation for the workbench; only the command, under the owner's
   authority and a compare-and-swap, authorizes anything.
 
+## The review-fix wave (the coordinator's input-drift guard)
+
+The review found a real hole: `_activate` re-pins a node's declared
+inputs from the **current** object revisions, so a declared input the
+manager revised after the failure (`revise_object`, the ordinary
+command) would have been silently adopted by the reworked attempt under
+the failed ticket. The rework now compares the failed attempt's pinned
+revisions against the current rows for every declared input and the
+subject, and refuses with `INPUT_DEPENDENCIES_REQUIRE_REVALIDATION`
+naming both revisions — the reworked attempt judges exactly the
+material the failure judged. The ticket still moves (the input
+generation), the source references may not.
+
+RED: the crafted negative (`revise_object` to `sources` revision 3,
+then the authorization under the failed ticket) was **accepted** and
+opened attempt 5 on the new revision. GREEN after the guard:
+`test_workflow_rework` → **15 tests, OK** (the happy path also pins the
+invariant now: attempt 5 re-pins attempt 4's input revisions exactly);
+the adjacent `test_workflow_material_revalidation`,
+`…_http` → 47 tests, OK.
+
+The two wiring notes from the coordinator are confirmed as implemented:
+`actor=platform` alone (the bridge never requires `actorId` alongside;
+`actor`/`actorId` are one principal, two spellings — the platform's
+real owner identity stays in its own signed command audit), and the
+rework attempt inherits the failed attempt's `material_generation`
+(asserted in `AuthorizedPathTestCase`).
+
 ## The commits
 
 | commit | content |
 |---|---|
 | `fa12ab1` | feat: the owner may authorize one controlled candidate rework after a terminal failure |
+| `9567a42` | fix: the rework judges the material the failure judged, never a silently adopted revision |
 
 Nothing was merged and nothing was pushed: the branch is left for the
 integration worker.
