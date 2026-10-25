@@ -263,7 +263,12 @@ judged, never that something was checked when it was not.
 * `outputBinding` is the binding a human node's named record was made
   under: the actor who decided, the ingress source it came through, the
   node and attempt, the subject's revision and digest, the input digest
-  and the digest of the record itself.
+  and the digest of the record itself. The record is **bound to the
+  decision that carried it**: it becomes the node's output only when that
+  decision is the one the node follows, that is, when it is verified. A
+  record of an unverified or refused decision is never the node's output
+  and never satisfies another decision's output requirement — the node
+  waits for the record of the decision it follows.
 
 The criterion report is ordered by the definition's declared criteria and
 keeps the judges apart: a `HUMAN` entry names the person who decided
@@ -316,6 +321,12 @@ evidence intake, and the command is deduplicated under (ingress source,
 `commandId`). The command's actor is the **ingress source** — the platform
 channel configured for the node's evidence kind — and the actual decider
 travels in `actorId`.
+
+The decision is judged **after** the trusted verifier has judged its
+evidence. The route settles the workflow on the decision that was made: an
+unverified proof is never routed on, and it is never passed over in favour
+of an older decision either — while it waits for the verifier the node
+keeps waiting. A decision the family refuses never becomes an approval.
 
 A human node may declare, in its published definition, which decisions
 need its named record: `output.on_decisions: ["approved"]`. The default is
@@ -916,6 +927,21 @@ Every persisted report entry carries, at judgment time:
 review) or `HUMAN` (a decision). The report is returned in the read model
 under `nodes[].checkResults`, so a historical judgment is reconstructible
 from the stored record and not from the current state of the node.
+
+**`checkResults` is the current position, not a history window.** It holds
+**at most one entry per declared criterion** — the report of the judgment
+that covered that criterion last — in the order the definition declares
+the criteria. It is never a slice of the report history: an attempt that
+produced many reports (a node that waited, was judged again and again)
+serves the judgment that is in force, so a reader never has to pick a
+winner and never sees a stale verdict under a live criterion. The history
+itself is untouched — every report the attempt produced is in the store and
+every transition is in the event log; the read model only decides what it
+*serves*.
+
+A judgment that produced **two different verdicts** for the same fact is
+reported as `conflict`, with the reason that says so — neither of the two
+verdicts is presented as the truth, and the difference is never dropped.
 
 The automatic and wait nodes produce the same kind of report from the
 validator that judged their output. The report is checked at the core

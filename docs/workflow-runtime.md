@@ -622,6 +622,102 @@ record, and invalidates the affected approval by exact version. A callback
 for a completed, superseded or cancelled attempt is refused
 (`WORKFLOW_ATTEMPT_STALE`): it can never revive a finished instance.
 
+### One judgment is one judgment, however often the pass runs
+
+A pass that re-judges the **same** decision is still one judgment. The
+criterion report of a decision is merged into the node's own evidence
+**once**: the identity of a judgment is its content — the criterion, the
+verdict, the reason, the evidence it points at, the digests it was made
+against and the actor who made it — and **not** the moment the routing
+pass re-derived it. So a node that waits for a missing named output
+(`WORKFLOW_OUTPUT_MISSING`) keeps exactly the same evidence and the same
+audit trail however often the pass runs: the pass writes nothing at all,
+because nothing changed — no second report, no second
+`WorkflowOutputMissing` event, no state version move.
+
+A **different** judgment is judged and recorded again, and nothing is
+swallowed: a new decision, a revised subject or different inputs produce a
+different report and are merged again, a new attempt starts with an empty
+evidence of its own, and a decision that carries the named record still
+completes the node. The waiting itself is unchanged: a missing output is
+never mistaken for an acceptance.
+
+### The decision is judged after it is verified
+
+A decision is admitted as evidence and is still waiting for the trusted
+verifier when the command returns. The routing pass therefore waits for
+the verifier instead of settling the node on the **previous** decision:
+
+* the engine asks the runtime's verifier to judge the admitted evidence
+  before its own settle pass, so the routing follows the decision that was
+  made — never the one before it;
+* while a decision for this node, attempt and subject is still pending
+  verification, the settle settles **nothing**: an unverified proof is
+  neither routed on nor passed over in favour of an older decision. The
+  node keeps waiting, and the deferral writes nothing.
+
+Nothing is relaxed for it: the authority, the compare-and-swap, the attempt
+rules and the output requirements are untouched, an unverified or invalid
+proof never becomes an approval, and the decision before it stays on the
+record — its evidence, its report and its event.
+
+### The read model shows the judgment that is in force
+
+`instance()` and `attempts()` serve the **current position** of an attempt,
+not an arbitrary window of its history: one entry per declared criterion,
+in the declaration order, taken from the judgment that covered that
+criterion last. The engine records the judgments it applied — the
+decision, the output validation, the independent review — so the position
+is never guessed from a timestamp and never mixes criteria, attempts or
+material.
+
+The history itself is untouched: every report an attempt produced stays in
+`check_results`, every transition stays in the event log, and nothing is
+cleaned. A reader that folds the reports by hand therefore never has to
+pick a winner — there is at most one entry per criterion.
+
+A judgment that does not agree with **itself** is a conflict, not a
+repetition. The identity of a judgment is the fact it judged — a
+decision's proof, or a material and the validator that judged it — and the
+report follows from that fact. A second, different report under the same
+identity is a disagreement about the same fact: the criteria that
+disagree are named, and the read model reports them as `conflict` rather
+than showing one of the two verdicts as if it were the truth. Nothing is
+swallowed, and the repeated re-derivation of one judgment stays one
+judgment.
+
+### A named output is bound to the decision that produced it
+
+The named record a decision carries is written **inside the decision's own
+compare-and-swap guarded command**, and the decision's evidence is
+verified after that command. A decision the family refuses has therefore
+already written its record — and a record that is not bound to a decision
+could satisfy the output requirement of a decision that never carried it.
+
+So the record is **bound** to the decision that carried it. The command
+writes it and keeps it as a *candidate* on the node; the settle adopts it
+only when the decision the node follows is that very decision — that is,
+when it is verified. The adoption sets the node's output, the binding
+(which now names the decision), the quality, the output judgment and the
+`WorkflowOutputAccepted` event.
+
+What follows from it:
+
+* the record of an **unverified** or **family-refused** decision never
+  becomes the node's output, never satisfies another decision's output
+  requirement and is never a downstream basis. The node waits — with the
+  missing-output finding, explicitly — for the record of the decision it
+  follows;
+* a later legitimate decision brings its **own** record: lifting the wait
+  does not make a refused record reusable;
+* the history is never rewritten: the object row and the evidence stay,
+  and the candidate remains on the record as a diagnostic — it is never
+  silently chosen as the current output.
+
+A **legacy** node keeps its output, read-only. A legacy node whose output
+cannot be bound to a decision waits — the association is never invented,
+and no timestamp is used to guess it.
+
 ## 5. Obligations stay authoritative
 
 A workflow is an execution *organization*, not authority:

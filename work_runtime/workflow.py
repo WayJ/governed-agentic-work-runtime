@@ -554,9 +554,17 @@ class WorkflowEngine:
         A rejected command still settles when it changed stored state (a
         rejected candidate fails its node and opens a rework attempt), so
         the settle pass runs for both outcomes.
+
+        A **decision** is admitted as evidence and is still waiting for
+        the trusted verifier when the command returns. The settle pass
+        would then judge the *previous* decision, so the verifier is asked
+        to judge the admitted evidence first: the routing follows the
+        decision that was made, never the one before it.
         """
         receipt = self.runtime.command(actor, command_id, work_id, kind, payload,
                                        expected_version)
+        if kind == "record_decision" and receipt.get("decision") == "accepted":
+            self.runtime.verify_pending(work_id)
         try:
             self.advance(work_id, int(time.time()) if now is None else int(now))
         except Exception as error:  # pragma: no cover - defensive, surfaced durably
@@ -1817,6 +1825,14 @@ class WorkflowEngine:
     def _settle_human(self, db, work, spec, node_id, instance, now) -> bool:
         node = spec["nodes"][node_id]
         subject = instance.get("subject")
+        pending = self._pending_decision(db, work, node, node_id, instance)
+        if pending is not None:
+            # A decision has been admitted and the trusted verifier has not
+            # judged it yet. The node's position is not settled until it
+            # has: an unverified proof is never routed on, and it is never
+            # passed over in favour of an older decision either — the node
+            # waits for the verifier.
+            return self._expire_if_due(db, work, instance, now)
         candidates = self._find_decisions(db, work, node, subject, node_id,
                                           instance["attempt"])
         if not candidates:
@@ -1866,11 +1882,21 @@ class WorkflowEngine:
                          "A declared criterion has no verdict in the decision",
                          checks=missing),
                 "WorkflowNodeCheckResultsMissing")
+        # The decision is a judgment: its report belongs to the node's own
+        # evidence — once, however often the pass re-derives it — and the
+        # judgment itself is recorded, so the read model can project the
+        # position that is in force.
+        self._merge_report(node, instance, report)
+        self._record_judgment(
+            node, instance, "decision", proof["event_id"], report,
+            method="HUMAN", decision=verdict, eventId=proof["event_id"],
+            actor=actor, attempt=instance["attempt"],
+            inputDigest=instance.get("input_digest"),
+            outputDigest=(subject or {}).get("digest"))
         shortfalls = self._criterion_shortfalls(node, report, "HUMAN")
         if verdict == "approved" and shortfalls:
             # An approval that carries a failing required criterion does not
             # complete the node. The shortage is kept, exactly as reported.
-            instance["check_results"] = self._ordered_report(                node, (instance.get("check_results") or []) + report)
             instance["actor"] = actor
             return self._block_with_finding(
                 db, work, instance,
@@ -1883,7 +1909,6 @@ class WorkflowEngine:
             # neither an approval nor a rejection: it does not complete the
             # node and it does not open a rework attempt.
             instance["actor"] = actor
-            instance["check_results"] = self._ordered_report(                node, (instance.get("check_results") or []) + report)
             instance["material_request"] = {
                 "items": data.get("items") or [],
                 "reason": data.get("reason") or "",
@@ -1904,27 +1929,258 @@ class WorkflowEngine:
             # record is invented for a decision that must not have one.
             instance["quality"] = {"declared": True, "mode": "exempt",
                                    "validator": None}
-        if output and output_required and not instance.get("output"):
-            # The node declared a named record and the record is not on the
-            # node yet: the decision stands, but nothing downstream is
-            # routed on a node whose own output is missing.
-            instance["actor"] = actor
-            instance["check_results"] = self._ordered_report(                node, (instance.get("check_results") or []) + report)
-            return self._block_with_finding(
-                db, work, instance,
-                _finding("WORKFLOW_OUTPUT_MISSING",
-                         "The declared output has not been produced yet",
-                         node=node_id, object=output.get("object")),
-                "WorkflowOutputMissing")
+        if output and output_required:
+            candidate = self._bound_output(instance, proof)
+            if candidate is None:
+                # The node declared a named record and the record of **this**
+                # decision is not on the node: the decision stands, but
+                # nothing downstream is routed on a node whose own output
+                # is missing. A record another decision carried — an
+                # unverified one, or one the family refused — is a candidate
+                # on the record, never this node's output.
+                instance["actor"] = actor
+                return self._block_with_finding(
+                    db, work, instance,
+                    _finding("WORKFLOW_OUTPUT_MISSING",
+                             "The declared output has not been produced yet",
+                             node=node_id, object=output.get("object")),
+                    "WorkflowOutputMissing")
+            # The record is the one this decision carried: it becomes the
+            # node's output.
+            self._adopt_output(db, work, node, instance, candidate)
         instance["actor"] = actor
         instance["outcome"] = verdict
         instance["state"] = "completed"
-        instance["check_results"] = self._ordered_report(            node, (instance.get("check_results") or []) + report)
         instance["decision_event_id"] = proof["event_id"]
         self._finish_intent(db, work, instance)
         self._save_instance(db, work, instance, "WorkflowNodeCompleted",
                             {"outcome": verdict})
         return True
+
+    @staticmethod
+    def _report_key(entry: Dict[str, Any]) -> str:
+        """The identity of one criterion verdict, without the moment of it.
+
+        The same judgment re-derived by a later routing pass differs only
+        in the moment it was recorded. That moment is not part of what was
+        judged, so it is not part of the judgment's identity.
+        """
+        return canonical({key: value for key, value in entry.items()
+                          if key != "at"})
+
+    def _merge_report(self, node, instance, report) -> bool:
+        """Merge a criterion report into the node's own evidence, once.
+
+        A report is the record of one judgment. A routing pass that
+        re-settles the same decision re-derives the same judgment, and
+        appending it again would make the node's evidence grow with every
+        pass of the pump — and, because the node body then differs from
+        the stored one, write a new audit event for a decision that never
+        changed.
+
+        The judgment is recognised by its content, not by its time: the
+        same verdicts against the same digests are one judgment, however
+        often the routing pass re-derives them. A different decision, a
+        revised subject or different inputs produce a different report and
+        are merged again, so nothing is swallowed and no verdict is lost.
+        """
+        existing = {self._report_key(entry)
+                    for entry in instance.get("check_results") or []}
+        fresh = [entry for entry in report or []
+                 if self._report_key(entry) not in existing]
+        if not fresh:
+            return False
+        instance["check_results"] = self._ordered_report(
+            node, (instance.get("check_results") or []) + fresh)
+        return True
+
+    def _pending_decision(self, db, work, node, node_id, instance):
+        """The decision that has been admitted and is not verified yet.
+
+        A proof waits for the trusted verifier between its admission and
+        the verifier's judgement. It is not a decision the engine may act
+        on — and it is not one the engine may ignore either: the newest
+        admitted decision is the current position, so the node waits for
+        the verifier instead of settling on the decision before it.
+        """
+        kind = node.get("evidence_kind")
+        if not kind:
+            return None
+        subject = instance.get("subject") or {}
+        attempt = instance.get("attempt")
+        for proof in self.runtime._proofs(db, work["id"]):
+            if proof.get("status") != "pending_verification":
+                continue
+            if proof.get("kind") != kind:
+                continue
+            data = proof.get("data") or {}
+            if data.get("decision") not in ("approved", "rejected",
+                                            "request_material"):
+                continue
+            if data.get("node") != node_id or data.get("attempt") != attempt:
+                continue
+            if data.get("digest") != subject.get("digest"):
+                continue
+            if data.get("revision") != subject.get("revision"):
+                continue
+            return proof
+        return None
+
+    def _record_judgment(self, node, instance, kind, identity, report,
+                         **meta) -> None:
+        """Record the judgment the engine just applied to this attempt.
+
+        The judgments are the attempt's **current position**: what the
+        runtime selected, judged and recorded — not a history window and
+        never a guess from a timestamp. The read model projects them, so a
+        reader sees the judgment that is in force and not the oldest one
+        that happens to fit.
+
+        The same judgment, re-derived by a later routing pass, is
+        recognised by its identity and not recorded again: the waiting
+        stays stable and the node body does not move.
+
+        A judgment that yields **two different verdicts** is not a
+        repetition but a conflict, and it is never swallowed: the criteria
+        that disagree are marked, and the read model says so instead of
+        showing one of the two as if it were the truth.
+        """
+        judgments = list(instance.get("judgments") or [])
+        for judgment in judgments:
+            if (judgment.get("kind") == kind
+                    and judgment.get("identity") == identity):
+                conflicts = judgment.get("conflicts") or []
+                changed = [identifier for identifier
+                           in self._conflicting_criteria(
+                               judgment.get("checks"), report)
+                           if identifier not in conflicts]
+                if changed:
+                    judgment["conflicts"] = sorted(conflicts + changed)
+                return
+        wanted = {self._report_key(entry) for entry in report or []}
+        stored = {}
+        for entry in instance.get("check_results") or []:
+            key = self._report_key(entry)
+            if key in wanted and entry.get("checkId") not in stored:
+                stored[entry.get("checkId")] = entry
+        judgment = {"kind": kind, "identity": identity,
+                    "checks": self._ordered_report(node, list(stored.values()))}
+        judgment.update(meta)
+        judgments.append(judgment)
+        instance["judgments"] = judgments
+
+    def _conflicting_criteria(self, stored, report) -> List[str]:
+        """The criteria whose verdict changed under the same judgment.
+
+        The identity of a judgment is the fact it judged — a proof, or a
+        material and its validator. The report it produced follows from
+        that fact, so a second, different report under the same identity
+        is a disagreement about the same fact: it is named, never dropped.
+        """
+        keys = {}
+        for entry in stored or []:
+            keys[entry.get("checkId")] = self._report_key(entry)
+        reported = {}
+        for entry in report or []:
+            reported[entry.get("checkId")] = self._report_key(entry)
+        changed = []
+        for identifier, key in reported.items():
+            if identifier not in keys or keys[identifier] != key:
+                changed.append(identifier)
+        for identifier in keys:
+            if identifier not in reported:
+                changed.append(identifier)
+        return sorted(set(identifier for identifier in changed
+                          if isinstance(identifier, str)))
+
+    @staticmethod
+    def _conflict_entry(entry):
+        """The report of a criterion whose judgment did not agree with itself.
+
+        A judgment that yields two different verdicts is a conflict, not a
+        repetition. The reader is told, instead of being shown one of the
+        two as if it were the truth.
+        """
+        conflicted = dict(entry)
+        conflicted["verdict"] = "conflict"
+        conflicted["reason"] = ("the same judgment produced two different "
+                                "verdicts for this criterion")
+        conflicted["evidence"] = []
+        return conflicted
+
+    def _record_output_judgment(self, node, instance, report, material,
+                                validator_id, validator_version, **meta):
+        """Record the judgment an output validation produced.
+
+        The identity of that judgment is the material it judged and the
+        validator that judged it: the same material, judged by the same
+        validator, is one judgment, however often the pass re-derives it.
+        """
+        identity = digest([digest(material), validator_id, validator_version])
+        judgment = {"method": "PROGRAM", "validator": validator_id,
+                    "validatorVersion": validator_version,
+                    "outputDigest": digest(material),
+                    "attempt": instance.get("attempt"),
+                    "inputDigest": instance.get("input_digest")}
+        judgment.update(meta)
+        self._record_judgment(node, instance, "output", identity, report,
+                              **judgment)
+
+    def _record_review_judgment(self, node, instance, report, proof, **meta):
+        """Record the judgment an independent review produced."""
+        identity = proof.get("event_id")
+        judgment = {"method": "AGENT", "eventId": identity,
+                    "attempt": instance.get("attempt"),
+                    "inputDigest": instance.get("input_digest")}
+        judgment.update(meta)
+        self._record_judgment(node, instance, "review", identity, report,
+                              **judgment)
+
+    def _current_checks(self, node, instance) -> List[Dict[str, Any]]:
+        """The checks that are in force for this attempt, per criterion.
+
+        One entry per declared criterion: the report of the judgment that
+        covered it last. A criterion that no judgment covered yet is
+        simply absent — nobody judged it, so it is not a pass.
+
+        The history stays in the store — every report the attempt ever
+        produced, and every event — and this is what the read model
+        *serves*: the current position, not an arbitrary window of the
+        past. Nothing here is guessed from a timestamp.
+        """
+        judgments = instance.get("judgments") or []
+        if not judgments:
+            # A row that predates the judgment record: the stored report
+            # is what the engine has, until it settles the attempt again.
+            return (instance.get("check_results") or [])[:MAX_VIEW_FINDINGS]
+        declared = {}
+        order = {}
+        for index, declaration in enumerate(self._check_declarations(node)):
+            identifier = declaration.get("id")
+            if not isinstance(identifier, str):
+                continue
+            declared[identifier] = declaration.get("method")
+            order[identifier] = index
+        chosen: Dict[str, Dict[str, Any]] = {}
+        for judgment in judgments:
+            method = judgment.get("method")
+            conflicts = set(judgment.get("conflicts") or [])
+            for entry in judgment.get("checks") or []:
+                identifier = entry.get("checkId")
+                if not isinstance(identifier, str) or identifier not in declared:
+                    continue
+                wanted = declared[identifier]
+                if wanted is not None and wanted != method:
+                    # The criterion belongs to another judge.
+                    continue
+                if identifier in conflicts:
+                    # The judgment did not agree with itself: the reader is
+                    # told, rather than shown one of the two verdicts.
+                    entry = self._conflict_entry(entry)
+                chosen[identifier] = entry
+        entries = [chosen[identifier] for identifier in
+                   sorted(chosen, key=lambda name: order.get(name, len(order)))]
+        return entries[:MAX_VIEW_FINDINGS]
 
     def _criterion_findings(self, node, items) -> List[Dict[str, Any]]:
         """The quality of a criterion report, checked at the core boundary.
@@ -2178,6 +2434,8 @@ class WorkflowEngine:
             validator_id=(review.get("rubric") or {}).get("validator"),
             validator_version=(review.get("rubric") or {}).get("validator_version"))
         instance["check_results"] = self._ordered_report(            node, (instance.get("check_results") or []) + report)
+        self._record_review_judgment(node, instance, report, proof,
+                                     producer=producer, outputDigest=result["digest"])
         shortfalls = self._criterion_shortfalls(node, report, "AGENT")
         if data.get("verdict") != "passed" or shortfalls:
             instance["state"] = "failed"
@@ -2499,6 +2757,8 @@ class WorkflowEngine:
         if findings:
             instance["findings"] = _bounded(findings)
             instance["check_results"] = self._ordered_report(node, check_report)
+            self._record_output_judgment(node, instance, check_report, payload,
+                                         validator_id, validator_version)
             instance["quality"] = {
                 "declared": True, "mode": "rejected",
                 "validator": ({"id": validator_id, "version": validator_version}
@@ -2519,6 +2779,8 @@ class WorkflowEngine:
             reference = self._write_object(db, work["id"], output["object"], payload)
             instance["output"] = reference
         instance["check_results"] = self._ordered_report(node, check_report)
+        self._record_output_judgment(node, instance, check_report, payload,
+                                     validator_id, validator_version)
         instance["quality"] = {
             "declared": True, "mode": "validated",
             "validator": ({"id": validator_id, "version": validator_version}
@@ -2740,6 +3002,8 @@ class WorkflowEngine:
         if findings:
             instance["findings"] = _bounded(findings)
             instance["check_results"] = self._ordered_report(node, check_report)
+            self._record_output_judgment(node, instance, check_report, payload,
+                                         validator_id, validator_version)
             instance["quality"] = {
                 "declared": True, "mode": "rejected",
                 "validator": ({"id": validator_id, "version": validator_version}
@@ -2757,6 +3021,8 @@ class WorkflowEngine:
             reference = self._write_object(db, work["id"], output["object"], payload)
             instance["output"] = reference
         instance["check_results"] = self._ordered_report(node, check_report)
+        self._record_output_judgment(node, instance, check_report, payload,
+                                     validator_id, validator_version)
         instance["quality"] = {
             "declared": True, "mode": "validated",
             "validator": ({"id": validator_id, "version": validator_version}
@@ -2983,6 +3249,8 @@ class WorkflowEngine:
                               "name": reference["name"]}
         instance["output"] = reference
         instance["check_results"] = self._ordered_report(node, check_report)
+        self._record_output_judgment(node, instance, check_report, result,
+                                     validator_id, validator_version)
         instance["validator"] = {"id": validator_id, "version": validator_version}
         instance["quality"] = {"declared": True, "mode": "validated",
                                "validator": {"id": validator_id,
@@ -4124,16 +4392,21 @@ class WorkflowEngine:
         if output and output_required:
             # The named record the decision carries is judged and written in
             # the same compare-and-swap guarded command as the decision
-            # itself: no separate write can rebase the caller's version.
+            # itself: no separate write can rebase the caller's version. It
+            # is bound to that decision, and the settle adopts it only when
+            # that decision is the one the node follows.
             self._apply_decision_output(db, work, node_id, node, instance,
-                                         output, result, payload["actor"], actor)
+                                         output, result, payload["actor"], actor,
+                                         decision_event_id=event_id,
+                                         decision=payload["decision"])
             # The record was written in this transaction, so the receipt
             # reports the version the work is at now.
             receipt["result_state_version"] = work["state_version"]
         return receipt
 
     def _apply_decision_output(self, db, work, node_id, node, instance, output,
-                               result, actor, source) -> None:
+                               result, actor, source, decision_event_id=None,
+                               decision=None) -> None:
         """Judge and write the named record a human decision carries.
 
         The decision itself is genuine and stays: it is the record of what
@@ -4141,6 +4414,14 @@ class WorkflowEngine:
         the declared shape and the pinned validator — and a rejected record
         is not written, so the previous revision of the object is never
         overwritten by a record that failed its quality.
+
+        A record that passes its quality is **written** — the history is
+        never rewritten and no record is deleted — but it is not the
+        node's output yet. It is bound to the decision that carried it, and
+        it becomes the node's output only when that decision is the one
+        the node follows: the evidence of a decision is verified after
+        this command, and a decision the trusted verifier refuses must not
+        produce an adopted output.
         """
         if not output:
             # Nothing was declared: the node completes as it always did and
@@ -4172,28 +4453,89 @@ class WorkflowEngine:
                 "validator": {"id": validation.get("validator"),
                               "version": validation.get("validator_version")}}
             instance["check_results"] = self._ordered_report(node, check_report)
+            self._record_output_judgment(node, instance, check_report, result,
+                                         validation.get("validator"),
+                                         validation.get("validator_version"))
             self._save_instance(db, work, instance, "WorkflowOutputRejected", {
                 "actor": actor, "source": source, "outcome": "rejected",
                 "findings": instance["output_findings"]})
             return
         reference = self._write_object(db, work["id"], output["object"], result)
-        instance["output"] = reference
         instance["check_results"] = self._ordered_report(node, check_report)
-        instance["quality"] = {
-            "declared": True, "mode": "validated",
-            "validator": {"id": validation.get("validator"),
-                          "version": validation.get("validator_version")}}
-        # The binding the record was made under: who decided, through which
-        # channel, for which node and attempt, against which subject and
-        # inputs, and with which digest of its own.
-        instance["output_binding"] = {
-            "actor": actor, "source": source, "node": node_id,
-            "attempt": instance["attempt"], "object": reference,
+        # The candidate: the record, bound to the decision that carried it.
+        # It is a diagnostic until the settle adopts it — never a silently
+        # chosen output.
+        instance["output_candidate"] = {
+            "object": reference,
+            "eventId": decision_event_id,
+            "decision": decision,
+            "actor": actor, "source": source,
+            "attempt": instance["attempt"],
             "subject": instance.get("subject"),
             "inputDigest": instance.get("input_digest"),
-            "outputDigest": reference["digest"]}
-        self._save_instance(db, work, instance, "WorkflowOutputAccepted", {
+            "outputDigest": reference["digest"],
+            "validator": {"id": validation.get("validator"),
+                          "version": validation.get("validator_version")},
+            "identity": digest([digest(result), validation.get("validator"),
+                                validation.get("validator_version")]),
+            "report": check_report}
+        self._save_instance(db, work, instance, "WorkflowOutputCandidate", {
             "actor": actor, "source": source, "output": reference})
+
+    @staticmethod
+    def _bound_output(instance, proof):
+        """The named record of the decision the node follows, if it is on the node.
+
+        A record is bound to the decision that carried it. A record of
+        another decision — an unverified one, or one the family refused —
+        is a candidate on the record, never this node's output.
+        """
+        candidate = instance.get("output_candidate") or {}
+        if not candidate.get("object"):
+            return None
+        if candidate.get("eventId") != (proof or {}).get("event_id"):
+            return None
+        return candidate
+
+    def _adopt_output(self, db, work, node, instance, candidate) -> None:
+        """Adopt the named record as the node's output.
+
+        The record is adopted only when it is the record of the decision
+        the node follows: the binding names the decision that carried it,
+        so a record of another decision — an unverified one, or one the
+        family refused — can never become this node's output, satisfy
+        another decision's output requirement or be a downstream basis.
+        """
+        instance["output"] = candidate["object"]
+        instance["quality"] = {
+            "declared": True, "mode": "validated",
+            "validator": candidate.get("validator") or {"id": None,
+                                                        "version": None}}
+        # The binding the record was made under: who decided, through which
+        # channel, for which node and attempt, against which subject and
+        # inputs, and with which digest of its own — and which decision
+        # carried it.
+        instance["output_binding"] = {
+            "actor": candidate.get("actor"), "source": candidate.get("source"),
+            "node": instance["node"], "attempt": instance["attempt"],
+            "object": candidate["object"],
+            "subject": candidate.get("subject"),
+            "inputDigest": candidate.get("inputDigest"),
+            "outputDigest": candidate.get("outputDigest"),
+            "decision": candidate.get("decision"),
+            "eventId": candidate.get("eventId")}
+        self._record_judgment(node, instance, "output", candidate.get("identity"),
+                              candidate.get("report") or [],
+                              method="PROGRAM",
+                              validator=(candidate.get("validator") or {}).get("id"),
+                              validatorVersion=(candidate.get("validator") or {}
+                                                ).get("version"),
+                              outputDigest=candidate.get("outputDigest"),
+                              attempt=candidate.get("attempt"),
+                              inputDigest=candidate.get("inputDigest"))
+        self._save_instance(db, work, instance, "WorkflowOutputAccepted", {
+            "actor": candidate.get("actor"), "source": candidate.get("source"),
+            "output": candidate["object"]})
 
     # ------------------------------------------------------------------
     # Workflow-success finalization
@@ -4724,7 +5066,8 @@ class WorkflowEngine:
                     "actor": instance.get("actor"),
                     "inputDigest": instance.get("input_digest"),
                     "output": instance.get("output"),
-                    "checkResults": (instance.get("check_results") or [])[:MAX_VIEW_FINDINGS],
+                    "checkResults": self._current_checks(
+                        (spec["nodes"][node_id] or {}), instance),
                     "quality": instance.get("quality"),
                     "effect": instance.get("effect"),
                     "waitMatch": instance.get("wait_match"),
@@ -4759,7 +5102,8 @@ class WorkflowEngine:
                                 else []),
                     "findings": (instance.get("findings") or [])[:MAX_VIEW_FINDINGS]
                     if instance else [],
-                    "checkResults": (instance.get("check_results") or [])[:MAX_VIEW_FINDINGS]
+                    "checkResults": self._current_checks(
+                        (spec["nodes"][node_id] or {}), instance)
                     if instance else [],
                     "inputDigest": instance.get("input_digest") if instance else None,
                     "inputGeneration": instance.get("input_generation", 0)
