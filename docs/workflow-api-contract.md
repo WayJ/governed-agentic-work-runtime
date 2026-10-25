@@ -226,6 +226,13 @@ present when the creation was bound and absent when it was not.
 Bounded: at most 64 nodes, 32 intents, 16 findings and 16 check results per
 node. The view never carries a payload body.
 
+`currentNode` names the node whose attempt the work is working on. When a
+node's quality allowance is spent and the routing cannot open the next
+node, the work reports `workflowStatus: needs_attention` and the cursor
+**stays on the node that completed** — it never names a node whose attempt
+was not opened. The escalation is stable: further passes write nothing, and
+the attempt that was already routed from is never routed from again.
+
 ### The quality record of a node
 
 An automatic or wait node carries four additive fields. They say what was

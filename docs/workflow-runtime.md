@@ -622,6 +622,34 @@ record, and invalidates the affected approval by exact version. A callback
 for a completed, superseded or cancelled attempt is refused
 (`WORKFLOW_ATTEMPT_STALE`): it can never revive a finished instance.
 
+### The cursor names the node the work is working on
+
+The work's cursor (`currentNode`) names the node whose attempt the work is
+actually working on. The routing moves the cursor to the successor **only
+when that successor's attempt was really opened**.
+
+When a routing cannot open the successor — the node's quality allowance is
+spent — the work escalates (`needs_attention`, `WorkflowReworkLimitExceeded`
+naming the node that could not be opened) and the cursor **stays on the node
+that completed**. The work is not moved onto a node whose attempt was never
+opened, and the successor's own attempt — a terminal one that was *already
+routed from* — is never routed from a second time. So:
+
+* a decision is routed from **exactly once**: a rejection that sent the work
+  back is never consumed again, and the work never walks past the node it
+  could not open;
+* the escalation is **stable**: the next pass finds the same node, tries the
+  same successor, refuses it the same way and writes nothing at all — no
+  second event, no state version move, no new attempt;
+* the work that was done is **kept**: the reworked candidate stays the
+  output of the attempt that produced it, and the old decision keeps its own
+  history.
+
+The allowance that was spent is the node's own: the quality allowance
+accumulates **per node** (see [§14](#14-the-controlled-source-replacement-and-the-transitive-revalidation)),
+and a definition that wants the work to come back declares the allowance its
+node needs.
+
 ### One judgment is one judgment, however often the pass runs
 
 A pass that re-judges the **same** decision is still one judgment. The
@@ -1570,7 +1598,10 @@ The revalidated node runs again on a **material attempt**:
   `material`), so the history of a node is never ambiguous;
 * the **quality allowance** (`max_attempts`) counts the attempts that
   are *not* material attempts. It is never raised and never reset by a
-  revalidation;
+  revalidation. The count is **cumulative per node**: every attempt the node
+  has made counts, whatever generation it was made in — a revalidation does
+  not give the node a fresh quality budget, and the node's spent attempts
+  are the node's spent attempts forever;
 * the **material allowance** counts the revalidations;
 * a material attempt has **no automatic further retry**: when it fails
   on quality, the node fails and nothing else is opened;
@@ -1667,7 +1698,10 @@ What it does, in one transaction:
 * **nothing is reset**: the quality allowance, the spent attempts, the
   material generation and every published revision are what they were.
   A rework attempt spends no allowance — it is neither a quality attempt
-  nor a material attempt.
+  nor a material attempt. The quality allowance stays the **cumulative
+  per-node** count it was: the rework adds nothing to it, and a definition
+  that wants a node to be asked again declares the allowance that node
+  needs.
 
 The new candidate must pass honestly: the original output validation,
 the declared PROGRAM checks and any declared independent review judge it

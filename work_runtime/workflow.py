@@ -1295,9 +1295,24 @@ class WorkflowEngine:
                 self._persist(db, work, "WorkflowBlocked",
                               {"node": current, "reason": "PREDICATE_UNKNOWN"})
                 return changed, True
+            # The cursor names the node whose attempt the work is working
+            # on. It moves to the successor only when that successor's
+            # attempt was really opened: a routing that cannot open the
+            # successor leaves the cursor on the node that completed.
+            stale = self._latest_instance(db, work["id"], successor)
             work["workflow_current"] = successor
             opened = self._open_attempt(db, work, spec, successor, now)
             if opened is None:
+                if stale is not None and stale["state"] in TERMINAL_NODE_STATES:
+                    # The successor's own attempt is a terminal one that
+                    # was **already routed from**: the work reached it
+                    # again and could not open a new attempt there. The
+                    # cursor goes back to the node that completed, so the
+                    # next pass never routes from that stale attempt
+                    # again — a decision is routed from exactly once —
+                    # and the work never walks past the node it could
+                    # not open.
+                    work["workflow_current"] = current
                 work["workflow_status"] = "needs_attention"
                 self._persist(db, work, "WorkflowReworkLimitExceeded", {"node": successor})
                 return changed, True
