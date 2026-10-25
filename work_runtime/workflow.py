@@ -35,7 +35,8 @@ from .workflow_spec import (EFFECT_POLICIES, EFFECT_POLICY_ONCE,
 WORKFLOW_COMMANDS = ("bind_workflow", "revise_object", "submit_node_result",
                      "record_decision", "finalize_workflow_success",
                      "request_material_wait", "adopt_material",
-                     "resume_material_wait", "replace_material")
+                     "resume_material_wait", "replace_material",
+                     "authorize_rework")
 
 TERMINAL_NODE_STATES = ("completed", "failed", "expired", "cancelled")
 
@@ -245,6 +246,61 @@ def _material_wait_view(wait: Any) -> Optional[Dict[str, Any]]:
                       for entry in (wait.get("adoptions") or [])],
         "resumed": wait.get("resumed"),
     }
+
+
+def _rework_authorization_view(record: Any) -> Optional[Dict[str, Any]]:
+    """The bounded view of a used rework authorization."""
+    if not isinstance(record, dict):
+        return None
+    return {
+        "state": record.get("state"),
+        "cap": record.get("cap"),
+        "authorizedBy": record.get("authorized_by"),
+        "authorizedAt": record.get("authorized_at"),
+        "reason": record.get("reason"),
+        "node": record.get("node"),
+        "fromAttempt": record.get("from_attempt"),
+        "toAttempt": record.get("to_attempt"),
+        "sessionId": record.get("session_id"),
+        "terminal": record.get("terminal"),
+    }
+
+
+def _candidate_rework_view(work, spec, latest) -> Dict[str, Any]:
+    """The projection a workbench needs before anybody acts.
+
+    It answers three questions from stored facts only: how many
+    reworks this workflow may still authorize (a fixed cap of one),
+    whether the work as it stands is eligible at all, and — when it is —
+    the exact failed attempt and ticket an authorization must name. It
+    grants nothing: eligibility is an observation, never an authority.
+    """
+    record = work.get("candidate_rework")
+    terminal = work.get("workflow_terminal") or {}
+    node_id = terminal.get("node")
+    failed = None
+    eligible = False
+    if node_id:
+        instance = latest.get(node_id) or {}
+        node = (spec.get("nodes") or {}).get(node_id) or {}
+        failed = {"node": node_id,
+                  "attempt": instance.get("attempt"),
+                  "outcome": instance.get("outcome"),
+                  "reason": instance.get("reason"),
+                  "inputDigest": instance.get("input_digest")}
+        eligible = bool(
+            record is None
+            and not work.get("cancellation")
+            and not work.get("workflow_finalization")
+            and node.get("kind") == "agent"
+            and instance.get("state") == "failed"
+            and instance.get("outcome") == "failed"
+            and instance.get("reason") == "WORKFLOW_RESULT_INVALID")
+    return {"cap": 1,
+            "used": 1 if record is not None else 0,
+            "eligible": eligible,
+            "failed": failed,
+            "grant": _rework_authorization_view(record)}
 
 
 def _revalidation_view(plan: Any) -> Optional[Dict[str, Any]]:
@@ -516,7 +572,8 @@ class WorkflowEngine:
         the configured source and the actor must still hold the assignment.
         """
         if kind in ("bind_workflow", "revise_object", "request_material_wait",
-                    "adopt_material", "resume_material_wait", "replace_material"):
+                    "adopt_material", "resume_material_wait", "replace_material",
+                    "authorize_rework"):
             return self.runtime._manager(actor, work)
         if kind == "submit_node_result":
             return "workflow.execute" in self.runtime.grants.get(actor, set())
@@ -568,6 +625,8 @@ class WorkflowEngine:
             return self._resume_material_wait(db, actor, work, payload, version)
         if kind == "replace_material":
             return self._replace_material(db, actor, work, payload, version)
+        if kind == "authorize_rework":
+            return self._authorize_rework(db, actor, work, payload, version)
         return self.runtime._reject("COMMAND_UNSUPPORTED", version)
 
     # ------------------------------------------------------------------
@@ -1339,7 +1398,10 @@ class WorkflowEngine:
         for instance in self._instances(db, work["id"]):
             if instance["node"] != node_id:
                 continue
-            if instance.get("trigger") == "material":
+            if instance.get("trigger") in ("material", "rework"):
+                # A material attempt and an authorized rework attempt are
+                # neither of them quality attempts: neither spends the
+                # quality allowance, and neither gives it back.
                 continue
             spent += 1
         return spent
@@ -2760,9 +2822,10 @@ class WorkflowEngine:
             return node["on_reject"]
         if outcome == "failed":
             if reason == "WORKFLOW_RESULT_INVALID" and node.get("kind") == "agent":
-                if instance.get("trigger") == "material":
-                    # A material attempt has no automatic further retry:
-                    # the revalidation is spent, and the node reports the
+                if instance.get("trigger") in ("material", "rework"):
+                    # A material attempt and an authorized rework attempt
+                    # have no automatic further retry: the revalidation or
+                    # the authorization is spent, and the node reports the
                     # failure instead of trying again.
                     return None
                 # A rejected candidate is re-executed as a new attempt of the
@@ -3515,6 +3578,142 @@ class WorkflowEngine:
         return self.runtime._accepted(work, attestation=attestation,
                                       affected=affected,
                                       generation=generation)
+
+    def _authorize_rework(self, db, actor, work, payload, version):
+        """The owner's one controlled candidate rework after a terminal
+        Agent quality failure.
+
+        The authorization is a management decision, never an execution
+        one: the Agent, a poller and a review may not issue it, and the
+        core never issues it on its own. It does not say the original
+        judgement was wrong, it resets nothing — not the quality
+        allowance, not the spent attempts, not the material generation,
+        not a published revision — and it passes nothing: the new
+        candidate must satisfy the original checks honestly.
+
+        The old failure stays exactly as it is. The new attempt is
+        monotonic, carries its own trigger ``rework`` and its own ticket,
+        runs on the same pinned inputs under the original bound session,
+        and — when a material revalidation is pending — the queue is
+        untouched: the reworked node rejoins it as its head, and the
+        downstream revalidations follow the ordinary routing once it
+        completes. If the reworked attempt fails, it fails terminally:
+        there is no automatic retry and no second authorization.
+        """
+        if set(payload) != {"node", "attempt", "input_digest", "reason"}:
+            raise WorkflowError("authorize_rework requires exactly node, "
+                                "attempt, input_digest and reason")
+        node_id = payload["node"]
+        attempt = payload["attempt"]
+        reason = payload["reason"]
+        if not isinstance(node_id, str) or type(attempt) is not int:
+            raise WorkflowError("authorize_rework requires a node id and "
+                                "an attempt")
+        if (not isinstance(reason, str) or not reason
+                or len(reason) > MAX_WAIT_REASON_CHARS):
+            raise WorkflowError("the reason must be a nonempty bounded string")
+        if (not isinstance(payload["input_digest"], str)
+                or not payload["input_digest"]):
+            raise WorkflowError("input_digest must be a nonempty string")
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self.runtime._reject("CANCELLATION_ACTIVE", version)
+        if work.get("workflow_finalization"):
+            return self.runtime._reject("WORKFLOW_FINALIZED", version)
+        if work.get("candidate_rework"):
+            # one authorization per workflow: a new key, a second owner
+            # decision or a later retry buys nothing further
+            return self.runtime._reject("WORKFLOW_REWORK_ALREADY_AUTHORIZED",
+                                        version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        node = spec["nodes"].get(node_id)
+        if node is None:
+            return self.runtime._reject("WORKFLOW_NODE_UNKNOWN", version,
+                                        [node_id])
+        if node.get("kind") != "agent":
+            # a human judgement and an automatic effect are not a
+            # candidate quality failure
+            return self.runtime._reject("WORKFLOW_REWORK_INELIGIBLE", version,
+                                        [node_id])
+        terminal = work.get("workflow_terminal") or {}
+        if terminal.get("node") != node_id:
+            # only the node the terminal stopped at may be reworked
+            return self.runtime._reject("WORKFLOW_REWORK_INELIGIBLE", version,
+                                        [{"node": node_id,
+                                          "terminal": terminal.get("node")}])
+        instance = self._latest_instance(db, work["id"], node_id)
+        if instance is None or instance["attempt"] != attempt:
+            return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version,
+                                        [node_id])
+        if payload["input_digest"] != instance.get("input_digest"):
+            return self.runtime._reject("WORKFLOW_INPUT_STALE", version,
+                                        [node_id])
+        if (instance.get("state") != "failed"
+                or instance.get("outcome") != "failed"
+                or instance.get("reason") != "WORKFLOW_RESULT_INVALID"):
+            # An expiry, an unknown result, a cancellation and a success
+            # are not a quality failure: none of them is recovered by a
+            # rework, and a work that never stopped terminally (a genuine
+            # wait, a running node) has nothing to rework.
+            return self.runtime._reject("WORKFLOW_REWORK_INELIGIBLE", version,
+                                        [{"node": node_id,
+                                          "attempt": attempt,
+                                          "state": instance.get("state"),
+                                          "outcome": instance.get("outcome"),
+                                          "reason": instance.get("reason")}])
+        branch = self._branch_nodes(spec, [node_id])
+        blocked = self._branch_effects(db, work, branch)
+        if blocked:
+            # A business effect or a settled human judgement behind the
+            # failed node is a fact the rework would contradict or
+            # replay; it is never reopened behind one.
+            return self.runtime._reject("WORKFLOW_REWORK_EFFECT_PRESENT",
+                                        version, blocked)
+        now = int(time.time())
+        attempt_new = attempt + 1
+        fresh = {"node": node_id, "kind": node.get("kind"),
+                 "attempt": attempt_new, "state": "blocked",
+                 "outcome": None, "reason": None, "inputs": [], "subject": None,
+                 "output": None, "findings": [], "blockers": [], "actor": None,
+                 "operation_id": None, "intent_id": None, "result": None,
+                 "input_generation": int(instance.get("input_generation") or 0) + 1,
+                 "trigger": "rework",
+                 "material_generation": int(
+                     instance.get("material_generation") or 0),
+                 "created_at": now}
+        db.execute("INSERT INTO workflow_nodes VALUES (?,?,?,?,?)",
+                   (work["id"], node_id, attempt_new, "blocked",
+                    canonical(fresh)))
+        authorization = {
+            "state": "authorized", "cap": 1,
+            "authorized_by": actor, "authorized_at": now,
+            "reason": reason,
+            "node": node_id, "from_attempt": attempt,
+            "to_attempt": attempt_new,
+            "session_id": (work.get("workflow") or {}).get("session_id"),
+            "terminal": {"node": terminal.get("node"),
+                         "outcome": terminal.get("outcome"),
+                         "reason": terminal.get("reason")},
+        }
+        # the reopen, in the same transaction: the original terminal
+        # stays on the event history, the work works again
+        work["candidate_rework"] = authorization
+        work["workflow_terminal"] = None
+        work["workflow_current"] = node_id
+        work["workflow_status"] = "active"
+        self.runtime._save(db, work, "WorkflowReworkAuthorized", {
+            "node": node_id, "from_attempt": attempt,
+            "to_attempt": attempt_new, "actor": actor, "reason": reason,
+            "terminal": authorization["terminal"]})
+        self._activate(db, work, spec, node_id, fresh, now)
+        fresh = self._latest_instance(db, work["id"], node_id)
+        return self.runtime._accepted(
+            work, node=node_id, attempt=attempt_new, state=fresh["state"],
+            input_digest=fresh.get("input_digest"),
+            grant=copy.deepcopy(work["candidate_rework"]))
 
     def _source_reference_problem(self, reference, work, node_id):
         """What is wrong with the frozen source reference, if anything.
@@ -4592,6 +4791,7 @@ class WorkflowEngine:
                 "intents": intents[:MAX_VIEW_INTENTS],
                 "materialRevalidation": _revalidation_view(
                     work.get("material_revalidation")),
+                "candidateRework": _candidate_rework_view(work, spec, latest),
             }
 
     # ------------------------------------------------------------------

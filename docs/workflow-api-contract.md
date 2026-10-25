@@ -671,6 +671,58 @@ WORKFLOW_SOURCE_REFERENCE_INVALID`, `422
 WORKFLOW_SOURCE_REFERENCE_REJECTED`, `422
 WORKFLOW_SOURCE_REFERENCE_TOO_LARGE`.
 
+### `POST /v1/workflows/instances/{workId}/rework`
+
+Authorize the responsible owner's **one** controlled candidate rework
+after a terminal agent quality failure. The command is the runtime's own
+`authorize_rework`: same transaction, same compare-and-swap, same
+command receipts and the same replay rules as every other mutation.
+There is no `requestVersion` and no caller-supplied budget, force or
+rule override — the cap is a fixed core bound of one per workflow.
+
+```json
+{"actor": "coordinator", "node": "n01", "attempt": 4,
+ "inputDigest": "…", "reason": "the owner authorizes one controlled rework",
+ "commandId": "rework-1", "expectedVersion": 42}
+```
+
+* `node`, `attempt` and `inputDigest` name exactly the terminally
+  failed agent attempt — the values the `candidateRework` projection of
+  the instance view already publishes. A wrong attempt is `409
+  WORKFLOW_ATTEMPT_STALE`, a digest the failed attempt does not hold is
+  `422 WORKFLOW_INPUT_STALE`, another node is `409
+  WORKFLOW_REWORK_INELIGIBLE` and an unknown node is `404
+  WORKFLOW_NODE_UNKNOWN`.
+* `reason` is required: the owner's own words, bounded.
+* The `actor` must be the work's owner with `work.manage` — the agent,
+  a poller and a review may not authorize their own rework (`403
+  AUTHORITY_DENIED`).
+
+`200` the instance view with `rework: {node, attempt, state,
+inputDigest, grant{authorizedBy, authorizedAt, reason, node,
+fromAttempt, toAttempt, sessionId, terminal}, resultStateVersion}` —
+the new attempt's ticket, not the failed one. The view's
+`candidateRework` now reports `used: 1, eligible: false`, and exactly
+one new `agent_task` intent is pending under the workflow's original
+bound `sessionId`.
+
+The rework changes no standard: the old failure, its report and the
+terminal record stay byte for byte; the new candidate must pass the
+original validation and review honestly; nothing is reset (quality
+allowance, attempts, material generation, revisions, revalidation
+queue); a reworked-attempt failure is terminal. An exact duplicate
+replays the stored receipt, a reused key with another body is `409
+COMMAND_ID_REUSED`, a second authorization under any new key is `409
+WORKFLOW_REWORK_ALREADY_AUTHORIZED`, and a second approval on the same
+observed version is `409 STATE_VERSION_CONFLICT`. A cancelling work is
+`409 CANCELLATION_ACTIVE`; a waiting work, a non-agent terminal, an
+expiry, an unknown result and a success are `409
+WORKFLOW_REWORK_INELIGIBLE`; a business effect or a settled human
+judgement behind the failed node is `409 WORKFLOW_REWORK_EFFECT_PRESENT`.
+A frozen work is refused before any of this (`409 WORKFLOW_FINALIZED` at
+the bridge; the runtime's own closed-work boundary answers a direct
+command).
+
 ### `GET /v1/workflows/instances/{workId}/cancellation`
 
 The safe cancellation state of one work — no payload body, no credential.

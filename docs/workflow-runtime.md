@@ -1545,6 +1545,64 @@ While a revalidation is pending, the **acceptance refuses** the workflow
 (`WORKFLOW_REVALIDATION_PENDING`): the material and the judgements would
 not belong together.
 
+### The owner's one controlled candidate rework
+
+When the routing has stopped terminally at a **failed agent node** — the
+exhausted shape in practice: the quality allowance spent, the material
+attempt failed `WORKFLOW_RESULT_INVALID` with the revalidation queue
+still pending — the trusted work manager may authorize **one**
+controlled candidate rework per workflow
+(`authorize_rework`, `{node, attempt, input_digest, reason}`). The
+authorization is a management decision, never an execution one: the
+agent, a poller and a review may not issue it, and the core never
+issues it on its own.
+
+What it does, in one transaction:
+
+* the old failure, its candidate report and the terminal record stay
+  byte for byte; the authorization (author, reason, the exact failed
+  attempt and the original terminal) is appended;
+* a new **monotonic** attempt opens with the trigger `rework`, its own
+  ticket (the input generation moves), the same pinned inputs, the same
+  published rules and the original bound session's agent intent;
+* the work returns to `active` at that node, and the pending
+  `material_revalidation` queue is untouched — when the reworked attempt
+  completes, the queue continues through the ordinary routing;
+* **nothing is reset**: the quality allowance, the spent attempts, the
+  material generation and every published revision are what they were.
+  A rework attempt spends no allowance — it is neither a quality attempt
+  nor a material attempt.
+
+The new candidate must pass honestly: the original output validation,
+the declared PROGRAM checks and any declared independent review judge it
+exactly as they judged every earlier attempt, and the root platform's
+metadata corrections never excuse the candidate's quality. If the
+reworked attempt fails, it fails **terminally**: there is no automatic
+retry and no second authorization. Old tickets cannot reach the new
+attempt — a late old candidate is `WORKFLOW_ATTEMPT_STALE`, the review
+of the old attempt never settles the new one, and an old
+acknowledgement touches nothing.
+
+What is never eligible: a work that waits (a genuine wait is not a
+failure), a terminal that is not a failed `WORKFLOW_RESULT_INVALID`
+agent attempt (an expiry, an unknown result, a cancellation, a
+success), a cancelling or frozen work, and a downstream branch that
+carries a business effect or a settled human judgement
+(`WORKFLOW_REWORK_EFFECT_PRESENT` — the same protected boundary the
+replacement applies; in a legal history the replacement that produced
+the terminal failure has already refused such a branch, so the guard is
+defensive depth, not a reachable path). A second authorization — new
+key, later retry, whoever asks — is `WORKFLOW_REWORK_ALREADY_AUTHORIZED`;
+an exact duplicate replays the stored receipt, a reused key with another
+body is `COMMAND_ID_REUSED`, and two approvals on the same observed
+version resolve to one acceptance and one `STATE_VERSION_CONFLICT`.
+
+Every instance view carries the `candidateRework` projection —
+`{cap: 1, used, eligible, failed{node, attempt, outcome, reason,
+inputDigest}, grant}` — so a workbench can show the failure, the count
+and the exact ticket an authorization must name. The projection is an
+observation, never an authority: it grants nothing.
+
 ## 15. What is deliberately not here
 
 * No authentication, no tenant isolation, no distributed leases or fencing.

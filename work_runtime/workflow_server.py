@@ -29,7 +29,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .policy import canonical, digest as content_digest
 from .runtime import CommandError
-from .workflow import MATERIAL_WAIT_REQUEST_VERSION, WorkflowError
+from .workflow import (MATERIAL_WAIT_REQUEST_VERSION, WorkflowError,
+                       _rework_authorization_view)
 
 API_PREFIX = "/v1/workflows"
 MAX_BODY_BYTES = 1 << 20
@@ -112,6 +113,9 @@ STATUS_BY_CODE = {
     "WORKFLOW_NODE_NOT_CURRENT": 409,
     "WORKFLOW_WAITING_NODE_NOT_CURRENT": 409,
     "WORKFLOW_NODE_NOT_COMPLETED": 409,
+    "WORKFLOW_REWORK_ALREADY_AUTHORIZED": 409,
+    "WORKFLOW_REWORK_INELIGIBLE": 409,
+    "WORKFLOW_REWORK_EFFECT_PRESENT": 409,
     "WORKFLOW_QUALITY_UNSETTLED": 409,
     "WORKFLOW_CHECK_UNSATISFIED": 409,
     "WORKFLOW_EFFECT_UNRESOLVED": 409,
@@ -1095,6 +1099,78 @@ class WorkflowService:
             "resultStateVersion": receipt.get("result_state_version")}
         return 200, redact(view)
 
+    def authorize_rework(self, work_id: str,
+                         body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Authorize the owner's one controlled candidate rework.
+
+        The bridge owns no rework engine of its own: it issues the
+        runtime's own command, so the compare-and-swap, the command
+        dedup and the receipts are the ones every other mutation already
+        has. The body names the terminally failed agent node, the failed
+        attempt and the failed input digest — the workbench reads all
+        three from the ``candidateRework`` projection of the instance
+        view — and a reason the responsible owner typed.
+        """
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
+        node_id = body.get("node")
+        attempt = body.get("attempt")
+        digest_value = body.get("inputDigest")
+        reason = body.get("reason")
+        if not isinstance(node_id, str) or not node_id:
+            return 400, _error("REWORK_INVALID",
+                               "node is required: the terminally failed "
+                               "agent node")
+        if type(attempt) is not int:
+            return 400, _error("REWORK_INVALID",
+                               "attempt is required: the failed attempt")
+        if not isinstance(digest_value, str) or not digest_value:
+            return 400, _error("REWORK_INVALID",
+                               "inputDigest is required: the failed "
+                               "attempt's current input digest")
+        if not isinstance(reason, str) or not reason:
+            return 400, _error("REWORK_INVALID",
+                               "reason is required: the owner's own words")
+        actor, error = self._request_actor(body)
+        if error is not None:
+            return 400, error
+        if not self._body_names_this_work(work_id, body):
+            return 400, _error("WORK_MISMATCH",
+                               "the request body names another work")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        receipt = self._material_command(
+            actor, command_id, work_id, "authorize_rework",
+            {"node": node_id, "attempt": attempt,
+             "input_digest": digest_value, "reason": reason},
+            expected_version)
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(
+                receipt.get("code", "REJECTED"),
+                "The rework was not authorized", receipt.get("blockers"))
+        self._settle(work_id)
+        status, view = self.instance(work_id)
+        view["rework"] = {"node": node_id,
+                          "attempt": receipt.get("attempt"),
+                          "state": receipt.get("state"),
+                          "inputDigest": receipt.get("input_digest"),
+                          "grant": _rework_authorization_view(
+                              receipt.get("grant")),
+                          "resultStateVersion": receipt.get("result_state_version")}
+        return 200, redact(view)
+
     def finalize(self, work_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         """Accept a successful workflow and freeze it.
 
@@ -1781,6 +1857,8 @@ class WorkflowRequestHandler(BaseHTTPRequestHandler):
                 return service.resume_material_wait(work_id, body)
             if method == "POST" and tail == ["material", "replace"]:
                 return service.replace_material(work_id, body)
+            if method == "POST" and tail == ["rework"]:
+                return service.authorize_rework(work_id, body)
             if method == "GET" and tail == ["completion"]:
                 return service.completion(work_id)
             if (method == "GET" and len(tail) == 4 and tail[0] == "objects"
