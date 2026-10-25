@@ -21,6 +21,15 @@ class AdapterContract:
     lookup_consistency: str
     uniqueness: Tuple[str, ...]
     supports_action_context: bool = False
+    # The adapter owner asserts that the listed actions' external effects are
+    # deduplicated by the operation's business key — one effect per key, and a
+    # replay under that key returns the first effect's receipt — and that this
+    # promise has been verified against the real service. Only such a declared,
+    # verified same-key idempotency may justify re-dispatching an unknown
+    # outcome once; absence or unavailability of a lookup answer is never the
+    # justification, and a rejection is never a bound result. Default empty:
+    # adapters that do not declare it keep today's quarantine semantics.
+    same_key_idempotent_retry_actions: Tuple[str, ...] = ()
 
     def __post_init__(self):
         _check_invariants(self)
@@ -47,6 +56,15 @@ def _check_invariants(contract: "AdapterContract") -> None:
     # promise beyond idempotent replay of the same key.
     if not isinstance(contract.supports_action_context, bool):
         raise ValueError("supports_action_context must be a bool")
+    retry_actions = contract.same_key_idempotent_retry_actions
+    if not isinstance(retry_actions, tuple):
+        raise ValueError("same_key_idempotent_retry_actions must be a tuple")
+    if not all(isinstance(entry, str) and entry for entry in retry_actions):
+        raise ValueError("every same-key retry action must be a nonempty string")
+    if len(set(retry_actions)) != len(retry_actions):
+        raise ValueError("same_key_idempotent_retry_actions must be unique")
+    if any(entry not in actions for entry in retry_actions):
+        raise ValueError("same-key retry actions must be declared adapter actions")
 
 
 def valid_contract(value: object) -> bool:

@@ -1295,8 +1295,16 @@ class BoundaryPins(unittest.TestCase):
         # (authority and the duplicate-intent gate run before the workflow
         # cancellation hook). Both are disclosed in
         # docs/runtime-boundaries.md with their digests.
+        #
+        # Same-key idempotent retry (2026-10-25): reconcile re-arms ONE
+        # retry for an unknown outcome when the adapter owner declared and
+        # service-verified same-key idempotency for that capability
+        # (same_key_idempotent_retry_actions). Absence/unavailability of a
+        # lookup answer and rejections are never the justification; the
+        # unknown history is preserved and the armed retry passes every
+        # ordinary dispatch gate. See docs/runtime-boundaries.md.
         "work_runtime/runtime.py":
-            "1edb3bc065a8e3d59c07e20d672d6ad5354d1c233ca26de7fe848b1156379d45",
+            "b5bd62242fb7f59bcc05e9833524e411cec56940a97a728c695c008eca4ba381",
         "work_runtime/adapters.py":
             "ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e",
         "work_runtime/file_adapter.py":

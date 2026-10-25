@@ -840,3 +840,26 @@ Accepted-evidence collision guarantees are pinned in
 | closed work keeps closure under conflict | `test_closed_work_conflict_preserves_closure` |
 | malformed body fields degrade to null snapshots | `test_malformed_conflict_body_degrades_to_null` |
 | publishing family conflict mirror | `test_publishing_legacy_conflict_resolves` |
+
+## Same-key idempotent retry for unknown outcomes
+
+`Runtime.reconcile` keeps its quarantine default: an unknown outcome is never
+re-dispatched on the strength of an absent lookup answer or a rejection —
+absence does not prove the original request settled, and a refusal is not a
+bound receipt. The one exception is *declared, service-verified same-key
+idempotency*: an adapter owner may list capabilities in
+`AdapterContract.same_key_idempotent_retry_actions` (default empty, and the
+list must be a subset of the declared `actions`) asserting that the effect is
+deduplicated by its business key and that a replay under that key returns the
+first effect's receipt, verified against the real service. For those
+capabilities reconcile re-arms **one** retry per operation (`same_key_retries`,
+persisted; crashes and concurrency cannot reset or double it): the same
+operation id, the same business key and the same frozen document, with the
+prior unknown states preserved in `unknown_history` and an audited
+`SameKeyRetryArmed` event. The armed retry passes every ordinary dispatch gate
+(cancellation, subject staleness, plan/contract revisions, authority, policy
+blockers); compensations never retry; a work returns from `needs_attention`
+only when this operation's own quarantine produced the attention and nothing
+else of the work is unresolved. An invalid receipt on the retry is
+quarantined, never faked. Guarantees are pinned in
+`tests/test_same_key_retry.py`.

@@ -10,7 +10,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Dict, Optional, Protocol
+from typing import Callable, Dict, Optional, Protocol, Tuple
 
 from .adapter_contract import receipt_is_valid, valid_contract
 from .policy import Policy, canonical, digest
@@ -1111,7 +1111,12 @@ class Runtime:
                 "document_digest": op["document_digest"]}
 
     def dispatch(self, operation_id: str, adapter: Adapter, fault: Optional[Callable] = None) -> dict:
-        """Single coordinator only. Unknown outcomes must be reconciled, never dispatched again."""
+        """Single coordinator only. Unknown outcomes must be reconciled, never
+        dispatched again — except the one same-key idempotent retry that
+        reconcile arms for capabilities whose adapter owner declared and
+        service-verified same-key idempotency (see reconcile); that retry is
+        the same operation, same business key, same frozen document, and it
+        passes every gate below again."""
         with self._transaction() as db:
             op = self._get_op(db, operation_id)
             if op["status"] != "prepared" or op["dispatch_state"] == "cancelled":
@@ -1242,6 +1247,11 @@ class Runtime:
             op = self._get_op(db, operation_id)
             if op["status"] == "outcome_unknown" and op.get("reason") == reason:
                 return op  # Repeated reconciliation with the same finding writes nothing.
+            if op["status"] == "outcome_unknown":
+                op["unknown_history"] = list(op.get("unknown_history", [])) + [
+                    {"status": op["status"], "reason": op.get("reason"),
+                     "dispatch_state": op.get("dispatch_state"),
+                     "at": int(time.time())}]
             op["status"], op["reason"] = "outcome_unknown", reason
             self._save_op(db, op)
             self._save(db, self._work(db, op["work_id"]), "OutcomeUnknown", {"operation_id": op["id"]})
@@ -1252,23 +1262,123 @@ class Runtime:
         if op["status"] not in ("dispatched", "outcome_unknown"):
             return op
         self._accepted_source(self.get_work(op["work_id"]))
+        lookup_error = None
+        result = None
         try:
             result = adapter.lookup(op["business_key"])
         except Exception as error:
-            return self._unknown(operation_id, type(error).__name__)
+            lookup_error = type(error).__name__
         if result is not None:
             return self._resolve(operation_id, result)
+        if self._same_key_retry_armed(op, adapter):
+            return self._arm_same_key_retry(operation_id, adapter, lookup_error)
+        if lookup_error is not None:
+            return self._unknown(operation_id, lookup_error)
         with self._transaction() as db:
             op = self._get_op(db, operation_id)
             work = self._work(db, op["work_id"])
             if (op["status"] == "outcome_unknown" and op.get("reason") == "NO_AUTHORITATIVE_RESULT"
                     and work["status"] == "needs_attention"):
                 return op  # Idempotent recovery: the escalation is already durable.
+            if op["status"] == "outcome_unknown":
+                op["unknown_history"] = list(op.get("unknown_history", [])) + [
+                    {"status": op["status"], "reason": op.get("reason"),
+                     "dispatch_state": op.get("dispatch_state"),
+                     "at": int(time.time())}]
             op["status"] = "outcome_unknown"
             op["reason"] = "NO_AUTHORITATIVE_RESULT"
             self._save_op(db, op)
             work["status"] = "needs_attention"
             self._save(db, work, "ReconciliationRequired", {"operation_id": op["id"]})
+            return op
+
+    @staticmethod
+    def _declared_retry_actions(adapter: Adapter) -> Tuple[str, ...]:
+        """Same-key retry actions the adapter owner declared and verified.
+
+        Absent descriptor keeps the adapter legacy (no retry actions); a
+        malformed descriptor is refused by contract validation at dispatch.
+        """
+        contract = _declared_contract(adapter)
+        if contract is None:
+            return ()
+        return tuple(getattr(contract, "same_key_idempotent_retry_actions", ()))
+
+    def _same_key_retry_armed(self, op: dict, adapter: Adapter) -> bool:
+        """Whether this unknown outcome may consume the single same-key retry.
+
+        The justification is only the adapter owner's declared, verified
+        same-key idempotency for this capability — never the absence or the
+        unavailability of a lookup answer, and never a rejection. Compensa-
+        tions never retry: their pairing is bound to the original intent.
+        """
+        if op.get("compensates") is not None:
+            return False
+        if op.get("capability") not in self._declared_retry_actions(adapter):
+            return False
+        return op.get("same_key_retries", 0) == 0
+
+    def _arm_same_key_retry(self, operation_id: str, adapter: Adapter,
+                            lookup_error) -> dict:
+        """Re-arm the single declared same-key idempotent retry.
+
+        Same operation id, same business key, same frozen document: the
+        external side sees at most one effect for that key either way. The
+        prior unknown state is preserved in ``unknown_history`` instead of
+        being overwritten, the re-arm is an audited event, and the armed
+        retry passes through every ordinary dispatch gate (cancellation,
+        subject staleness, revisions, authority, policy). A work in
+        needs_attention returns to routing only when this was its last
+        unresolved effect; unrelated attention is never cleared here.
+        """
+        with self._transaction() as db:
+            op = self._get_op(db, operation_id)
+            if op["status"] not in ("dispatched", "outcome_unknown"):
+                return op
+            if (op.get("same_key_retries", 0) != 0
+                    or not self._same_key_retry_armed(op, adapter)):
+                return op  # A concurrent reconciler armed it, or the answer arrived.
+            work = self._work(db, op["work_id"])
+            history = list(op.get("unknown_history", []))
+            history.append({"status": op["status"], "reason": op.get("reason"),
+                            "dispatch_state": op.get("dispatch_state"),
+                            "lookup": "unavailable" if lookup_error else "absent",
+                            "at": int(time.time())})
+            op["unknown_history"] = history
+            op["same_key_retries"] = 1
+            op["status"], op["dispatch_state"] = "prepared", "ready"
+            op["reason"] = "SAME_KEY_RETRY_ARMED"
+            self._save_op(db, op)
+            unresolved = 0
+            for row in db.execute(
+                    "SELECT body FROM operations WHERE work_id=?",
+                    (work["id"],)).fetchall():
+                other = json.loads(row[0])
+                if other["id"] == op["id"]:
+                    continue
+                if (other.get("status") not in ("confirmed_succeeded",
+                                                "confirmed_failed")
+                        and other.get("dispatch_state") != "cancelled"):
+                    unresolved += 1
+            restored = False
+            if work["status"] == "needs_attention" and unresolved == 0:
+                row = db.execute(
+                    "SELECT type, body FROM events WHERE work_id=?"
+                    " ORDER BY version DESC LIMIT 1", (work["id"],)).fetchone()
+                last_type = row[0] if row else None
+                last_body = json.loads(row[1]) if row else {}
+                # Only an attention this operation's own quarantine produced
+                # may be lifted here; anything else stays for its owner. An
+                # unprovable attribution keeps needs_attention.
+                if (last_type == "ReconciliationRequired"
+                        and last_body.get("operation_id") == op["id"]):
+                    work["status"] = "active"
+                    restored = True
+            self._save(db, work, "SameKeyRetryArmed",
+                       {"operation_id": op["id"], "budget": 1,
+                        "lookup": "unavailable" if lookup_error else "absent",
+                        "unresolved_siblings": unresolved,
+                        "work_restored": restored})
             return op
 
     def _resolve(self, operation_id, result):
