@@ -181,7 +181,7 @@ counter behaviour are unchanged.
 |---|---|
 | `fa12ab1` | feat: the owner may authorize one controlled candidate rework after a terminal failure |
 | `9567a42` | fix: the rework judges the material the failure judged, never a silently adopted revision |
-| `<envelope wave>` | fix: the rework envelope is exact — no caller budget, no force, no rule override, no blank reason |
+| `5d857f3` | fix: the rework envelope is exact — no caller budget, no force, no rule override, no blank reason |
 
 Nothing was merged and nothing was pushed: the branch is left for the
 integration worker.
