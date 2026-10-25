@@ -3664,6 +3664,15 @@ class WorkflowEngine:
                                           "state": instance.get("state"),
                                           "outcome": instance.get("outcome"),
                                           "reason": instance.get("reason")}])
+        drifted = self._rework_input_drift(db, work, node, instance)
+        if drifted:
+            # The rework judges the material the failure judged: a
+            # declared input (or subject) that moved to a new revision
+            # after the failure is material the failed attempt never saw.
+            # The rework may not silently adopt it under the failed
+            # ticket — the manager reconciles the material first.
+            return self.runtime._reject(
+                "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version, drifted)
         branch = self._branch_nodes(spec, [node_id])
         blocked = self._branch_effects(db, work, branch)
         if blocked:
@@ -3714,6 +3723,44 @@ class WorkflowEngine:
             work, node=node_id, attempt=attempt_new, state=fresh["state"],
             input_digest=fresh.get("input_digest"),
             grant=copy.deepcopy(work["candidate_rework"]))
+
+    def _rework_input_drift(self, db, work, node, instance):
+        """Declared inputs that moved since the failed attempt pinned them.
+
+        The comparison is over the **exact revisions**: the reworked
+        attempt must judge the material the failed attempt judged, so a
+        new revision of a declared input (or of the subject) that
+        arrived after the failure is drift, whatever its content. The
+        ticket may move — the input generation does — but the source
+        references may not.
+        """
+        pinned = {entry.get("name"): entry
+                  for entry in (instance.get("inputs") or [])
+                  if isinstance(entry, dict)}
+        subject = instance.get("subject")
+        if isinstance(subject, dict) and subject.get("name"):
+            pinned.setdefault(subject["name"], subject)
+        declared = [entry.get("object") for entry in (node.get("inputs") or [])]
+        subject_spec = node.get("subject")
+        if isinstance(subject_spec, dict) and subject_spec.get("object"):
+            declared.append(subject_spec["object"])
+        drift = []
+        for name in declared:
+            accepted = pinned.get(name)
+            row = self._object_row(db, work["id"], name)
+            if accepted is None or row is None:
+                # a missing input is the activation's own finding, never
+                # a silent substitution
+                continue
+            if (row["revision"] != accepted.get("revision")
+                    or row["digest"] != accepted.get("digest")):
+                drift.append({
+                    "name": name,
+                    "accepted": {"revision": accepted.get("revision"),
+                                 "digest": accepted.get("digest")},
+                    "current": {"revision": row["revision"],
+                                "digest": row["digest"]}})
+        return drift
 
     def _source_reference_problem(self, reference, work, node_id):
         """What is wrong with the frozen source reference, if anything.

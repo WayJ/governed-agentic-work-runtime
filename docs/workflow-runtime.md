@@ -1576,12 +1576,16 @@ What it does, in one transaction:
 The new candidate must pass honestly: the original output validation,
 the declared PROGRAM checks and any declared independent review judge it
 exactly as they judged every earlier attempt, and the root platform's
-metadata corrections never excuse the candidate's quality. If the
-reworked attempt fails, it fails **terminally**: there is no automatic
-retry and no second authorization. Old tickets cannot reach the new
-attempt — a late old candidate is `WORKFLOW_ATTEMPT_STALE`, the review
-of the old attempt never settles the new one, and an old
-acknowledgement touches nothing.
+metadata corrections never excuse the candidate's quality. The reworked
+attempt judges the **material the failure judged**: a declared input or
+subject that moved to a new revision after the failure is drift, and
+the authorization is refused with it
+(`INPUT_DEPENDENCIES_REQUIRE_REVALIDATION`) rather than silently
+adopting the new material. If the reworked attempt fails, it fails
+**terminally**: there is no automatic retry and no second
+authorization. Old tickets cannot reach the new attempt — a late old
+candidate is `WORKFLOW_ATTEMPT_STALE`, the review of the old attempt
+never settles the new one, and an old acknowledgement touches nothing.
 
 What is never eligible: a work that waits (a genuine wait is not a
 failure), a terminal that is not a failed `WORKFLOW_RESULT_INVALID`

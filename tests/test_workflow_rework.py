@@ -140,6 +140,11 @@ class AuthorizedPathTestCase(ReworkTestCase):
         self.assertGreater(
             new["body"]["input_generation"],
             json.loads(before_instances[-1][2])["input_generation"])
+        # and exactly the material the failure judged: the reworked
+        # attempt re-pins the failed attempt's input revisions
+        self.assertEqual(
+            json.loads(before_instances[-1][2])["inputs"],
+            new["body"]["inputs"])
         # the agent is asked again under a new pending intent
         intents = self.rows("SELECT id,status,body FROM workflow_intents "
                             "WHERE work_id=? AND node='n01' ORDER BY id",
@@ -369,6 +374,31 @@ class ReworkGuardTestCase(ReworkTestCase):
         self.assertEqual("rejected", receipt["decision"], receipt)
         self.assertEqual("WORKFLOW_REWORK_EFFECT_PRESENT", receipt["code"])
         self.assertEqual(before, self.snapshot())
+
+
+    def test_the_rework_judges_the_material_the_failure_judged(self):
+        # after the failure the manager revises a declared input through
+        # the ordinary command — the rework may not silently adopt the
+        # new revision under the failed ticket: it must judge the
+        # material the failure judged, or refuse
+        moved = send(self.runtime, OWNER, self.work, "revise_object",
+                     {"name": "sources",
+                      "object": {"sourceReference": {"referenceId": "REF-3"}}})
+        self.assertEqual("accepted", moved["decision"], moved)
+        failed = self.instance("n01")[-1]
+        before = self.snapshot()
+        receipt = self.authorize(attempt=failed["attempt"],
+                                 input_digest=failed["body"]["input_digest"])
+        self.assertEqual("rejected", receipt["decision"], receipt)
+        self.assertEqual("INPUT_DEPENDENCIES_REQUIRE_REVALIDATION",
+                         receipt["code"])
+        drift = receipt["blockers"][0]
+        self.assertEqual("sources", drift["name"])
+        self.assertEqual(2, drift["accepted"]["revision"])
+        self.assertEqual(3, drift["current"]["revision"])
+        # nothing was written: no new attempt, the work stays terminal
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(4, len(self.instance("n01")))
 
 
 class WaitingNotEligibleTestCase(RevalidationTestCase):
