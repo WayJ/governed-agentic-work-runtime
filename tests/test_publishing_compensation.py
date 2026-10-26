@@ -1303,8 +1303,16 @@ class BoundaryPins(unittest.TestCase):
         # lookup answer and rejections are never the justification; the
         # unknown history is preserved and the armed retry passes every
         # ordinary dispatch gate. See docs/runtime-boundaries.md.
+        #
+        # Live-dispatch lease (2026-10-26): dispatch registers an in-memory
+        # per-instance lease before the dispatched commit and releases it
+        # only after the receipt (or unknown) is persisted; this instance's
+        # reconcile skips a leased operation instead of treating an absent
+        # lookup as NO_AUTHORITATIVE_RESULT. Guards, CAS, authority, quality
+        # gates and the one-retry budget are untouched. See
+        # docs/runtime-boundaries.md and tests/test_dispatch_lease.py.
         "work_runtime/runtime.py":
-            "b5bd62242fb7f59bcc05e9833524e411cec56940a97a728c695c008eca4ba381",
+            "c920a2d8ebbd42863bb54ec7e07ad48eefc1c97f7d4034834d9350ba90805c07",
         "work_runtime/adapters.py":
             "ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e",
         "work_runtime/file_adapter.py":

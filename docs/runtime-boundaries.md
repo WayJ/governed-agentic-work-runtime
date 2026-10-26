@@ -18,6 +18,13 @@ regressions that pin each guarantee live in `tests/test_boundaries.py`.
   production-safety claim**. RFC coverage is partial (see
   [RFC-003](RFC-003-runtime-protocol.md)); this document records what the code
   actually does.
+- Each `Runtime` instance keeps an **in-memory live-dispatch lease**: from the
+  commit of `dispatched`/`in_flight` until the outcome is persisted, its own
+  `reconcile` does not look that operation up — a call this instance is still
+  making has no answer yet, and an absent lookup there is not a finding. The
+  lease is per instance, never persisted and never cross-instance: a second
+  instance on the same file, including a same-process one, is treated as a
+  restart and keeps the ordinary quarantine for the same row.
 
 ## Three identity layers
 
@@ -316,12 +323,17 @@ registry fixed at construction.
    value, an explicit `None`, or an incomplete `AdapterContract` instance) is
    malformed, never silently legacy.
 3. It persists `status="dispatched"`, `dispatch_state="in_flight"` and a new
-   attempt with `outcome_unknown` **before** the external call. A process death
-   anywhere after this commit is therefore treated as "the effect may have
-   happened" and must be reconciled, never assumed absent.
+   attempt with `outcome_unknown` **before** the external call, and registers
+   the in-memory live-dispatch lease inside the same transaction, so the lease
+   never postdates the visible state. A process death anywhere after this
+   commit is therefore treated as "the effect may have happened" and must be
+   reconciled, never assumed absent.
 4. `adapter.execute(business_key, document, document_digest)` then runs outside
-   the transaction; a crash between commit and call still leaves an inspectable
-   uncertain state (see limitations). An opted-in adapter is called instead as
+   the transaction while the lease is held; the lease is released in a
+   `finally` only after the returned receipt is persisted (`_resolve`) or the
+   exception is recorded as unknown (`_unknown`), never between the effect and
+   its local record. A crash between commit and call still leaves an
+   inspectable uncertain state (see limitations). An opted-in adapter is called instead as
    `execute(business_key, document, document_digest, action=capability,
    compensates=link_or_None)` — the dispatch decision reads the declared
    contract only (no signature introspection, no TypeError probing), so legacy
@@ -744,6 +756,13 @@ Guarantees:
   `state_version` bump, no operation mutation (reason transitions are still
   recorded — a *changed* failure reason writes a new event). A supervisor may
   loop `recover()` safely.
+- **A live dispatch of this instance is not reconciled.** `reconcile` on a
+  leased operation returns the current operation without a lookup and without
+  writes, on every thread — including the background recover/pump loop running
+  while an in-process dispatch is between its commit and its receipt. A fresh
+  instance (restart, or a second instance on the same file) has no lease and
+  isolates as before; this protects a live call without weakening what a
+  restart sees. Pinned in `tests/test_dispatch_lease.py`.
 
 ## Recorded limitations
 

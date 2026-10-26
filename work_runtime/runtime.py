@@ -6,6 +6,7 @@ are not authentication. Do not expose these methods as an unauthenticated API.
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -109,6 +110,12 @@ class Runtime:
         # runtime stays usable without one and non-workflow works are
         # unaffected either way.
         self.workflow = None
+        # Live dispatches this instance still owns. In-memory and per
+        # instance on purpose: another instance on the same file — a restart,
+        # including one in this process — is a different coordinator and must
+        # keep treating the persisted dispatched row as uncertain.
+        self._live_dispatches: Dict[str, int] = {}
+        self._live_dispatches_guard = threading.Lock()
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as db:
             db.executescript("""
@@ -1116,7 +1123,12 @@ class Runtime:
         reconcile arms for capabilities whose adapter owner declared and
         service-verified same-key idempotency (see reconcile); that retry is
         the same operation, same business key, same frozen document, and it
-        passes every gate below again."""
+        passes every gate below again.
+
+        The attempt is registered as a live dispatch of this instance before
+        the dispatched commit becomes visible and released only after the
+        outcome is persisted, so a reconcile running on another thread of the
+        same instance cannot mistake "no answer yet" for "no effect"."""
         with self._transaction() as db:
             op = self._get_op(db, operation_id)
             if op["status"] != "prepared" or op["dispatch_state"] == "cancelled":
@@ -1196,26 +1208,51 @@ class Runtime:
                 self._save(db, work, "DispatchHeld",
                            {"operation_id": op["id"], "reason": op["reason"]})
                 return op
+            self._live_dispatch_begin(operation_id)
             op["status"], op["dispatch_state"] = "dispatched", "in_flight"
             op["attempts"].append({"id": uuid.uuid4().hex, "status": "outcome_unknown"})
             self._save_op(db, op)
             self._save(db, work, "AttemptStarted", {"operation_id": op["id"]})
         try:
-            if contract is not None and contract.supports_action_context:
-                # Opted-in adapters receive the explicit action and the
-                # runtime-validated immutable link (or None for forward ops).
-                # Legacy adapters are called with exactly today's three
-                # positional arguments — no introspection, no TypeError probe.
-                result = adapter.execute(op["business_key"], op["document"],
-                                         op["document_digest"],
-                                         action=op["capability"], compensates=compensation)
-            else:
-                result = adapter.execute(op["business_key"], op["document"], op["document_digest"])
-        except Exception as error:
-            return self._unknown(operation_id, type(error).__name__)
-        if fault:
-            fault()  # Injection point: external effect committed, local outcome not recorded.
-        return self._resolve(operation_id, result)
+            try:
+                if contract is not None and contract.supports_action_context:
+                    # Opted-in adapters receive the explicit action and the
+                    # runtime-validated immutable link (or None for forward ops).
+                    # Legacy adapters are called with exactly today's three
+                    # positional arguments — no introspection, no TypeError probe.
+                    result = adapter.execute(op["business_key"], op["document"],
+                                             op["document_digest"],
+                                             action=op["capability"], compensates=compensation)
+                else:
+                    result = adapter.execute(op["business_key"], op["document"], op["document_digest"])
+            except Exception as error:
+                return self._unknown(operation_id, type(error).__name__)
+            if fault:
+                fault()  # Injection point: external effect committed, local outcome not recorded.
+            return self._resolve(operation_id, result)
+        finally:
+            # Released only after the outcome is persisted (or the process would
+            # have died with it): a reconciler never sees a live call answered.
+            self._live_dispatch_end(operation_id)
+
+    def _live_dispatch_begin(self, operation_id: str) -> None:
+        """Register the attempt this instance is about to make visible."""
+        with self._live_dispatches_guard:
+            self._live_dispatches[operation_id] = threading.get_ident()
+
+    def _live_dispatch_end(self, operation_id: str) -> None:
+        with self._live_dispatches_guard:
+            self._live_dispatches.pop(operation_id, None)
+
+    def _live_dispatch_held(self, operation_id: str) -> bool:
+        """Whether this instance still owns the call of that operation.
+
+        The answer is an in-memory fact about this instance, never a claim
+        about the store: another instance reading the same file has no lease
+        and keeps the persisted dispatched row uncertain.
+        """
+        with self._live_dispatches_guard:
+            return operation_id in self._live_dispatches
 
     def _link_still_valid(self, db, work, policy, op) -> bool:
         """Dispatch-time revalidation of the immutable link (belt and braces).
@@ -1258,8 +1295,18 @@ class Runtime:
             return op
 
     def reconcile(self, operation_id: str, adapter: Adapter) -> dict:
+        """Settle an uncertain operation against the adapter's record.
+
+        An operation this instance is dispatching right now is not uncertain:
+        no answer exists yet because the call has not returned, so a lookup
+        miss is not a finding and nothing is written. The lease is dropped
+        once the outcome is persisted; after that, and for every other
+        instance and process, an absent answer keeps the ordinary quarantine.
+        """
         op = self.get_operation(operation_id)
         if op["status"] not in ("dispatched", "outcome_unknown"):
+            return op
+        if self._live_dispatch_held(operation_id):
             return op
         self._accepted_source(self.get_work(op["work_id"]))
         lookup_error = None
