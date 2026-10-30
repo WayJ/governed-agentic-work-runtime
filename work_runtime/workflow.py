@@ -33,7 +33,10 @@ from .workflow_spec import (EFFECT_POLICIES, EFFECT_POLICY_ONCE,
 # Command kinds the runtime routes to the engine. They are ordinary runtime
 # commands: CAS-guarded, deduplicated and receipt-bearing like every other.
 WORKFLOW_COMMANDS = ("bind_workflow", "revise_object", "submit_node_result",
-                     "record_decision", "finalize_workflow_success")
+                     "record_decision", "finalize_workflow_success",
+                     "request_material_wait", "adopt_material",
+                     "resume_material_wait", "replace_material",
+                     "authorize_rework")
 
 TERMINAL_NODE_STATES = ("completed", "failed", "expired", "cancelled")
 
@@ -56,6 +59,37 @@ MAX_VIEW_FINDINGS = 16
 MAX_ADVANCE_STEPS = 128
 
 DEFAULT_MAX_ATTEMPTS = 1
+
+# The version of the material-wait request. A caller states the version it
+# speaks, so a later shape is refused instead of half-understood.
+MATERIAL_WAIT_REQUEST_VERSION = 1
+
+# The bound of the reason a manager gives for a wait.
+MAX_WAIT_REASON_CHARS = 512
+
+# The bound of the adoptions one wait may carry.
+MAX_WAIT_ADOPTIONS = 16
+
+# The bound of the source reference a manager may freeze. It is a
+# *reference* to archived material, never the material itself: the core
+# never resolves it, and it never carries a URL, an authority or a
+# credential.
+MAX_SOURCE_REFERENCE_BYTES = 4096
+
+# The documented fixed core allowance of **one** material replacement
+# generation per workflow. It is a core bound, not a caller-supplied
+# number and not a quality counter: a definition may only tighten it (to
+# zero, which denies the revalidation of that node) and never raise it.
+MATERIAL_GENERATION_ALLOWANCE = 1
+
+# The keys a frozen source reference may never carry: the raw material,
+# a location to fetch it from, or a credential.
+FORBIDDEN_SOURCE_REFERENCE_KEYS = frozenset({
+    "url", "rawurl", "raw_url", "uri", "href", "location", "link",
+    "credential", "credentials", "secret", "token", "password", "apikey",
+    "api_key", "object", "body", "payload", "data", "content", "material",
+    "archive", "bytes", "blob",
+})
 
 # The source of the proofs the engine writes itself. It is the engine's own
 # trusted channel, never the ingress source of a signed evidence kind: the
@@ -81,6 +115,12 @@ WORKFLOW_EFFECT_UNRESOLVED = "WORKFLOW_EFFECT_UNRESOLVED"
 WORKFLOW_REQUIREMENT_UNSATISFIED = "WORKFLOW_REQUIREMENT_UNSATISFIED"
 WORKFLOW_INTENT_UNSETTLED = "WORKFLOW_INTENT_UNSETTLED"
 WORKFLOW_CANCELLED = "WORKFLOW_CANCELLED"
+WORKFLOW_REVALIDATION_PENDING = "WORKFLOW_REVALIDATION_PENDING"
+WORKFLOW_REVALIDATION_EFFECT_PRESENT = "WORKFLOW_REVALIDATION_EFFECT_PRESENT"
+WORKFLOW_SOURCE_REFERENCE_REJECTED = "WORKFLOW_SOURCE_REFERENCE_REJECTED"
+WORKFLOW_NODE_INVALIDATED = "WORKFLOW_NODE_INVALIDATED"
+WORKFLOW_NODE_NOT_CURRENT = "WORKFLOW_NODE_NOT_CURRENT"
+WORKFLOW_WAITING_NODE_NOT_CURRENT = "WORKFLOW_WAITING_NODE_NOT_CURRENT"
 WORKFLOW_SNAPSHOT_UNBOUNDED = "WORKFLOW_SNAPSHOT_UNBOUNDED"
 
 # The reasons an automatic node refuses to produce its external effect. The
@@ -175,6 +215,125 @@ def _receipt_view(stored: Any) -> Optional[Dict[str, Any]]:
         view["capability"] = origin.get("capability")
         view["adapter"] = origin.get("adapter")
     return view
+
+
+def _material_wait_view(wait: Any) -> Optional[Dict[str, Any]]:
+    """The bounded view of a material wait.
+
+    It names the reason, who asked for it, the exact dependencies the wait
+    accepted and the adoptions that followed. It carries no payload body:
+    the material stays readable as the object revision it names.
+    """
+    if not isinstance(wait, dict):
+        return None
+    return {
+        "state": wait.get("state"),
+        "requestVersion": wait.get("request_version"),
+        "requestedBy": wait.get("requested_by"),
+        "reason": wait.get("reason"),
+        "requestedAt": wait.get("requested_at"),
+        "inputDigest": wait.get("input_digest"),
+        "dependencies": [{"name": entry.get("name"),
+                          "revision": entry.get("revision"),
+                          "digest": entry.get("digest"),
+                          "adopted": bool(entry.get("adopted"))}
+                         for entry in (wait.get("dependencies") or [])],
+        "adoptions": [{"name": entry.get("name"),
+                       "revision": entry.get("revision"),
+                       "digest": entry.get("digest"),
+                       "adoptedBy": entry.get("adopted_by"),
+                       "adoptedAt": entry.get("adopted_at")}
+                      for entry in (wait.get("adoptions") or [])],
+        "resumed": wait.get("resumed"),
+    }
+
+
+def _rework_authorization_view(record: Any) -> Optional[Dict[str, Any]]:
+    """The bounded view of a used rework authorization."""
+    if not isinstance(record, dict):
+        return None
+    return {
+        "state": record.get("state"),
+        "cap": record.get("cap"),
+        "authorizedBy": record.get("authorized_by"),
+        "authorizedAt": record.get("authorized_at"),
+        "reason": record.get("reason"),
+        "node": record.get("node"),
+        "fromAttempt": record.get("from_attempt"),
+        "toAttempt": record.get("to_attempt"),
+        "sessionId": record.get("session_id"),
+        "terminal": record.get("terminal"),
+    }
+
+
+def _candidate_rework_view(work, spec, latest) -> Dict[str, Any]:
+    """The projection a workbench needs before anybody acts.
+
+    It answers three questions from stored facts only: how many
+    reworks this workflow may still authorize (a fixed cap of one),
+    whether the work as it stands is eligible at all, and — when it is —
+    the exact failed attempt and ticket an authorization must name. It
+    grants nothing: eligibility is an observation, never an authority.
+    """
+    record = work.get("candidate_rework")
+    terminal = work.get("workflow_terminal") or {}
+    node_id = terminal.get("node")
+    failed = None
+    eligible = False
+    if node_id:
+        instance = latest.get(node_id) or {}
+        node = (spec.get("nodes") or {}).get(node_id) or {}
+        failed = {"node": node_id,
+                  "attempt": instance.get("attempt"),
+                  "outcome": instance.get("outcome"),
+                  "reason": instance.get("reason"),
+                  "inputDigest": instance.get("input_digest")}
+        eligible = bool(
+            record is None
+            and not work.get("cancellation")
+            and not work.get("workflow_finalization")
+            and node.get("kind") == "agent"
+            and instance.get("state") == "failed"
+            and instance.get("outcome") == "failed"
+            and instance.get("reason") == "WORKFLOW_RESULT_INVALID")
+    return {"cap": 1,
+            "used": 1 if record is not None else 0,
+            "eligible": eligible,
+            "failed": failed,
+            "grant": _rework_authorization_view(record)}
+
+
+def _revalidation_view(plan: Any) -> Optional[Dict[str, Any]]:
+    """The bounded view of a material revalidation.
+
+    It names the attestation, the affected consumers and the chain they
+    are re-run in. It carries no payload body: the material stays
+    readable as the object revision the attestation names.
+    """
+    if not isinstance(plan, dict):
+        return None
+    attestation = plan.get("attestation") or {}
+    return {
+        "state": plan.get("state"),
+        "generation": plan.get("generation"),
+        "attestation": {
+            "kind": attestation.get("kind"),
+            "adoptedBy": attestation.get("adopted_by"),
+            "adoptedAt": attestation.get("adopted_at"),
+            "sourceNode": attestation.get("source_node"),
+            "sourceAttempt": attestation.get("source_attempt"),
+            "object": attestation.get("object"),
+            "from": attestation.get("from"),
+            "to": attestation.get("to"),
+            "claim": attestation.get("claim"),
+            "reason": attestation.get("reason"),
+        },
+        "affected": [{"node": entry.get("node"),
+                      "attempt": entry.get("attempt"),
+                      "reason": entry.get("reason")}
+                     for entry in (plan.get("affected") or [])],
+        "queue": list(plan.get("queue") or []),
+    }
 
 
 def _finding(code: str, message: str, **extra) -> Dict[str, Any]:
@@ -395,9 +554,17 @@ class WorkflowEngine:
         A rejected command still settles when it changed stored state (a
         rejected candidate fails its node and opens a rework attempt), so
         the settle pass runs for both outcomes.
+
+        A **decision** is admitted as evidence and is still waiting for
+        the trusted verifier when the command returns. The settle pass
+        would then judge the *previous* decision, so the verifier is asked
+        to judge the admitted evidence first: the routing follows the
+        decision that was made, never the one before it.
         """
         receipt = self.runtime.command(actor, command_id, work_id, kind, payload,
                                        expected_version)
+        if kind == "record_decision" and receipt.get("decision") == "accepted":
+            self.runtime.verify_pending(work_id)
         try:
             self.advance(work_id, int(time.time()) if now is None else int(now))
         except Exception as error:  # pragma: no cover - defensive, surfaced durably
@@ -412,7 +579,9 @@ class WorkflowEngine:
         it still holds: for a decision, the ingress source must still be
         the configured source and the actor must still hold the assignment.
         """
-        if kind in ("bind_workflow", "revise_object"):
+        if kind in ("bind_workflow", "revise_object", "request_material_wait",
+                    "adopt_material", "resume_material_wait", "replace_material",
+                    "authorize_rework"):
             return self.runtime._manager(actor, work)
         if kind == "submit_node_result":
             return "workflow.execute" in self.runtime.grants.get(actor, set())
@@ -456,6 +625,16 @@ class WorkflowEngine:
                                          command_id)
         if kind == "finalize_workflow_success":
             return self._finalize_success(db, actor, work, payload, version)
+        if kind == "request_material_wait":
+            return self._request_material_wait(db, actor, work, payload, version)
+        if kind == "adopt_material":
+            return self._adopt_material(db, actor, work, payload, version)
+        if kind == "resume_material_wait":
+            return self._resume_material_wait(db, actor, work, payload, version)
+        if kind == "replace_material":
+            return self._replace_material(db, actor, work, payload, version)
+        if kind == "authorize_rework":
+            return self._authorize_rework(db, actor, work, payload, version)
         return self.runtime._reject("COMMAND_UNSUPPORTED", version)
 
     # ------------------------------------------------------------------
@@ -796,18 +975,29 @@ class WorkflowEngine:
                           "ORDER BY node,attempt", (work_id,)).fetchall()
         return [json.loads(row["body"]) for row in rows]
 
-    def _intent_id(self, work_id, node, attempt, kind):
-        return "wf:" + work_id + ":" + node + ":" + str(attempt) + ":" + kind
+    def _intent_id(self, work_id, node, attempt, kind, generation=0):
+        """The stable identity of one durable intent.
 
-    def _write_intent(self, db, work_id, node, attempt, kind, body):
-        intent_id = self._intent_id(work_id, node, attempt, kind)
+        A node that is resumed asks again under a **new** identity: an
+        acknowledgement of the withdrawn prompt can never swallow the
+        resumed one, and the two are two different tasks on the record.
+        """
+        base = "wf:" + work_id + ":" + node + ":" + str(attempt) + ":" + kind
+        if generation:
+            return base + ":" + str(generation)
+        return base
+
+    def _write_intent(self, db, work_id, node, attempt, kind, body,
+                      generation: int = 0):
+        intent_id = self._intent_id(work_id, node, attempt, kind, generation)
         existing = db.execute("SELECT id,status FROM workflow_intents WHERE id=?",
                               (intent_id,)).fetchone()
         if existing is not None:
             return intent_id
         payload = dict(body)
         payload.update({"id": intent_id, "work_id": work_id, "node": node,
-                        "attempt": attempt, "kind": kind, "status": "pending"})
+                        "attempt": attempt, "kind": kind, "status": "pending",
+                        "generation": generation})
         db.execute("INSERT INTO workflow_intents VALUES (?,?,?,?,?,?,?)",
                    (intent_id, work_id, node, attempt, kind, "pending", canonical(payload)))
         return intent_id
@@ -913,6 +1103,23 @@ class WorkflowEngine:
             return DEFAULT_MAX_ATTEMPTS
         return value
 
+    def _material_generations(self, spec, node_id) -> int:
+        """How often the material this node judges may be replaced.
+
+        The core allowance is **one** generation per workflow. A
+        definition may only **tighten** it: a node that declares zero may
+        not be revalidated at all. A node that says nothing keeps the
+        core allowance, so a definition published before this field
+        existed still works.
+        """
+        node = spec["nodes"].get(node_id) or {}
+        value = node.get("material_generations")
+        if value is None:
+            return MATERIAL_GENERATION_ALLOWANCE
+        if type(value) is not int or value < 0:
+            return 0
+        return min(value, MATERIAL_GENERATION_ALLOWANCE)
+
     def advance(self, work_id: str, now: int) -> Dict[str, Any]:
         """One deterministic routing pass over a work's stored state."""
         with self.runtime._transaction() as db:
@@ -944,10 +1151,11 @@ class WorkflowEngine:
                 # fact anybody could rely on.
                 return {"decision": "noop", "work_id": work_id,
                         "status": work.get("workflow_status")}
+            changed = self._repair_stale_waiting(db, work)
             spec = self._spec_in(db, work)
             if spec is None:
-                return {"decision": "noop", "work_id": work_id}
-            changed = False
+                return {"decision": "advanced" if changed else "noop",
+                        "work_id": work_id}
             for _ in range(MAX_ADVANCE_STEPS):
                 stepped, stop = self._step(db, work, spec, now)
                 changed = changed or stepped
@@ -956,6 +1164,46 @@ class WorkflowEngine:
             return {"decision": "advanced" if changed else "noop",
                     "work_id": work_id, "current": work.get("workflow_current"),
                     "status": work.get("workflow_status")}
+
+    def _repair_stale_waiting(self, db, work) -> bool:
+        """Reconcile a stale ``waiting`` status left by a replaced wait.
+
+        A replacement accepted before the active transition existed could
+        leave ``workflow_status = waiting`` while the revalidation had
+        already opened the head of its queue on a material attempt: the
+        work is working but looks parked, and a platform that imports an
+        agent intent only for an active workflow never resumes the
+        session. One normal pass reconciles exactly that — only the head
+        of the revalidation queue, only a material attempt that is really
+        working, never a genuine wait, a cancellation or a finalization
+        (those are turned away before this runs). The correction happens
+        once: a pass that finds nothing to repair writes nothing, so
+        repeated passes produce no event and no version churn.
+        """
+        if work.get("workflow_status") != "waiting":
+            return False
+        plan = work.get("material_revalidation") or {}
+        if plan.get("state") != "revalidating":
+            return False
+        queue = plan.get("queue") or []
+        current = work.get("workflow_current")
+        if current is None or not queue or queue[0] != current:
+            return False
+        instance = self._latest_instance(db, work["id"], current)
+        if instance is None:
+            return False
+        if instance.get("trigger") != "material":
+            return False
+        if instance.get("state") not in ("running", "submitted", "blocked"):
+            # A node that genuinely waits for material keeps its wait: the
+            # status is the fact it says it is.
+            return False
+        wait = instance.get("material_wait")
+        if isinstance(wait, dict) and wait.get("state") == "waiting":
+            return False
+        work["workflow_status"] = "active"
+        return self._persist(db, work, "WorkflowMaterialRevalidationResumed",
+                             {"node": current})
 
     def _step(self, db, work, spec, now) -> Tuple[bool, bool]:
         changed = False
@@ -979,7 +1227,35 @@ class WorkflowEngine:
             changed = changed or progressed
             persisted = persisted or progressed
             instance = self._latest_instance(db, work["id"], current)
+        elif instance["state"] == "waiting":
+            if not instance.get("pending_revalidation"):
+                # A node that waits for material is stable: the pass
+                # neither settles it nor opens anything behind it. The
+                # manager resumes it, adopts the material or cancels the
+                # work.
+                return changed, True
+            # The material under the wait was replaced: the wait ends and
+            # the node runs again on a material attempt.
+            opened = self._open_attempt(db, work, spec, current, now)
+            changed = True
+            persisted = True
+            if opened is None:
+                self._persist(db, work, "WorkflowReworkLimitExceeded",
+                              {"node": current})
+                return changed, True
+            instance = opened
         elif instance["state"] in ("running", "submitted"):
+            if instance.get("pending_revalidation"):
+                # The work of this attempt is bound to the replaced
+                # material: it is withdrawn and the node runs again.
+                opened = self._open_attempt(db, work, spec, current, now)
+                changed = True
+                persisted = True
+                if opened is None:
+                    self._persist(db, work, "WorkflowReworkLimitExceeded",
+                                  {"node": current})
+                    return changed, True
+                return changed, True
             progressed = self._settle(db, work, spec, current, instance, now)
             changed = changed or progressed
             persisted = persisted or progressed
@@ -987,7 +1263,21 @@ class WorkflowEngine:
         if instance is None:
             return changed, True
         if instance["state"] in TERMINAL_NODE_STATES:
-            successor = self._successor(db, work, spec, current, instance)
+            if instance.get("pending_revalidation"):
+                # A node that was invalidated runs again in place: the
+                # revalidation re-runs the consumer instead of routing
+                # past it.
+                opened = self._open_attempt(db, work, spec, current, now)
+                changed = True
+                persisted = True
+                if opened is None:
+                    self._persist(db, work, "WorkflowReworkLimitExceeded",
+                                  {"node": current})
+                    return changed, True
+                return changed, True
+            successor = self._revalidation_successor(db, work, current, instance)
+            if successor is None:
+                successor = self._successor(db, work, spec, current, instance)
             if successor is None:
                 work["workflow_current"] = None
                 work["workflow_status"] = (
@@ -1005,9 +1295,24 @@ class WorkflowEngine:
                 self._persist(db, work, "WorkflowBlocked",
                               {"node": current, "reason": "PREDICATE_UNKNOWN"})
                 return changed, True
+            # The cursor names the node whose attempt the work is working
+            # on. It moves to the successor only when that successor's
+            # attempt was really opened: a routing that cannot open the
+            # successor leaves the cursor on the node that completed.
+            stale = self._latest_instance(db, work["id"], successor)
             work["workflow_current"] = successor
             opened = self._open_attempt(db, work, spec, successor, now)
             if opened is None:
+                if stale is not None and stale["state"] in TERMINAL_NODE_STATES:
+                    # The successor's own attempt is a terminal one that
+                    # was **already routed from**: the work reached it
+                    # again and could not open a new attempt there. The
+                    # cursor goes back to the node that completed, so the
+                    # next pass never routes from that stale attempt
+                    # again — a decision is routed from exactly once —
+                    # and the work never walks past the node it could
+                    # not open.
+                    work["workflow_current"] = current
                 work["workflow_status"] = "needs_attention"
                 self._persist(db, work, "WorkflowReworkLimitExceeded", {"node": successor})
                 return changed, True
@@ -1042,26 +1347,114 @@ class WorkflowEngine:
     def _open_attempt(self, db, work, spec, node_id, now) -> Optional[Dict[str, Any]]:
         """Open (or re-open) the current attempt of a node.
 
-        Returns the instance, or ``None`` when the bounded rework allowance
-        for that node is exhausted.
+        Returns the instance, or ``None`` when the bounded allowance for
+        that node is exhausted.
+
+        Two allowances meet here, and they are separate on purpose:
+
+        * the **quality** allowance (``max_attempts``) counts the attempts
+          that are not material attempts. It is never raised and never
+          reset by a revalidation.
+        * the **material** allowance (``material_generations``) counts the
+          revalidations a controlled replacement may open.
+
+        The attempt number itself is monotonic and is never reused: the
+        history of a node stays unambiguous, and every attempt records the
+        trigger that opened it.
         """
         latest = self._latest_instance(db, work["id"], node_id)
+        material = bool(latest and latest.get("pending_revalidation"))
         if latest is not None and latest["state"] in ("running", "submitted"):
-            return latest
+            if not material:
+                return latest
+            # The work of this attempt is bound to the material that was
+            # replaced: it is withdrawn and the node runs again.
+            self._invalidate_material_attempt(db, work, latest)
+        if latest is not None and latest["state"] == "waiting":
+            if not material:
+                # A node that waits for material is stable: the pass
+                # neither settles it nor opens anything behind it.
+                return latest
+            # The wait is bound to material that has been replaced: it ends
+            # with the recorded reason, and the node runs again.
+            self._invalidate_material_wait(db, work, latest)
         attempt = (latest["attempt"] + 1) if latest is not None else 1
-        if attempt > self._max_attempts(spec, node_id):
-            return None
         node = spec["nodes"][node_id]
+        generation = 0
+        if material:
+            trigger = "material"
+            generation = int((latest.get("pending_revalidation") or {}).get(
+                "generation") or 0)
+        else:
+            trigger = "initial" if attempt == 1 else "quality"
+            if (self._quality_attempts(db, work, node_id) + 1
+                    > self._max_attempts(spec, node_id)):
+                return None
         instance = {"node": node_id, "kind": node.get("kind"), "attempt": attempt,
                     "state": "blocked", "outcome": None, "reason": None,
                     "inputs": [], "subject": None, "output": None,
                     "findings": [], "blockers": [], "actor": None,
                     "operation_id": None, "intent_id": None, "result": None,
+                    "input_generation": (int((latest or {}).get("input_generation")
+                                             or 0) + 1) if material
+                    else int((latest or {}).get("input_generation") or 0),
+                    "trigger": trigger,
+                    "material_generation": generation,
                     "created_at": now}
+        if material:
+            # the material this attempt judges must be newer than the
+            # material the invalidation recorded
+            instance["invalidated_refs"] = (latest.get("pending_revalidation")
+                                            or {}).get("refs") or []
         db.execute("INSERT INTO workflow_nodes VALUES (?,?,?,?,?)",
                    (work["id"], node_id, attempt, "blocked", canonical(instance)))
         self._activate(db, work, spec, node_id, instance, now)
         return self._latest_instance(db, work["id"], node_id)
+
+    def _quality_attempts(self, db, work, node_id) -> int:
+        """How many quality attempts the node has spent.
+
+        A material attempt is not a quality attempt: it never spends the
+        quality allowance, and it never gives it back.
+        """
+        spent = 0
+        for instance in self._instances(db, work["id"]):
+            if instance["node"] != node_id:
+                continue
+            if instance.get("trigger") in ("material", "rework"):
+                # A material attempt and an authorized rework attempt are
+                # neither of them quality attempts: neither spends the
+                # quality allowance, and neither gives it back.
+                continue
+            spent += 1
+        return spent
+
+    def _invalidate_material_wait(self, db, work, instance) -> None:
+        """End a wait that is bound to material which has been replaced.
+
+        The wait's record stays on the attempt it was opened on: it is the
+        history of what the node was waiting for, and it is not deleted.
+        """
+        instance["state"] = "cancelled"
+        instance["outcome"] = "cancelled"
+        instance["reason"] = "MATERIAL_REPLACED"
+        self._cancel_intents(db, work["id"], instance["node"], instance["attempt"])
+        self._save_instance(db, work, instance, "WorkflowMaterialWaitInvalidated",
+                            {"reason": "MATERIAL_REPLACED"})
+
+    def _invalidate_material_attempt(self, db, work, instance) -> None:
+        """Withdraw the work of an attempt bound to replaced material.
+
+        The attempt itself stays on the record — it is the history of
+        what the node was working on — but it is closed with the reason
+        it was withdrawn.
+        """
+        instance["state"] = "cancelled"
+        instance["outcome"] = "cancelled"
+        instance["reason"] = "MATERIAL_REPLACED"
+        self._cancel_intents(db, work["id"], instance["node"], instance["attempt"])
+        self._save_instance(db, work, instance, "WorkflowMaterialAttemptInvalidated",
+                            {"reason": "MATERIAL_REPLACED"})
 
     def _activate(self, db, work, spec, node_id, instance, now) -> bool:
         """Resolve inputs and subject, then start the node's own work.
@@ -1112,7 +1505,18 @@ class WorkflowEngine:
                 subject = {"name": name, "revision": row["revision"],
                            "digest": row["digest"]}
         instance["inputs"] = pinned_inputs
-        instance["input_digest"] = digest(pinned_inputs)
+        generation = int(instance.get("input_generation") or 0)
+        if generation:
+            # A node that was resumed asks under a new generation: the
+            # ticket moves even when the material did not, so a ticket
+            # issued before the wait never satisfies the node after it.
+            instance["input_digest"] = digest({"inputs": pinned_inputs,
+                                                "generation": generation})
+        else:
+            # The legacy formula, unchanged: a node that never waited
+            # keeps exactly the ticket it was given, so an upgrade never
+            # invalidates a pinned ticket or a review that bound it.
+            instance["input_digest"] = digest(pinned_inputs)
         instance["input_report"] = input_report
         instance["subject"] = subject
         instance["findings"] = _bounded(findings)
@@ -1158,12 +1562,15 @@ class WorkflowEngine:
         session_id = (work.get("workflow") or {}).get("session_id")
         body = {"session_id": session_id, "executor": spec["nodes"][node_id].get("executor"),
                 "inputs": instance.get("inputs") or [],
+                "input_digest": instance.get("input_digest"),
+                "input_generation": instance.get("input_generation", 0),
                 "output": spec["nodes"][node_id].get("output"),
                 "checks": spec["nodes"][node_id].get("checks") or [],
                 "deadline_at": instance.get("deadline_at"),
                 "created_at": now}
         instance["intent_id"] = self._write_intent(
-            db, work["id"], node_id, instance["attempt"], "agent_task", body)
+            db, work["id"], node_id, instance["attempt"], "agent_task", body,
+            generation=int(instance.get("input_generation") or 0))
 
     def _start_review(self, db, work, spec, node_id, instance, now):
         """The durable review intent of a node that declares a review.
@@ -1401,6 +1808,12 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     def _settle(self, db, work, spec, node_id, instance, now) -> bool:
+        if instance.get("pending_revalidation"):
+            # A material replacement invalidated this attempt: nothing
+            # settles it. A candidate, a decision or a review made on the
+            # material that was replaced is never accepted for it, and the
+            # material attempt replaces it.
+            return False
         node = spec["nodes"][node_id]
         kind = node.get("kind")
         if kind == "human":
@@ -1427,6 +1840,14 @@ class WorkflowEngine:
     def _settle_human(self, db, work, spec, node_id, instance, now) -> bool:
         node = spec["nodes"][node_id]
         subject = instance.get("subject")
+        pending = self._pending_decision(db, work, node, node_id, instance)
+        if pending is not None:
+            # A decision has been admitted and the trusted verifier has not
+            # judged it yet. The node's position is not settled until it
+            # has: an unverified proof is never routed on, and it is never
+            # passed over in favour of an older decision either — the node
+            # waits for the verifier.
+            return self._expire_if_due(db, work, instance, now)
         candidates = self._find_decisions(db, work, node, subject, node_id,
                                           instance["attempt"])
         if not candidates:
@@ -1476,11 +1897,21 @@ class WorkflowEngine:
                          "A declared criterion has no verdict in the decision",
                          checks=missing),
                 "WorkflowNodeCheckResultsMissing")
+        # The decision is a judgment: its report belongs to the node's own
+        # evidence — once, however often the pass re-derives it — and the
+        # judgment itself is recorded, so the read model can project the
+        # position that is in force.
+        self._merge_report(node, instance, report)
+        self._record_judgment(
+            node, instance, "decision", proof["event_id"], report,
+            method="HUMAN", decision=verdict, eventId=proof["event_id"],
+            actor=actor, attempt=instance["attempt"],
+            inputDigest=instance.get("input_digest"),
+            outputDigest=(subject or {}).get("digest"))
         shortfalls = self._criterion_shortfalls(node, report, "HUMAN")
         if verdict == "approved" and shortfalls:
             # An approval that carries a failing required criterion does not
             # complete the node. The shortage is kept, exactly as reported.
-            instance["check_results"] = self._ordered_report(                node, (instance.get("check_results") or []) + report)
             instance["actor"] = actor
             return self._block_with_finding(
                 db, work, instance,
@@ -1493,7 +1924,6 @@ class WorkflowEngine:
             # neither an approval nor a rejection: it does not complete the
             # node and it does not open a rework attempt.
             instance["actor"] = actor
-            instance["check_results"] = self._ordered_report(                node, (instance.get("check_results") or []) + report)
             instance["material_request"] = {
                 "items": data.get("items") or [],
                 "reason": data.get("reason") or "",
@@ -1514,27 +1944,258 @@ class WorkflowEngine:
             # record is invented for a decision that must not have one.
             instance["quality"] = {"declared": True, "mode": "exempt",
                                    "validator": None}
-        if output and output_required and not instance.get("output"):
-            # The node declared a named record and the record is not on the
-            # node yet: the decision stands, but nothing downstream is
-            # routed on a node whose own output is missing.
-            instance["actor"] = actor
-            instance["check_results"] = self._ordered_report(                node, (instance.get("check_results") or []) + report)
-            return self._block_with_finding(
-                db, work, instance,
-                _finding("WORKFLOW_OUTPUT_MISSING",
-                         "The declared output has not been produced yet",
-                         node=node_id, object=output.get("object")),
-                "WorkflowOutputMissing")
+        if output and output_required:
+            candidate = self._bound_output(instance, proof)
+            if candidate is None:
+                # The node declared a named record and the record of **this**
+                # decision is not on the node: the decision stands, but
+                # nothing downstream is routed on a node whose own output
+                # is missing. A record another decision carried — an
+                # unverified one, or one the family refused — is a candidate
+                # on the record, never this node's output.
+                instance["actor"] = actor
+                return self._block_with_finding(
+                    db, work, instance,
+                    _finding("WORKFLOW_OUTPUT_MISSING",
+                             "The declared output has not been produced yet",
+                             node=node_id, object=output.get("object")),
+                    "WorkflowOutputMissing")
+            # The record is the one this decision carried: it becomes the
+            # node's output.
+            self._adopt_output(db, work, node, instance, candidate)
         instance["actor"] = actor
         instance["outcome"] = verdict
         instance["state"] = "completed"
-        instance["check_results"] = self._ordered_report(            node, (instance.get("check_results") or []) + report)
         instance["decision_event_id"] = proof["event_id"]
         self._finish_intent(db, work, instance)
         self._save_instance(db, work, instance, "WorkflowNodeCompleted",
                             {"outcome": verdict})
         return True
+
+    @staticmethod
+    def _report_key(entry: Dict[str, Any]) -> str:
+        """The identity of one criterion verdict, without the moment of it.
+
+        The same judgment re-derived by a later routing pass differs only
+        in the moment it was recorded. That moment is not part of what was
+        judged, so it is not part of the judgment's identity.
+        """
+        return canonical({key: value for key, value in entry.items()
+                          if key != "at"})
+
+    def _merge_report(self, node, instance, report) -> bool:
+        """Merge a criterion report into the node's own evidence, once.
+
+        A report is the record of one judgment. A routing pass that
+        re-settles the same decision re-derives the same judgment, and
+        appending it again would make the node's evidence grow with every
+        pass of the pump — and, because the node body then differs from
+        the stored one, write a new audit event for a decision that never
+        changed.
+
+        The judgment is recognised by its content, not by its time: the
+        same verdicts against the same digests are one judgment, however
+        often the routing pass re-derives them. A different decision, a
+        revised subject or different inputs produce a different report and
+        are merged again, so nothing is swallowed and no verdict is lost.
+        """
+        existing = {self._report_key(entry)
+                    for entry in instance.get("check_results") or []}
+        fresh = [entry for entry in report or []
+                 if self._report_key(entry) not in existing]
+        if not fresh:
+            return False
+        instance["check_results"] = self._ordered_report(
+            node, (instance.get("check_results") or []) + fresh)
+        return True
+
+    def _pending_decision(self, db, work, node, node_id, instance):
+        """The decision that has been admitted and is not verified yet.
+
+        A proof waits for the trusted verifier between its admission and
+        the verifier's judgement. It is not a decision the engine may act
+        on — and it is not one the engine may ignore either: the newest
+        admitted decision is the current position, so the node waits for
+        the verifier instead of settling on the decision before it.
+        """
+        kind = node.get("evidence_kind")
+        if not kind:
+            return None
+        subject = instance.get("subject") or {}
+        attempt = instance.get("attempt")
+        for proof in self.runtime._proofs(db, work["id"]):
+            if proof.get("status") != "pending_verification":
+                continue
+            if proof.get("kind") != kind:
+                continue
+            data = proof.get("data") or {}
+            if data.get("decision") not in ("approved", "rejected",
+                                            "request_material"):
+                continue
+            if data.get("node") != node_id or data.get("attempt") != attempt:
+                continue
+            if data.get("digest") != subject.get("digest"):
+                continue
+            if data.get("revision") != subject.get("revision"):
+                continue
+            return proof
+        return None
+
+    def _record_judgment(self, node, instance, kind, identity, report,
+                         **meta) -> None:
+        """Record the judgment the engine just applied to this attempt.
+
+        The judgments are the attempt's **current position**: what the
+        runtime selected, judged and recorded — not a history window and
+        never a guess from a timestamp. The read model projects them, so a
+        reader sees the judgment that is in force and not the oldest one
+        that happens to fit.
+
+        The same judgment, re-derived by a later routing pass, is
+        recognised by its identity and not recorded again: the waiting
+        stays stable and the node body does not move.
+
+        A judgment that yields **two different verdicts** is not a
+        repetition but a conflict, and it is never swallowed: the criteria
+        that disagree are marked, and the read model says so instead of
+        showing one of the two as if it were the truth.
+        """
+        judgments = list(instance.get("judgments") or [])
+        for judgment in judgments:
+            if (judgment.get("kind") == kind
+                    and judgment.get("identity") == identity):
+                conflicts = judgment.get("conflicts") or []
+                changed = [identifier for identifier
+                           in self._conflicting_criteria(
+                               judgment.get("checks"), report)
+                           if identifier not in conflicts]
+                if changed:
+                    judgment["conflicts"] = sorted(conflicts + changed)
+                return
+        wanted = {self._report_key(entry) for entry in report or []}
+        stored = {}
+        for entry in instance.get("check_results") or []:
+            key = self._report_key(entry)
+            if key in wanted and entry.get("checkId") not in stored:
+                stored[entry.get("checkId")] = entry
+        judgment = {"kind": kind, "identity": identity,
+                    "checks": self._ordered_report(node, list(stored.values()))}
+        judgment.update(meta)
+        judgments.append(judgment)
+        instance["judgments"] = judgments
+
+    def _conflicting_criteria(self, stored, report) -> List[str]:
+        """The criteria whose verdict changed under the same judgment.
+
+        The identity of a judgment is the fact it judged — a proof, or a
+        material and its validator. The report it produced follows from
+        that fact, so a second, different report under the same identity
+        is a disagreement about the same fact: it is named, never dropped.
+        """
+        keys = {}
+        for entry in stored or []:
+            keys[entry.get("checkId")] = self._report_key(entry)
+        reported = {}
+        for entry in report or []:
+            reported[entry.get("checkId")] = self._report_key(entry)
+        changed = []
+        for identifier, key in reported.items():
+            if identifier not in keys or keys[identifier] != key:
+                changed.append(identifier)
+        for identifier in keys:
+            if identifier not in reported:
+                changed.append(identifier)
+        return sorted(set(identifier for identifier in changed
+                          if isinstance(identifier, str)))
+
+    @staticmethod
+    def _conflict_entry(entry):
+        """The report of a criterion whose judgment did not agree with itself.
+
+        A judgment that yields two different verdicts is a conflict, not a
+        repetition. The reader is told, instead of being shown one of the
+        two as if it were the truth.
+        """
+        conflicted = dict(entry)
+        conflicted["verdict"] = "conflict"
+        conflicted["reason"] = ("the same judgment produced two different "
+                                "verdicts for this criterion")
+        conflicted["evidence"] = []
+        return conflicted
+
+    def _record_output_judgment(self, node, instance, report, material,
+                                validator_id, validator_version, **meta):
+        """Record the judgment an output validation produced.
+
+        The identity of that judgment is the material it judged and the
+        validator that judged it: the same material, judged by the same
+        validator, is one judgment, however often the pass re-derives it.
+        """
+        identity = digest([digest(material), validator_id, validator_version])
+        judgment = {"method": "PROGRAM", "validator": validator_id,
+                    "validatorVersion": validator_version,
+                    "outputDigest": digest(material),
+                    "attempt": instance.get("attempt"),
+                    "inputDigest": instance.get("input_digest")}
+        judgment.update(meta)
+        self._record_judgment(node, instance, "output", identity, report,
+                              **judgment)
+
+    def _record_review_judgment(self, node, instance, report, proof, **meta):
+        """Record the judgment an independent review produced."""
+        identity = proof.get("event_id")
+        judgment = {"method": "AGENT", "eventId": identity,
+                    "attempt": instance.get("attempt"),
+                    "inputDigest": instance.get("input_digest")}
+        judgment.update(meta)
+        self._record_judgment(node, instance, "review", identity, report,
+                              **judgment)
+
+    def _current_checks(self, node, instance) -> List[Dict[str, Any]]:
+        """The checks that are in force for this attempt, per criterion.
+
+        One entry per declared criterion: the report of the judgment that
+        covered it last. A criterion that no judgment covered yet is
+        simply absent — nobody judged it, so it is not a pass.
+
+        The history stays in the store — every report the attempt ever
+        produced, and every event — and this is what the read model
+        *serves*: the current position, not an arbitrary window of the
+        past. Nothing here is guessed from a timestamp.
+        """
+        judgments = instance.get("judgments") or []
+        if not judgments:
+            # A row that predates the judgment record: the stored report
+            # is what the engine has, until it settles the attempt again.
+            return (instance.get("check_results") or [])[:MAX_VIEW_FINDINGS]
+        declared = {}
+        order = {}
+        for index, declaration in enumerate(self._check_declarations(node)):
+            identifier = declaration.get("id")
+            if not isinstance(identifier, str):
+                continue
+            declared[identifier] = declaration.get("method")
+            order[identifier] = index
+        chosen: Dict[str, Dict[str, Any]] = {}
+        for judgment in judgments:
+            method = judgment.get("method")
+            conflicts = set(judgment.get("conflicts") or [])
+            for entry in judgment.get("checks") or []:
+                identifier = entry.get("checkId")
+                if not isinstance(identifier, str) or identifier not in declared:
+                    continue
+                wanted = declared[identifier]
+                if wanted is not None and wanted != method:
+                    # The criterion belongs to another judge.
+                    continue
+                if identifier in conflicts:
+                    # The judgment did not agree with itself: the reader is
+                    # told, rather than shown one of the two verdicts.
+                    entry = self._conflict_entry(entry)
+                chosen[identifier] = entry
+        entries = [chosen[identifier] for identifier in
+                   sorted(chosen, key=lambda name: order.get(name, len(order)))]
+        return entries[:MAX_VIEW_FINDINGS]
 
     def _criterion_findings(self, node, items) -> List[Dict[str, Any]]:
         """The quality of a criterion report, checked at the core boundary.
@@ -1788,6 +2449,8 @@ class WorkflowEngine:
             validator_id=(review.get("rubric") or {}).get("validator"),
             validator_version=(review.get("rubric") or {}).get("validator_version"))
         instance["check_results"] = self._ordered_report(            node, (instance.get("check_results") or []) + report)
+        self._record_review_judgment(node, instance, report, proof,
+                                     producer=producer, outputDigest=result["digest"])
         shortfalls = self._criterion_shortfalls(node, report, "AGENT")
         if data.get("verdict") != "passed" or shortfalls:
             instance["state"] = "failed"
@@ -2109,6 +2772,8 @@ class WorkflowEngine:
         if findings:
             instance["findings"] = _bounded(findings)
             instance["check_results"] = self._ordered_report(node, check_report)
+            self._record_output_judgment(node, instance, check_report, payload,
+                                         validator_id, validator_version)
             instance["quality"] = {
                 "declared": True, "mode": "rejected",
                 "validator": ({"id": validator_id, "version": validator_version}
@@ -2129,6 +2794,8 @@ class WorkflowEngine:
             reference = self._write_object(db, work["id"], output["object"], payload)
             instance["output"] = reference
         instance["check_results"] = self._ordered_report(node, check_report)
+        self._record_output_judgment(node, instance, check_report, payload,
+                                     validator_id, validator_version)
         instance["quality"] = {
             "declared": True, "mode": "validated",
             "validator": ({"id": validator_id, "version": validator_version}
@@ -2350,6 +3017,8 @@ class WorkflowEngine:
         if findings:
             instance["findings"] = _bounded(findings)
             instance["check_results"] = self._ordered_report(node, check_report)
+            self._record_output_judgment(node, instance, check_report, payload,
+                                         validator_id, validator_version)
             instance["quality"] = {
                 "declared": True, "mode": "rejected",
                 "validator": ({"id": validator_id, "version": validator_version}
@@ -2367,6 +3036,8 @@ class WorkflowEngine:
             reference = self._write_object(db, work["id"], output["object"], payload)
             instance["output"] = reference
         instance["check_results"] = self._ordered_report(node, check_report)
+        self._record_output_judgment(node, instance, check_report, payload,
+                                     validator_id, validator_version)
         instance["quality"] = {
             "declared": True, "mode": "validated",
             "validator": ({"id": validator_id, "version": validator_version}
@@ -2395,6 +3066,29 @@ class WorkflowEngine:
     # Successors and rework
     # ------------------------------------------------------------------
 
+    def _revalidation_successor(self, db, work, current, instance):
+        """The next node the revalidation re-runs, if any.
+
+        The queue is the affected chain in dependency order, so the
+        re-run judges the material in the right order. It is consumed as
+        the chain **completes**: a node that fails keeps its place, so the
+        ordinary quality rework of that node runs first.
+        """
+        if instance.get("state") != "completed":
+            return None
+        plan = work.get("material_revalidation") or {}
+        if plan.get("state") != "revalidating":
+            return None
+        queue = plan.get("queue") or []
+        if not queue or queue[0] != current:
+            return None
+        remaining = queue[1:]
+        plan["queue"] = remaining
+        if not remaining:
+            plan["state"] = "revalidated"
+        work["material_revalidation"] = plan
+        return remaining[0] if remaining else None
+
     def _successor(self, db, work, spec, node_id, instance):
         """The node that follows, or None when the workflow is finished.
 
@@ -2409,6 +3103,12 @@ class WorkflowEngine:
             return node["on_reject"]
         if outcome == "failed":
             if reason == "WORKFLOW_RESULT_INVALID" and node.get("kind") == "agent":
+                if instance.get("trigger") in ("material", "rework"):
+                    # A material attempt and an authorized rework attempt
+                    # have no automatic further retry: the revalidation or
+                    # the authorization is spent, and the node reports the
+                    # failure instead of trying again.
+                    return None
                 # A rejected candidate is re-executed as a new attempt of the
                 # same node; the bounded allowance decides when to escalate.
                 return node_id
@@ -2471,8 +3171,24 @@ class WorkflowEngine:
         instance = self._latest_instance(db, work["id"], node_id)
         if instance is None or instance["attempt"] != attempt:
             return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        if instance["state"] == "waiting":
+            # The node waits for material: its result is not accepted
+            # until the manager resumes it. Nothing is stored.
+            return self.runtime._reject("WORKFLOW_NODE_WAITING", version, [node_id])
         if instance["state"] != "running":
             return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        if instance.get("pending_revalidation"):
+            # A material replacement invalidated this attempt. Its result
+            # is refused **at once**, before the material attempt opens:
+            # the candidate was produced from the material that was
+            # replaced, and nothing of it is stored.
+            return self.runtime._reject("WORKFLOW_NODE_INVALIDATED", version,
+                                        [node_id])
+        if work.get("workflow_current") != node_id:
+            # The workflow is working on another node: a result for a node
+            # the cursor has left is never accepted.
+            return self.runtime._reject("WORKFLOW_NODE_NOT_CURRENT", version,
+                                        [node_id])
         if payload["input_digest"] != instance.get("input_digest"):
             # A candidate produced from a superseded input is refused: the
             # content it was derived from is not the content in force.
@@ -2548,6 +3264,8 @@ class WorkflowEngine:
                               "name": reference["name"]}
         instance["output"] = reference
         instance["check_results"] = self._ordered_report(node, check_report)
+        self._record_output_judgment(node, instance, check_report, result,
+                                     validator_id, validator_version)
         instance["validator"] = {"id": validator_id, "version": validator_version}
         instance["quality"] = {"declared": True, "mode": "validated",
                                "validator": {"id": validator_id,
@@ -2572,6 +3290,951 @@ class WorkflowEngine:
                                       state=instance["state"])
 
     # ------------------------------------------------------------------
+    # Material waiting
+    # ------------------------------------------------------------------
+
+    def _request_material_wait(self, db, actor, work, payload, version):
+        """Park the current agent node until the manager supplies material.
+
+        Business material is not candidate quality. The wait keeps the
+        attempt, withdraws the agent's durable intent and refuses result
+        acceptance; it opens no rework attempt and spends no quality
+        allowance, so a workflow that waited may still complete on the
+        attempt it started with.
+
+        The request is pinned to the exact node, attempt and input digest
+        the caller observed, so a wait that was decided against a moved
+        work is refused instead of parking the wrong attempt.
+        """
+        if set(payload) != {"node", "attempt", "input_digest", "reason",
+                            "request_version"}:
+            raise WorkflowError("request_material_wait requires exactly node, "
+                                "attempt, input_digest, reason and request_version")
+        node_id = payload["node"]
+        attempt = payload["attempt"]
+        reason = payload["reason"]
+        if not isinstance(node_id, str) or type(attempt) is not int:
+            raise WorkflowError("request_material_wait requires a node id and "
+                                "an attempt")
+        if payload["request_version"] != MATERIAL_WAIT_REQUEST_VERSION:
+            raise WorkflowError("request_material_wait requires request_version "
+                                + str(MATERIAL_WAIT_REQUEST_VERSION))
+        if (not isinstance(reason, str) or not reason
+                or len(reason) > MAX_WAIT_REASON_CHARS):
+            raise WorkflowError("the reason must be a nonempty bounded string")
+        if not isinstance(payload["input_digest"], str) or not payload["input_digest"]:
+            raise WorkflowError("input_digest must be a nonempty string")
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self.runtime._reject("CANCELLATION_ACTIVE", version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        node = spec["nodes"].get(node_id)
+        if node is None:
+            return self.runtime._reject("WORKFLOW_NODE_UNKNOWN", version, [node_id])
+        if node.get("kind") != "agent":
+            # A human node asks for material through its decision; an
+            # automatic node owns an effect. Neither is a manager wait.
+            return self.runtime._reject("WORKFLOW_NODE_NOT_WAITABLE", version,
+                                        [node_id])
+        if work.get("workflow_current") != node_id:
+            return self.runtime._reject("WORKFLOW_NODE_NOT_CURRENT", version,
+                                        [node_id])
+        instance = self._latest_instance(db, work["id"], node_id)
+        if instance is None or instance["attempt"] != attempt:
+            return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        if instance["state"] == "waiting":
+            return self.runtime._reject("WORKFLOW_NODE_WAITING", version, [node_id])
+        if instance["state"] != "running":
+            return self.runtime._reject("WORKFLOW_NODE_NOT_WAITABLE", version,
+                                        [node_id])
+        if payload["input_digest"] != instance.get("input_digest"):
+            # The caller pinned a digest the node does not hold: the
+            # attempt it saw is not the attempt in force.
+            return self.runtime._reject("WORKFLOW_INPUT_STALE", version, [node_id])
+        dependencies = [dict(entry) for entry in (instance.get("inputs") or [])]
+        subject = instance.get("subject")
+        if isinstance(subject, dict):
+            dependencies.append(dict(subject))
+        instance["state"] = "waiting"
+        instance["material_wait"] = {
+            "state": "waiting",
+            "request_version": payload["request_version"],
+            "requested_by": actor,
+            "reason": reason,
+            "requested_at": int(time.time()),
+            "input_digest": instance.get("input_digest"),
+            "dependencies": dependencies,
+            "adoptions": [],
+            "resumed": None,
+        }
+        # The agent's own task is withdrawn: nothing asks the executor to
+        # keep working while the material is missing.
+        self._cancel_intents(db, work["id"], node_id, attempt)
+        work["workflow_status"] = "waiting"
+        self._save_instance(db, work, instance, "WorkflowMaterialWaitRequested",
+                            {"actor": actor, "reason": reason,
+                             "dependencies": dependencies})
+        return self.runtime._accepted(work, node=node_id, attempt=attempt,
+                                      wait=dict(instance["material_wait"]))
+
+    def _adopt_material(self, db, actor, work, payload, version):
+        """Adopt externally provided material under an active wait.
+
+        The adopted material becomes a **new immutable revision** of the
+        named object: the historical revisions and the decisions that were
+        made on them stay on the record, and the adoption itself re-runs
+        nothing. The wait accepts the adopted revision; the node is still
+        waiting until the manager resumes it.
+        """
+        if set(payload) != {"node", "attempt", "name", "object",
+                            "request_version"}:
+            raise WorkflowError("adopt_material requires exactly node, attempt, "
+                                "name, object and request_version")
+        node_id = payload["node"]
+        attempt = payload["attempt"]
+        name = payload["name"]
+        body = payload["object"]
+        if not isinstance(node_id, str) or type(attempt) is not int:
+            raise WorkflowError("adopt_material requires a node id and an attempt")
+        if not isinstance(name, str) or not name:
+            raise WorkflowError("adopt_material requires a nonempty object name")
+        if not isinstance(body, dict):
+            raise WorkflowError("adopt_material requires an object body")
+        if payload["request_version"] != MATERIAL_WAIT_REQUEST_VERSION:
+            raise WorkflowError("adopt_material requires request_version "
+                                + str(MATERIAL_WAIT_REQUEST_VERSION))
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self.runtime._reject("CANCELLATION_ACTIVE", version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        instance = self._latest_instance(db, work["id"], node_id)
+        if instance is None or instance["attempt"] != attempt:
+            return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        wait = instance.get("material_wait")
+        if instance["state"] != "waiting" or not isinstance(wait, dict):
+            return self.runtime._reject("WORKFLOW_NOT_WAITING", version, [node_id])
+        dependencies = wait.get("dependencies") or []
+        entry = next((item for item in dependencies
+                      if item.get("name") == name), None)
+        if entry is None:
+            # Only the material the wait is actually about may be adopted:
+            # an adoption of anything else would be a silent write.
+            return self.runtime._reject("WORKFLOW_MATERIAL_NOT_DEPENDENCY",
+                                        version, [name])
+        adoptions = wait.get("adoptions") or []
+        if len(adoptions) >= MAX_WAIT_ADOPTIONS:
+            return self.runtime._reject("WORKFLOW_ADOPTION_LIMIT_EXCEEDED",
+                                        version, [name])
+        if len(canonical(body).encode("utf-8")) > MAX_OUTPUT_BYTES:
+            return self.runtime._reject("WORKFLOW_MATERIAL_TOO_LARGE", version,
+                                        [name])
+        # An adoption may not bless material a completed node accepted or
+        # judged: the new revision would be material no completed node
+        # ever accepted, and that acceptance would be stale the moment it
+        # is written. Revalidating the upstream is a separate, bounded
+        # step; until it exists, the wait keeps waiting.
+        stale, owned = self._completed_acceptance(db, work, [name])
+        if stale or owned:
+            return self.runtime._reject("INPUT_DEPENDENCIES_REQUIRE_REVALIDATION",
+                                        version, _bounded(stale or owned))
+        reference = self._write_object(db, work["id"], name, body)
+        entry["revision"] = reference["revision"]
+        entry["digest"] = reference["digest"]
+        entry["adopted"] = True
+        adoptions.append({"name": name, "revision": reference["revision"],
+                          "digest": reference["digest"], "adopted_by": actor,
+                          "adopted_at": int(time.time())})
+        wait["dependencies"] = dependencies
+        wait["adoptions"] = adoptions
+        instance["material_wait"] = wait
+        self._save_instance(db, work, instance, "WorkflowMaterialAdopted",
+                            {"actor": actor, "name": name,
+                             "revision": reference["revision"],
+                             "digest": reference["digest"]})
+        return self.runtime._accepted(work, node=node_id, attempt=attempt,
+                                      adoption=dict(adoptions[-1]),
+                                      wait=copy.deepcopy(wait))
+
+    def _completed_acceptance(self, db, work, names):
+        """What the completed nodes of the work still cover.
+
+        The answer has two parts.
+
+        *owned* are the objects a completed node **accepted or judged**.
+        Writing a new revision of such an object would make that
+        acceptance stale the moment it was written, so an adoption of it
+        must be refused rather than write material no completed node ever
+        accepted.
+
+        *stale* are the acceptances that no longer hold. The guard
+        inspects the completed nodes that **pin** a changed object, not
+        only the one that produced it: a node that judged material that
+        moved on holds an acceptance that no longer covers what it
+        judged, and everything it produced rests on it. So the chain of
+        material behind the wait's dependencies is walked, and every node
+        on it is checked.
+
+        The computation is bounded: it reads the stored instances and the
+        objects they name, and it walks the chain of production, which is
+        finite. It rewinds nothing and grants no attempt.
+        """
+        completed = [instance for instance in self._instances(db, work["id"])
+                     if instance.get("state") == "completed"]
+        holders = {}
+        producers = {}
+        for instance in completed:
+            for ref in self._judged_refs(instance):
+                holders.setdefault(ref.get("name"), []).append((instance, ref))
+            output = instance.get("output")
+            if isinstance(output, dict):
+                producers.setdefault(output.get("name"), []).append((instance, output))
+                holders.setdefault(output.get("name"), []).append((instance, output))
+        # the chain of material behind the dependencies
+        chain = set(names)
+        frontier = list(names)
+        while frontier:
+            name = frontier.pop()
+            for instance, _ in producers.get(name, []):
+                for ref in self._judged_refs(instance):
+                    if ref.get("name") not in chain:
+                        chain.add(ref.get("name"))
+                        frontier.append(ref.get("name"))
+        current = {}
+        for name in chain:
+            row = self._object_row(db, work["id"], name)
+            current[name] = (None if row is None else
+                             {"revision": row["revision"], "digest": row["digest"]})
+
+        def moved(ref):
+            now = current.get(ref.get("name"))
+            return (now is None
+                    or now["revision"] != ref.get("revision")
+                    or now["digest"] != ref.get("digest"))
+
+        def entry(name, instance, ref):
+            return {"name": name, "node": instance["node"],
+                    "attempt": instance["attempt"],
+                    "accepted": {"revision": ref.get("revision"),
+                                 "digest": ref.get("digest")},
+                    "current": current.get(name)}
+
+        # the material that moved on under a completed node
+        stale = []
+        tainted = set()
+        for name in chain:
+            for instance, ref in holders.get(name, []):
+                if not moved(ref):
+                    continue
+                tainted.add((instance["node"], instance["attempt"]))
+                stale.append(entry(name, instance, ref))
+        # everything a tainted node produced rests on material that is gone
+        for name in names:
+            for instance, ref in producers.get(name, []):
+                if (instance["node"], instance["attempt"]) in tainted:
+                    stale.append(entry(name, instance, ref))
+        owned = []
+        for name in names:
+            for instance, ref in holders.get(name, []):
+                owned.append(entry(name, instance, ref))
+        return stale, owned
+
+    def _judged_refs(self, instance):
+        """The material references one node instance judged."""
+        refs = []
+        for entry in (instance.get("inputs") or []):
+            if isinstance(entry, dict):
+                refs.append(entry)
+        subject = instance.get("subject")
+        if isinstance(subject, dict):
+            refs.append(subject)
+        return refs
+
+    def _dependency_drift(self, db, work, wait):
+        """The dependencies that moved under the wait.
+
+        A dependency the wait accepted must still be the object's current
+        revision and digest. Anything else is drift: the material the node
+        would run on is not the material the wait was about, so the engine
+        says so instead of running on it.
+        """
+        drift = []
+        for entry in wait.get("dependencies") or []:
+            name = entry.get("name")
+            row = self._object_row(db, work["id"], name)
+            current = None
+            if row is not None:
+                current = {"revision": row["revision"], "digest": row["digest"]}
+            accepted = {"revision": entry.get("revision"),
+                        "digest": entry.get("digest")}
+            if (current is None
+                    or current["revision"] != accepted["revision"]
+                    or current["digest"] != accepted["digest"]):
+                drift.append({"name": name, "accepted": accepted,
+                              "current": current})
+        return drift
+
+    def _resume_material_wait(self, db, actor, work, payload, version):
+        """Resume the waiting node behind the dependency gate.
+
+        The gate is what makes the resume safe: every dependency the wait
+        accepted must still be the object's current revision and digest.
+        When something moved under the wait, the resume is refused with the
+        exact drift, and the manager decides — adopt the material again or
+        cancel. The engine never reuses a superseded dependency silently
+        and never re-runs a node on its own.
+
+        The attempt is the one the wait kept: the wait spent no quality
+        allowance, so the resume spends none either. The inputs are
+        resolved and judged again, so material that no longer passes its
+        declared validator blocks the node instead of running on it.
+        """
+        if set(payload) != {"node", "attempt", "request_version"}:
+            raise WorkflowError("resume_material_wait requires exactly node, "
+                                "attempt and request_version")
+        node_id = payload["node"]
+        attempt = payload["attempt"]
+        if not isinstance(node_id, str) or type(attempt) is not int:
+            raise WorkflowError("resume_material_wait requires a node id and "
+                                "an attempt")
+        if payload["request_version"] != MATERIAL_WAIT_REQUEST_VERSION:
+            raise WorkflowError("resume_material_wait requires request_version "
+                                + str(MATERIAL_WAIT_REQUEST_VERSION))
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self.runtime._reject("CANCELLATION_ACTIVE", version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        instance = self._latest_instance(db, work["id"], node_id)
+        if instance is None or instance["attempt"] != attempt:
+            return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        wait = instance.get("material_wait")
+        if instance["state"] != "waiting" or not isinstance(wait, dict):
+            return self.runtime._reject("WORKFLOW_NOT_WAITING", version, [node_id])
+        drift = self._dependency_drift(db, work, wait)
+        if drift:
+            # The material moved under the wait. The engine refuses and
+            # names the drift; it does not decide what the manager meant.
+            return self.runtime._reject(
+                "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version,
+                _bounded(drift))
+        # A completed upstream node accepted one exact revision of its
+        # output and judged one exact revision of its inputs. When either
+        # moved on, that acceptance no longer covers the material, and the
+        # node must not run on it.
+        names = [entry.get("name") for entry in (wait.get("dependencies") or [])]
+        stale, _ = self._completed_acceptance(db, work, names)
+        if stale:
+            return self.runtime._reject(
+                "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version,
+                _bounded(stale))
+        wait["state"] = "resumed"
+        wait["resumed"] = {"by": actor, "at": int(time.time())}
+        instance["material_wait"] = wait
+        instance["state"] = "blocked"
+        # The node asks again under a new generation: the input ticket
+        # moves even when the material did not, so a ticket issued before
+        # the wait never satisfies the node after it, and the resumed
+        # prompt is a new intent, never the withdrawn one.
+        instance["input_generation"] = int(instance.get("input_generation") or 0) + 1
+        work["workflow_status"] = "active"
+        self._save_instance(db, work, instance, "WorkflowMaterialWaitResumed",
+                            {"actor": actor})
+        self._activate(db, work, spec, node_id, instance, int(time.time()))
+        instance = self._latest_instance(db, work["id"], node_id)
+        return self.runtime._accepted(work, node=node_id, attempt=attempt,
+                                      state=instance["state"],
+                                      input_digest=instance.get("input_digest"),
+                                      wait=copy.deepcopy(instance.get("material_wait") or {}))
+
+    def _replace_material(self, db, actor, work, payload, version):
+        """Replace the archived source material and revalidate its consumers.
+
+        The source read is **never** re-run: the core never re-proposes
+        the source node's operation, never re-dispatches it and never
+        reuses its operation key. The manager supplies the frozen
+        ``sourceReference`` — a small immutable pointer to the archive the
+        platform acquired — and the core records it as a new revision of
+        the material the source node produced.
+
+        The accepted historical version of the source node stays exactly as
+        it is, and the attestation says so: the old acceptance does **not**
+        cover the new revision. The consumers that judged the material —
+        and everything derived from them — are revalidated on **material
+        attempts**, which are bounded by the core allowance of one
+        generation per workflow (a definition may only tighten it) and
+        are never counted against the quality allowance.
+        """
+        if set(payload) != {"node", "source_reference", "reason",
+                            "request_version", "waiting_node",
+                            "waiting_ticket"}:
+            raise WorkflowError("replace_material requires exactly node, "
+                                "source_reference, reason, request_version, "
+                                "waiting_node and waiting_ticket")
+        node_id = payload["node"]
+        reference = payload["source_reference"]
+        reason = payload["reason"]
+        if not isinstance(node_id, str) or not node_id:
+            raise WorkflowError("replace_material requires a node id")
+        if (not isinstance(reason, str) or not reason
+                or len(reason) > MAX_WAIT_REASON_CHARS):
+            raise WorkflowError("the reason must be a nonempty bounded string")
+        if payload["request_version"] != MATERIAL_WAIT_REQUEST_VERSION:
+            raise WorkflowError("replace_material requires request_version "
+                                + str(MATERIAL_WAIT_REQUEST_VERSION))
+        if (not isinstance(reference, dict)
+                or not isinstance(reference.get("kind"), str)
+                or not reference["kind"]):
+            # The frozen reference is a **value** the manager supplies, not
+            # a protocol shape: the refusal says what was wrong with it.
+            return self.runtime._reject("WORKFLOW_SOURCE_REFERENCE_INVALID",
+                                        version, [node_id])
+        if len(canonical(reference).encode("utf-8")) > MAX_SOURCE_REFERENCE_BYTES:
+            return self.runtime._reject("WORKFLOW_SOURCE_REFERENCE_TOO_LARGE",
+                                        version, [node_id])
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self.runtime._reject("CANCELLATION_ACTIVE", version)
+        if work.get("workflow_finalization"):
+            return self.runtime._reject("WORKFLOW_FINALIZED", version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        # the source node: the completed attempt that produced the material
+        node = spec["nodes"].get(node_id)
+        if node is None:
+            return self.runtime._reject("WORKFLOW_NODE_UNKNOWN", version, [node_id])
+        instance = self._latest_instance(db, work["id"], node_id)
+        output = instance.get("output") if instance else None
+        if not isinstance(output, dict) or not output.get("name"):
+            # The node produced no material: it is not a source.
+            return self.runtime._reject("WORKFLOW_SOURCE_NOT_PRODUCER", version,
+                                        [node_id])
+        if instance.get("state") != "completed":
+            return self.runtime._reject("WORKFLOW_SOURCE_NOT_COMPLETED", version,
+                                        [node_id])
+        object_name = output["name"]
+        invalid = self._source_reference_problem(reference, work, node_id)
+        if invalid is not None:
+            return self.runtime._reject("WORKFLOW_SOURCE_REFERENCE_INVALID",
+                                        version, [invalid])
+        # The new revision is judged by the **published** validation of the
+        # source output before anything is written: the reference stays
+        # opaque — the core never resolves it — but the definition's shape
+        # and its pinned validator decide whether the envelope is a
+        # material this source may produce. A manifest that does not
+        # satisfy them is refused here, so no revision, no invalidation
+        # and no material generation is spent on it.
+        body = {"sourceReference": reference}
+        problems, _ = self._validate_output_material(
+            db, work, node_id, node, instance, body, "output",
+            node.get("capability"))
+        if problems:
+            return self.runtime._reject("WORKFLOW_SOURCE_REFERENCE_REJECTED",
+                                        version, problems)
+        # the ticket the manager observed must still be the current one
+        waiting_node = payload["waiting_node"]
+        ticket = payload["waiting_ticket"]
+        if waiting_node is not None or ticket is not None:
+            if not isinstance(waiting_node, str) or not waiting_node:
+                raise WorkflowError("waiting_node and waiting_ticket are "
+                                    "given together")
+            if not isinstance(ticket, str) or not ticket:
+                raise WorkflowError("waiting_ticket must be a nonempty string")
+            # The manager states the node that waits and the ticket it
+            # observed. The node must be the **current** one and it must
+            # really wait for material: a digest match alone is not
+            # enough, because the node the manager looked at may be a node
+            # that has moved on.
+            if work.get("workflow_current") != waiting_node:
+                return self.runtime._reject("WORKFLOW_WAITING_NODE_NOT_CURRENT",
+                                            version, [waiting_node])
+            waiting = self._latest_instance(db, work["id"], waiting_node)
+            if (waiting is None or waiting.get("state") != "waiting"
+                    or not waiting.get("material_wait")):
+                return self.runtime._reject("WORKFLOW_WAITING_NODE_NOT_CURRENT",
+                                            version, [waiting_node])
+            if waiting.get("input_digest") != ticket:
+                return self.runtime._reject("WORKFLOW_WAITING_TICKET_STALE",
+                                            version, [waiting_node])
+        # the consumers of the material, and everything derived from them
+        affected = self._consumer_closure(db, work, object_name)
+        if not affected:
+            return self.runtime._reject("WORKFLOW_REVALIDATION_NO_CONSUMERS",
+                                        version, [object_name])
+        branch = self._branch_nodes(spec, [entry["node"] for entry in affected])
+        blocked = self._branch_effects(db, work, branch)
+        if blocked:
+            # A prepared, unknown or confirmed effect is a business effect:
+            # the branch is never rewound behind one, and the effect is
+            # never replayed under its old operation key.
+            return self.runtime._reject("WORKFLOW_REVALIDATION_EFFECT_PRESENT",
+                                        version, blocked)
+        # the material budget: a fixed core allowance of one generation per
+        # workflow, which a definition may only tighten (to zero, which
+        # denies the revalidation of that node)
+        spent = int(work.get("material_generations_used") or 0)
+        remaining = max(0, MATERIAL_GENERATION_ALLOWANCE - spent)
+        exhausted = []
+        for entry in affected:
+            node_of = entry["node"]
+            allowed = self._material_generations(spec, node_of)
+            if allowed == 0:
+                exhausted.append({"node": node_of, "used": spent,
+                                  "allowed": 0,
+                                  "reason": "the definition denies the "
+                                            "revalidation of this node"})
+            elif remaining < 1:
+                exhausted.append({"node": node_of, "used": spent,
+                                  "allowed": remaining,
+                                  "reason": "the workflow has no material "
+                                            "generation left"})
+        if exhausted:
+            return self.runtime._reject("WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED",
+                                        version, exhausted)
+        # the new revision of the material: the frozen reference, wrapped in
+        # the same envelope the source output carries
+        revision = self._write_object(db, work["id"], object_name, body)
+        generation = int((work.get("material_revalidation") or {}).get("generation") or 0) + 1
+        attestation = {
+            "kind": reference.get("kind"),
+            "source_reference": reference,
+            "adopted_by": actor,
+            "adopted_at": int(time.time()),
+            "source_node": node_id,
+            "source_attempt": instance["attempt"],
+            "object": object_name,
+            "from": {"revision": output.get("revision"), "digest": output.get("digest")},
+            "to": {"revision": revision["revision"], "digest": revision["digest"]},
+            "reason": reason,
+            "claim": "adopted by the trusted manager: the acceptance of the "
+                     "previous revision does not cover this revision, and the "
+                     "source read was not re-run",
+        }
+        # the consumers are marked: their next attempt is a material one
+        for entry in affected:
+            target = self._latest_instance(db, work["id"], entry["node"])
+            if target is None:
+                continue
+            target["pending_revalidation"] = {
+                "generation": generation,
+                "source_node": node_id,
+                "object": object_name,
+                "from": attestation["from"],
+                "to": attestation["to"],
+                "reason": entry["reason"],
+            }
+            self._save_instance(db, work, target, "WorkflowNodeInvalidated",
+                                {"generation": generation,
+                                 "source": {"node": node_id, "object": object_name}})
+        used = spent + 1
+        work["material_generations_used"] = used
+        work["material_revalidation"] = {
+            "state": "revalidating",
+            "generation": generation,
+            "attestation": attestation,
+            "affected": affected,
+            "queue": [entry["node"] for entry in affected],
+        }
+        work["workflow_current"] = affected[0]["node"]
+        if work.get("workflow_status") == "waiting":
+            # The replacement ends the wait it invalidates: the node that
+            # waited for the replaced material is withdrawn and re-runs
+            # on a material attempt, so the work is working again. A
+            # platform that imports an agent intent only for an active
+            # workflow must find the status already corrected by the
+            # acceptance itself. A work that waits for nothing keeps the
+            # status it had.
+            work["workflow_status"] = "active"
+        self.runtime._save(db, work, "WorkflowMaterialReplaced", {
+            "generation": generation, "source_node": node_id,
+            "object": object_name, "revision": revision["revision"],
+            "affected": [entry["node"] for entry in affected]})
+        return self.runtime._accepted(work, attestation=attestation,
+                                      affected=affected,
+                                      generation=generation)
+
+    def _authorize_rework(self, db, actor, work, payload, version):
+        """The owner's one controlled candidate rework after a terminal
+        Agent quality failure.
+
+        The authorization is a management decision, never an execution
+        one: the Agent, a poller and a review may not issue it, and the
+        core never issues it on its own. It does not say the original
+        judgement was wrong, it resets nothing — not the quality
+        allowance, not the spent attempts, not the material generation,
+        not a published revision — and it passes nothing: the new
+        candidate must satisfy the original checks honestly.
+
+        The old failure stays exactly as it is. The new attempt is
+        monotonic, carries its own trigger ``rework`` and its own ticket,
+        runs on the same pinned inputs under the original bound session,
+        and — when a material revalidation is pending — the queue is
+        untouched: the reworked node rejoins it as its head, and the
+        downstream revalidations follow the ordinary routing once it
+        completes. If the reworked attempt fails, it fails terminally:
+        there is no automatic retry and no second authorization.
+        """
+        if set(payload) != {"node", "attempt", "input_digest", "reason"}:
+            raise WorkflowError("authorize_rework requires exactly node, "
+                                "attempt, input_digest and reason")
+        node_id = payload["node"]
+        attempt = payload["attempt"]
+        reason = payload["reason"]
+        if not isinstance(node_id, str) or type(attempt) is not int:
+            raise WorkflowError("authorize_rework requires a node id and "
+                                "an attempt")
+        if (not isinstance(reason, str) or not reason.strip()
+                or len(reason) > MAX_WAIT_REASON_CHARS):
+            # the owner's own words: whitespace is not a reason
+            raise WorkflowError("the reason must be a nonempty bounded string")
+        if (not isinstance(payload["input_digest"], str)
+                or not payload["input_digest"]):
+            raise WorkflowError("input_digest must be a nonempty string")
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
+        if work.get("cancellation"):
+            return self.runtime._reject("CANCELLATION_ACTIVE", version)
+        if work.get("workflow_finalization"):
+            return self.runtime._reject("WORKFLOW_FINALIZED", version)
+        if work.get("candidate_rework"):
+            # one authorization per workflow: a new key, a second owner
+            # decision or a later retry buys nothing further
+            return self.runtime._reject("WORKFLOW_REWORK_ALREADY_AUTHORIZED",
+                                        version)
+        spec = self._spec_in(db, work)
+        if spec is None:
+            return self.runtime._reject("WORKFLOW_NOT_BOUND", version)
+        node = spec["nodes"].get(node_id)
+        if node is None:
+            return self.runtime._reject("WORKFLOW_NODE_UNKNOWN", version,
+                                        [node_id])
+        if node.get("kind") != "agent":
+            # a human judgement and an automatic effect are not a
+            # candidate quality failure
+            return self.runtime._reject("WORKFLOW_REWORK_INELIGIBLE", version,
+                                        [node_id])
+        terminal = work.get("workflow_terminal") or {}
+        if terminal.get("node") != node_id:
+            # only the node the terminal stopped at may be reworked
+            return self.runtime._reject("WORKFLOW_REWORK_INELIGIBLE", version,
+                                        [{"node": node_id,
+                                          "terminal": terminal.get("node")}])
+        instance = self._latest_instance(db, work["id"], node_id)
+        if instance is None or instance["attempt"] != attempt:
+            return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version,
+                                        [node_id])
+        if payload["input_digest"] != instance.get("input_digest"):
+            return self.runtime._reject("WORKFLOW_INPUT_STALE", version,
+                                        [node_id])
+        if (instance.get("state") != "failed"
+                or instance.get("outcome") != "failed"
+                or instance.get("reason") != "WORKFLOW_RESULT_INVALID"):
+            # An expiry, an unknown result, a cancellation and a success
+            # are not a quality failure: none of them is recovered by a
+            # rework, and a work that never stopped terminally (a genuine
+            # wait, a running node) has nothing to rework.
+            return self.runtime._reject("WORKFLOW_REWORK_INELIGIBLE", version,
+                                        [{"node": node_id,
+                                          "attempt": attempt,
+                                          "state": instance.get("state"),
+                                          "outcome": instance.get("outcome"),
+                                          "reason": instance.get("reason")}])
+        drifted = self._rework_input_drift(db, work, node, instance)
+        if drifted:
+            # The rework judges the material the failure judged: a
+            # declared input (or subject) that moved to a new revision
+            # after the failure is material the failed attempt never saw.
+            # The rework may not silently adopt it under the failed
+            # ticket — the manager reconciles the material first.
+            return self.runtime._reject(
+                "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION", version, drifted)
+        branch = self._branch_nodes(spec, [node_id])
+        blocked = self._branch_effects(db, work, branch)
+        if blocked:
+            # A business effect or a settled human judgement behind the
+            # failed node is a fact the rework would contradict or
+            # replay; it is never reopened behind one.
+            return self.runtime._reject("WORKFLOW_REWORK_EFFECT_PRESENT",
+                                        version, blocked)
+        now = int(time.time())
+        attempt_new = attempt + 1
+        fresh = {"node": node_id, "kind": node.get("kind"),
+                 "attempt": attempt_new, "state": "blocked",
+                 "outcome": None, "reason": None, "inputs": [], "subject": None,
+                 "output": None, "findings": [], "blockers": [], "actor": None,
+                 "operation_id": None, "intent_id": None, "result": None,
+                 "input_generation": int(instance.get("input_generation") or 0) + 1,
+                 "trigger": "rework",
+                 "material_generation": int(
+                     instance.get("material_generation") or 0),
+                 "created_at": now}
+        db.execute("INSERT INTO workflow_nodes VALUES (?,?,?,?,?)",
+                   (work["id"], node_id, attempt_new, "blocked",
+                    canonical(fresh)))
+        authorization = {
+            "state": "authorized", "cap": 1,
+            "authorized_by": actor, "authorized_at": now,
+            "reason": reason,
+            "node": node_id, "from_attempt": attempt,
+            "to_attempt": attempt_new,
+            "session_id": (work.get("workflow") or {}).get("session_id"),
+            "terminal": {"node": terminal.get("node"),
+                         "outcome": terminal.get("outcome"),
+                         "reason": terminal.get("reason")},
+        }
+        # the reopen, in the same transaction: the original terminal
+        # stays on the event history, the work works again
+        work["candidate_rework"] = authorization
+        work["workflow_terminal"] = None
+        work["workflow_current"] = node_id
+        work["workflow_status"] = "active"
+        self.runtime._save(db, work, "WorkflowReworkAuthorized", {
+            "node": node_id, "from_attempt": attempt,
+            "to_attempt": attempt_new, "actor": actor, "reason": reason,
+            "terminal": authorization["terminal"]})
+        self._activate(db, work, spec, node_id, fresh, now)
+        fresh = self._latest_instance(db, work["id"], node_id)
+        return self.runtime._accepted(
+            work, node=node_id, attempt=attempt_new, state=fresh["state"],
+            input_digest=fresh.get("input_digest"),
+            grant=copy.deepcopy(work["candidate_rework"]))
+
+    def _rework_input_drift(self, db, work, node, instance):
+        """Declared inputs that moved since the failed attempt pinned them.
+
+        The comparison is over the **exact revisions**: the reworked
+        attempt must judge the material the failed attempt judged, so a
+        new revision of a declared input (or of the subject) that
+        arrived after the failure is drift, whatever its content. The
+        ticket may move — the input generation does — but the source
+        references may not.
+        """
+        pinned = {entry.get("name"): entry
+                  for entry in (instance.get("inputs") or [])
+                  if isinstance(entry, dict)}
+        subject = instance.get("subject")
+        if isinstance(subject, dict) and subject.get("name"):
+            pinned.setdefault(subject["name"], subject)
+        declared = [entry.get("object") for entry in (node.get("inputs") or [])]
+        subject_spec = node.get("subject")
+        if isinstance(subject_spec, dict) and subject_spec.get("object"):
+            declared.append(subject_spec["object"])
+        drift = []
+        for name in declared:
+            accepted = pinned.get(name)
+            row = self._object_row(db, work["id"], name)
+            if accepted is None or row is None:
+                # a missing input is the activation's own finding, never
+                # a silent substitution
+                continue
+            if (row["revision"] != accepted.get("revision")
+                    or row["digest"] != accepted.get("digest")):
+                drift.append({
+                    "name": name,
+                    "accepted": {"revision": accepted.get("revision"),
+                                 "digest": accepted.get("digest")},
+                    "current": {"revision": row["revision"],
+                                "digest": row["digest"]}})
+        return drift
+
+    def _source_reference_problem(self, reference, work, node_id):
+        """What is wrong with the frozen source reference, if anything.
+
+        The reference is **opaque** to the core: it never resolves it and
+        never fetches anything. The core checks three things and refuses
+        the rest: that it names the kind it claims, that it names the work
+        and the source it belongs to, and that it carries no raw material,
+        no location and no credential.
+        """
+        for key in reference:
+            if str(key).lower() in FORBIDDEN_SOURCE_REFERENCE_KEYS:
+                return "the source reference may not carry " + str(key)
+        if reference.get("kind") != "business-material-snapshot":
+            return "the source reference must be a business-material-snapshot"
+        named_work = reference.get("workflowId")
+        if named_work is not None and named_work != work["id"]:
+            return "the source reference names another work"
+        named_source = reference.get("sourceNode")
+        if named_source is not None and named_source != node_id:
+            return "the source reference names another source"
+        return None
+
+    def _consumer_closure(self, db, work, object_name):
+        """The consumers of the material, and everything derived from it.
+
+        The closure is computed over the **stored instances**, not over the
+        published graph: a node is a consumer when it judged the material,
+        or what was derived from it. A node that is still working on the
+        material is in the closure too — its acceptance is not settled, but
+        its work is bound to material that is being replaced, so it is
+        invalidated as well.
+
+        The order is the dependency order: a consumer comes after the node
+        whose output it judged.
+        """
+        latest = {}
+        for instance in self._instances(db, work["id"]):
+            current = latest.get(instance["node"])
+            if current is None or instance["attempt"] > current["attempt"]:
+                latest[instance["node"]] = instance
+        produced = {}
+        for instance in latest.values():
+            output = instance.get("output")
+            if isinstance(output, dict) and output.get("name"):
+                produced[output["name"]] = instance
+
+        def judges(instance, name):
+            return any(ref.get("name") == name
+                       for ref in self._judged_refs(instance))
+
+        affected = []
+        seen = set()
+        # a consumer that is still working on the material is in the
+        # closure too: its acceptance is not settled, but its work is
+        # bound to material that is being replaced
+        frontier = [instance for instance in latest.values()
+                    if judges(instance, object_name)]
+        while frontier:
+            instance = frontier.pop(0)
+            key = (instance["node"], instance["attempt"])
+            if key in seen:
+                continue
+            seen.add(key)
+            direct = judges(instance, object_name)
+            settled = instance.get("state") == "completed"
+            affected.append({
+                "node": instance["node"], "attempt": instance["attempt"],
+                "reason": (("judged" if settled else "was working on")
+                           + " the replaced material" if direct else
+                           (("judged" if settled else "was working on")
+                            + " what the replaced material produced"))})
+            output = instance.get("output")
+            if not isinstance(output, dict):
+                continue
+            for other in latest.values():
+                if (other["node"], other["attempt"]) in seen:
+                    continue
+                if not judges(other, output.get("name")):
+                    continue
+                frontier.append(other)
+        return self._order_affected(affected, produced, latest)
+
+    def _order_affected(self, affected, produced, latest):
+        """The affected nodes in dependency order.
+
+        A node comes after the node whose output it judged. The order is
+        stable, so a reader can rely on it.
+        """
+        unique = []
+        for entry in affected:
+            if entry["node"] not in unique:
+                unique.append(entry["node"])
+        depends = {node: set() for node in unique}
+        for entry in affected:
+            node = entry["node"]
+            instance = latest.get(node)
+            if instance is None:
+                continue
+            for ref in self._judged_refs(instance):
+                source = produced.get(ref.get("name"))
+                if (source is not None and source["node"] in depends
+                        and source["node"] != node):
+                    depends[node].add(source["node"])
+        ordered = []
+        remaining = {node: set(deps) for node, deps in depends.items()}
+        while remaining:
+            ready = sorted(node for node, deps in remaining.items() if not deps)
+            if not ready:
+                break
+            for node in ready:
+                ordered.append(node)
+                del remaining[node]
+            for deps in remaining.values():
+                deps.difference_update(ready)
+        for node in unique:
+            if node not in ordered:
+                ordered.append(node)
+        by_node = {entry["node"]: entry for entry in affected}
+        return [by_node[node] for node in ordered]
+
+    def _branch_nodes(self, spec, roots):
+        """The affected nodes and everything the graph runs after them."""
+        children = {}
+        for edge in spec.get("edges") or []:
+            children.setdefault(edge.get("from"), []).append(edge.get("to"))
+        branch = set()
+        frontier = list(roots)
+        while frontier:
+            node = frontier.pop()
+            if node in branch:
+                continue
+            branch.add(node)
+            frontier.extend(children.get(node) or [])
+        return branch
+
+    def _branch_effects(self, db, work, branch):
+        """The business effects the branch already carries.
+
+        A prepared, unknown or confirmed effect is an effect that happened
+        or may still happen: the branch is never rewound behind one, and
+        the effect is never replayed under its old operation key. A
+        **human judgement** in the branch is an effect too — an approval
+        granted on the material that is being replaced is a business fact
+        the revalidation would contradict.
+        """
+        blocked = []
+        for instance in self._instances(db, work["id"]):
+            if instance["node"] not in branch:
+                continue
+            operation_id = instance.get("operation_id")
+            if operation_id:
+                row = db.execute("SELECT body FROM operations WHERE id=?",
+                                 (operation_id,)).fetchone()
+                if row is not None:
+                    operation = json.loads(row[0])
+                    if operation.get("dispatch_state") != "cancelled":
+                        blocked.append({"node": instance["node"],
+                                        "attempt": instance["attempt"],
+                                        "operationId": operation_id,
+                                        "status": operation.get("status"),
+                                        "dispatchState": operation.get("dispatch_state")})
+                        continue
+            for decision in self._settled_decisions(db, work, instance):
+                blocked.append({"node": instance["node"],
+                                "attempt": instance["attempt"],
+                                "decision": decision})
+        return blocked
+
+    def _settled_decisions(self, db, work, instance):
+        """The human judgements this node instance settled."""
+        if instance.get("kind") != "human":
+            return []
+        decisions = []
+        for proof in self.runtime._proofs(db, work["id"]):
+            if proof.get("status") != "verified":
+                continue
+            data = proof.get("data") or {}
+            if data.get("node") != instance["node"]:
+                continue
+            if data.get("attempt") != instance["attempt"]:
+                continue
+            verdict = data.get("decision")
+            if verdict in ("approved", "rejected"):
+                decisions.append({"eventId": proof.get("event_id"),
+                                  "verdict": verdict,
+                                  "actor": data.get("actor")})
+        return decisions
+
+    # ------------------------------------------------------------------
     # Cancellation
     # ------------------------------------------------------------------
 
@@ -2586,7 +4249,7 @@ class WorkflowEngine:
         if not work.get("workflow"):
             return
         for instance in self._instances(db, work["id"]):
-            if instance["state"] in ("running", "blocked", "submitted"):
+            if instance["state"] in ("running", "blocked", "submitted", "waiting"):
                 instance["state"] = "cancelled"
                 instance["outcome"] = "cancelled"
                 instance["reason"] = "WORK_CANCELLED"
@@ -2701,6 +4364,12 @@ class WorkflowEngine:
         if (instance is None or instance["attempt"] != attempt
                 or instance["state"] != "running"):
             return self.runtime._reject("WORKFLOW_ATTEMPT_STALE", version, [node_id])
+        if instance.get("pending_revalidation"):
+            # A material replacement invalidated this attempt: the decision
+            # made on the material that was replaced is refused at once,
+            # and nothing of it is written.
+            return self.runtime._reject("WORKFLOW_NODE_INVALIDATED", version,
+                                        [node_id])
         subject = instance.get("subject")
         if (subject is None or subject["digest"] != payload["digest"]
                 or subject["revision"] != payload["revision"]):
@@ -2738,16 +4407,21 @@ class WorkflowEngine:
         if output and output_required:
             # The named record the decision carries is judged and written in
             # the same compare-and-swap guarded command as the decision
-            # itself: no separate write can rebase the caller's version.
+            # itself: no separate write can rebase the caller's version. It
+            # is bound to that decision, and the settle adopts it only when
+            # that decision is the one the node follows.
             self._apply_decision_output(db, work, node_id, node, instance,
-                                         output, result, payload["actor"], actor)
+                                         output, result, payload["actor"], actor,
+                                         decision_event_id=event_id,
+                                         decision=payload["decision"])
             # The record was written in this transaction, so the receipt
             # reports the version the work is at now.
             receipt["result_state_version"] = work["state_version"]
         return receipt
 
     def _apply_decision_output(self, db, work, node_id, node, instance, output,
-                               result, actor, source) -> None:
+                               result, actor, source, decision_event_id=None,
+                               decision=None) -> None:
         """Judge and write the named record a human decision carries.
 
         The decision itself is genuine and stays: it is the record of what
@@ -2755,6 +4429,14 @@ class WorkflowEngine:
         the declared shape and the pinned validator — and a rejected record
         is not written, so the previous revision of the object is never
         overwritten by a record that failed its quality.
+
+        A record that passes its quality is **written** — the history is
+        never rewritten and no record is deleted — but it is not the
+        node's output yet. It is bound to the decision that carried it, and
+        it becomes the node's output only when that decision is the one
+        the node follows: the evidence of a decision is verified after
+        this command, and a decision the trusted verifier refuses must not
+        produce an adopted output.
         """
         if not output:
             # Nothing was declared: the node completes as it always did and
@@ -2786,28 +4468,89 @@ class WorkflowEngine:
                 "validator": {"id": validation.get("validator"),
                               "version": validation.get("validator_version")}}
             instance["check_results"] = self._ordered_report(node, check_report)
+            self._record_output_judgment(node, instance, check_report, result,
+                                         validation.get("validator"),
+                                         validation.get("validator_version"))
             self._save_instance(db, work, instance, "WorkflowOutputRejected", {
                 "actor": actor, "source": source, "outcome": "rejected",
                 "findings": instance["output_findings"]})
             return
         reference = self._write_object(db, work["id"], output["object"], result)
-        instance["output"] = reference
         instance["check_results"] = self._ordered_report(node, check_report)
-        instance["quality"] = {
-            "declared": True, "mode": "validated",
-            "validator": {"id": validation.get("validator"),
-                          "version": validation.get("validator_version")}}
-        # The binding the record was made under: who decided, through which
-        # channel, for which node and attempt, against which subject and
-        # inputs, and with which digest of its own.
-        instance["output_binding"] = {
-            "actor": actor, "source": source, "node": node_id,
-            "attempt": instance["attempt"], "object": reference,
+        # The candidate: the record, bound to the decision that carried it.
+        # It is a diagnostic until the settle adopts it — never a silently
+        # chosen output.
+        instance["output_candidate"] = {
+            "object": reference,
+            "eventId": decision_event_id,
+            "decision": decision,
+            "actor": actor, "source": source,
+            "attempt": instance["attempt"],
             "subject": instance.get("subject"),
             "inputDigest": instance.get("input_digest"),
-            "outputDigest": reference["digest"]}
-        self._save_instance(db, work, instance, "WorkflowOutputAccepted", {
+            "outputDigest": reference["digest"],
+            "validator": {"id": validation.get("validator"),
+                          "version": validation.get("validator_version")},
+            "identity": digest([digest(result), validation.get("validator"),
+                                validation.get("validator_version")]),
+            "report": check_report}
+        self._save_instance(db, work, instance, "WorkflowOutputCandidate", {
             "actor": actor, "source": source, "output": reference})
+
+    @staticmethod
+    def _bound_output(instance, proof):
+        """The named record of the decision the node follows, if it is on the node.
+
+        A record is bound to the decision that carried it. A record of
+        another decision — an unverified one, or one the family refused —
+        is a candidate on the record, never this node's output.
+        """
+        candidate = instance.get("output_candidate") or {}
+        if not candidate.get("object"):
+            return None
+        if candidate.get("eventId") != (proof or {}).get("event_id"):
+            return None
+        return candidate
+
+    def _adopt_output(self, db, work, node, instance, candidate) -> None:
+        """Adopt the named record as the node's output.
+
+        The record is adopted only when it is the record of the decision
+        the node follows: the binding names the decision that carried it,
+        so a record of another decision — an unverified one, or one the
+        family refused — can never become this node's output, satisfy
+        another decision's output requirement or be a downstream basis.
+        """
+        instance["output"] = candidate["object"]
+        instance["quality"] = {
+            "declared": True, "mode": "validated",
+            "validator": candidate.get("validator") or {"id": None,
+                                                        "version": None}}
+        # The binding the record was made under: who decided, through which
+        # channel, for which node and attempt, against which subject and
+        # inputs, and with which digest of its own — and which decision
+        # carried it.
+        instance["output_binding"] = {
+            "actor": candidate.get("actor"), "source": candidate.get("source"),
+            "node": instance["node"], "attempt": instance["attempt"],
+            "object": candidate["object"],
+            "subject": candidate.get("subject"),
+            "inputDigest": candidate.get("inputDigest"),
+            "outputDigest": candidate.get("outputDigest"),
+            "decision": candidate.get("decision"),
+            "eventId": candidate.get("eventId")}
+        self._record_judgment(node, instance, "output", candidate.get("identity"),
+                              candidate.get("report") or [],
+                              method="PROGRAM",
+                              validator=(candidate.get("validator") or {}).get("id"),
+                              validatorVersion=(candidate.get("validator") or {}
+                                                ).get("version"),
+                              outputDigest=candidate.get("outputDigest"),
+                              attempt=candidate.get("attempt"),
+                              inputDigest=candidate.get("inputDigest"))
+        self._save_instance(db, work, instance, "WorkflowOutputAccepted", {
+            "actor": candidate.get("actor"), "source": candidate.get("source"),
+            "output": candidate["object"]})
 
     # ------------------------------------------------------------------
     # Workflow-success finalization
@@ -2840,6 +4583,14 @@ class WorkflowEngine:
             return self.runtime._reject("WORKFLOW_TEMPLATE_UNKNOWN", version)
         if work.get("cancellation"):
             return self.runtime._reject(WORKFLOW_CANCELLED, version)
+        plan = work.get("material_revalidation") or {}
+        if plan.get("state") == "revalidating":
+            # The material was replaced and the consumers have not been
+            # revalidated yet: the acceptance would freeze a workflow whose
+            # material and judgements do not belong together.
+            return self.runtime._reject(WORKFLOW_REVALIDATION_PENDING, version,
+                                        [{"node": node
+                                         for node in (plan.get("queue") or [])}])
         latest: Dict[str, Dict[str, Any]] = {}
         for instance in self._instances(db, work["id"]):
             latest[instance["node"]] = instance
@@ -3093,6 +4844,8 @@ class WorkflowEngine:
                          "digest": work.get("document_digest")},
             "objects": objects,
             "nodes": nodes,
+            "materialRevalidation": _revalidation_view(
+                work.get("material_revalidation")),
             "operations": operations,
             "requirements": requirements,
             "evidence": sorted(entry["id"] for entry in proofs
@@ -3328,7 +5081,8 @@ class WorkflowEngine:
                     "actor": instance.get("actor"),
                     "inputDigest": instance.get("input_digest"),
                     "output": instance.get("output"),
-                    "checkResults": (instance.get("check_results") or [])[:MAX_VIEW_FINDINGS],
+                    "checkResults": self._current_checks(
+                        (spec["nodes"][node_id] or {}), instance),
                     "quality": instance.get("quality"),
                     "effect": instance.get("effect"),
                     "waitMatch": instance.get("wait_match"),
@@ -3363,9 +5117,15 @@ class WorkflowEngine:
                                 else []),
                     "findings": (instance.get("findings") or [])[:MAX_VIEW_FINDINGS]
                     if instance else [],
-                    "checkResults": (instance.get("check_results") or [])[:MAX_VIEW_FINDINGS]
+                    "checkResults": self._current_checks(
+                        (spec["nodes"][node_id] or {}), instance)
                     if instance else [],
                     "inputDigest": instance.get("input_digest") if instance else None,
+                    "inputGeneration": instance.get("input_generation", 0)
+                    if instance else 0,
+                    "trigger": instance.get("trigger") if instance else None,
+                    "materialGeneration": instance.get("material_generation", 0)
+                    if instance else 0,
                     "actor": instance.get("actor") if instance else None,
                     "blockers": (instance.get("blockers") or [])[:MAX_VIEW_FINDINGS]
                     if instance else [],
@@ -3374,6 +5134,8 @@ class WorkflowEngine:
                     "quality": instance.get("quality") if instance else None,
                     "effect": instance.get("effect") if instance else None,
                     "waitMatch": instance.get("wait_match") if instance else None,
+                    "materialWait": _material_wait_view(instance.get("material_wait"))
+                    if instance else None,
                     "receipt": _receipt_view(instance.get("receipt"))
                     if instance else None,
                 })
@@ -3408,6 +5170,13 @@ class WorkflowEngine:
                         allowed.append({"action": "record_decision", "node": current,
                                         "attempt": instance["attempt"],
                                         "required": ["decision", "digest", "revision"]})
+                if instance and instance["state"] == "waiting":
+                    # A waiting node offers no result: it offers the
+                    # manager its own commands.
+                    allowed.append({"action": "resume_material_wait",
+                                    "node": current,
+                                    "attempt": instance["attempt"],
+                                    "required": []})
             return {
                 "workId": work_id,
                 "status": work["status"],
@@ -3427,6 +5196,9 @@ class WorkflowEngine:
                 "checks": checks[:MAX_VIEW_NODES],
                 "allowedActions": allowed,
                 "intents": intents[:MAX_VIEW_INTENTS],
+                "materialRevalidation": _revalidation_view(
+                    work.get("material_revalidation")),
+                "candidateRework": _candidate_rework_view(work, spec, latest),
             }
 
     # ------------------------------------------------------------------

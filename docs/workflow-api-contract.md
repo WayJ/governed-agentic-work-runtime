@@ -226,6 +226,13 @@ present when the creation was bound and absent when it was not.
 Bounded: at most 64 nodes, 32 intents, 16 findings and 16 check results per
 node. The view never carries a payload body.
 
+`currentNode` names the node whose attempt the work is working on. When a
+node's quality allowance is spent and the routing cannot open the next
+node, the work reports `workflowStatus: needs_attention` and the cursor
+**stays on the node that completed** — it never names a node whose attempt
+was not opened. The escalation is stable: further passes write nothing, and
+the attempt that was already routed from is never routed from again.
+
 ### The quality record of a node
 
 An automatic or wait node carries four additive fields. They say what was
@@ -263,7 +270,12 @@ judged, never that something was checked when it was not.
 * `outputBinding` is the binding a human node's named record was made
   under: the actor who decided, the ingress source it came through, the
   node and attempt, the subject's revision and digest, the input digest
-  and the digest of the record itself.
+  and the digest of the record itself. The record is **bound to the
+  decision that carried it**: it becomes the node's output only when that
+  decision is the one the node follows, that is, when it is verified. A
+  record of an unverified or refused decision is never the node's output
+  and never satisfies another decision's output requirement — the node
+  waits for the record of the decision it follows.
 
 The criterion report is ordered by the definition's declared criteria and
 keeps the judges apart: a `HUMAN` entry names the person who decided
@@ -316,6 +328,12 @@ evidence intake, and the command is deduplicated under (ingress source,
 `commandId`). The command's actor is the **ingress source** — the platform
 channel configured for the node's evidence kind — and the actual decider
 travels in `actorId`.
+
+The decision is judged **after** the trusted verifier has judged its
+evidence. The route settles the workflow on the decision that was made: an
+unverified proof is never routed on, and it is never passed over in favour
+of an older decision either — while it waits for the verifier the node
+keeps waiting. A decision the family refuses never becomes an approval.
 
 A human node may declare, in its published definition, which decisions
 need its named record: `output.on_decisions: ["approved"]`. The default is
@@ -476,6 +494,261 @@ that reaches this route grants nothing by itself.
 reason, resultStateVersion}`. An effect that was already dispatched or of
 unknown outcome is **not** rolled back: it stays on the work and is
 resolved by the ordinary lookup and recovery.
+
+### `POST /v1/workflows/instances/{workId}/material/wait`
+
+Park the workflow's **current agent node** for business material. The
+command is the runtime's own `request_material_wait`: it is admitted
+against the version the caller observed, under the caller's own
+`commandId`, in one transaction.
+
+```json
+{"actor": "coordinator", "requestVersion": 1, "node": "n02", "attempt": 1,
+ "inputDigest": "…", "reason": "the referenced record is missing a page",
+ "commandId": "wait-1", "expectedVersion": 7}
+```
+
+* `node` is the **current** node and `attempt` its current attempt; a
+  node that is not current is `409 WORKFLOW_NODE_NOT_CURRENT`, a stale
+  attempt is `409 WORKFLOW_ATTEMPT_STALE` and an `inputDigest` the node
+  does not hold is `422 WORKFLOW_INPUT_STALE`.
+* `reason` is required: the wait says why it waits.
+* `requestVersion` is `1`; any other value is
+  `400 MATERIAL_WAIT_VERSION_UNSUPPORTED`.
+* The `actor` must be the work's owner with `work.manage`; anybody else
+  is `403 AUTHORITY_DENIED` and nothing changes.
+
+`200` the instance view with `materialWait: {node, attempt, wait,
+resultStateVersion}`. The node's own `materialWait` in the view names the
+reason, the requester, the dependencies the wait accepted and the
+adoptions that followed. The work reports `workflowStatus: "waiting"`.
+
+While the node waits: a result submitted for it is `409
+WORKFLOW_NODE_WAITING` and nothing is stored; the node's durable intent
+is withdrawn; the wait survives a restart; the deadline is suspended.
+
+### `POST /v1/workflows/instances/{workId}/material/adopt`
+
+Adopt externally provided material under an active wait. The command is
+the runtime's own `adopt_material`: the adopted material becomes a **new
+immutable revision** of the named object, the historical revisions and
+the decisions made on them stay on the record, and nothing is re-run.
+
+```json
+{"actor": "coordinator", "requestVersion": 1, "node": "n02", "attempt": 1,
+ "name": "intake", "object": {"records": [], "standard": "STD-1"},
+ "commandId": "adopt-1", "expectedVersion": 8}
+```
+
+* `name` must be one of the dependencies the wait accepted; anything else
+  is `422 WORKFLOW_MATERIAL_NOT_DEPENDENCY` — an adoption of anything
+  else would be a silent write.
+* `object` is at most 64 KiB of canonical JSON; a larger body is `422
+  WORKFLOW_MATERIAL_TOO_LARGE`. A wait carries at most sixteen
+  adoptions (`422 WORKFLOW_ADOPTION_LIMIT_EXCEEDED`).
+* Adopting without a wait is `409 WORKFLOW_NOT_WAITING`.
+* **An adoption may not bless a completed upstream's accepted output**: a
+  node that completed accepted one exact revision of its output, and a
+  new revision of that object would be material no completed node ever
+  accepted. Such an adoption is `422
+  INPUT_DEPENDENCIES_REQUIRE_REVALIDATION` with the upstream node, its
+  attempt and both revisions as the findings.
+
+`200` the instance view with `materialAdoption: {node, attempt, adoption,
+wait, resultStateVersion}`. The node keeps waiting: the adoption supplies
+the material, the resume starts the work.
+
+### `POST /v1/workflows/instances/{workId}/material/resume`
+
+Resume the waiting node behind the dependency gate. The command is the
+runtime's own `resume_material_wait`.
+
+```json
+{"actor": "coordinator", "requestVersion": 1, "node": "n02", "attempt": 1,
+ "commandId": "resume-1", "expectedVersion": 9}
+```
+
+* The **same attempt** continues: no rework attempt is opened and no
+  quality allowance is spent.
+* The gate: every dependency the wait accepted must still be the
+  object's current revision and digest, and the **completed upstream
+  nodes** must still cover the material. The guard inspects the completed
+  nodes that *pinned* a changed object, not only the one that produced
+  it: a node that judged material that moved on, and everything it
+  produced, is stale. Otherwise the resume is `422
+  INPUT_DEPENDENCIES_REQUIRE_REVALIDATION` with the exact drift as the
+  findings, and **the wait is retained** — the node keeps waiting.
+* Material that no longer passes its declared validator **blocks** the
+  node (`200` with `materialResume.state: "blocked"` and the findings on
+  the node) instead of running on it.
+
+`200` the instance view with `materialResume: {node, attempt, state,
+inputDigest, wait, resultStateVersion}`. Two things move on a resume even
+when the material did not change: the **input ticket** (a resumed node
+carries its input generation in the digest, so a ticket issued before the
+wait never satisfies the node after it — a node that never waited keeps
+exactly the ticket it was given) and the **intent identity** (the node
+asks again under `wf:<work>:<node>:<attempt>:<kind>:<generation>`, so an
+old acknowledgement can never swallow the resumed prompt).
+
+**The platform envelope.** The three routes accept the extra fields the
+trusted platform wire already carries: the principal may be named
+`actor` or `actorId` (a body that names **two different** ones is
+`400 ACTOR_CONFLICT`, and a body that names neither is
+`400 ACTOR_REQUIRED`), and a `workId` in the body is accepted when it
+names the work of the path (a body that names another work is
+`400 WORK_MISMATCH` — the path is authoritative, and a request is never
+applied to a work it does not name).
+
+### `POST /v1/workflows/instances/{workId}/material/replace`
+
+Replace the archived source material and revalidate the consumers that
+judged it, in the same workflow and session. The command is the runtime's
+own `replace_material`: a compare-and-swap against the version the
+caller observed, under the caller's own `commandId`, in one transaction.
+
+```json
+{"actor": "platform", "requestVersion": 1, "node": "s00",
+ "sourceReference": {"kind": "business-material-snapshot",
+                     "referenceId": "REF-2", "workflowId": "W-1",
+                     "sourceNode": "s00", "documentDigest": "…",
+                     "snapshotDigest": "…", "scope": "records"},
+ "reason": "the archive was refreshed",
+ "waitingNode": "n03", "waitingTicket": "…",
+ "commandId": "replace-1", "expectedVersion": 17}
+```
+
+* `node` is the **source node** — the node whose completed attempt
+  produced the material. The core derives the object from that node, so
+  a caller cannot name an arbitrary object
+  (`409 WORKFLOW_SOURCE_NOT_PRODUCER`, `409 WORKFLOW_SOURCE_NOT_COMPLETED`).
+* `sourceReference` is the **frozen reference** the platform acquired: a
+  manifest, never the material. The core checks that it names its kind,
+  the work and the source it belongs to, and refuses a raw location, a
+  credential or the raw material (`422
+  WORKFLOW_SOURCE_REFERENCE_INVALID`). It is at most 4 KiB (`422
+  WORKFLOW_SOURCE_REFERENCE_TOO_LARGE`). The core wraps it in the same
+  envelope the source output carries and writes it as a new revision;
+  the historical revision is retained.
+* The reference stays opaque — the core never resolves it — but the
+  **published validation** of the source output judges it before anything
+  is written: a manifest that does not satisfy the declared shape or the
+  pinned validator is refused (`422 WORKFLOW_SOURCE_REFERENCE_REJECTED`),
+  and no revision, no invalidation and no material generation is spent on
+  it.
+* `waitingNode` and `waitingTicket` are the node that waits and the
+  ticket the manager observed. When given, the node must be the
+  **current** node and it must really wait for material (`409
+  WORKFLOW_WAITING_NODE_NOT_CURRENT`), and the ticket must still be its
+  current one (`409 WORKFLOW_WAITING_TICKET_STALE`). The pair may be
+  left out — the manager may replace the material of a workflow that
+  waits for nothing — but a platform that replaces material on a waiting
+  work always sends both.
+* `requestVersion` is `1`; any other value is `400
+  MATERIAL_WAIT_VERSION_UNSUPPORTED`.
+* The `actor` must be the work's owner with `work.manage`; anybody else
+  is `403 AUTHORITY_DENIED` and nothing changes. The trusted platform
+  wire may name it `actor` or `actorId`; a body that names **two
+  different** ones is `400 ACTOR_CONFLICT`, and a body that names
+  neither is `400 ACTOR_REQUIRED`. A `workId` in the body is accepted
+  when it names the work of the path (`400 WORK_MISMATCH` otherwise).
+
+`200` the instance view with `materialReplacement: {node, attestation,
+affected, generation, resultStateVersion}` and the plan in
+`materialRevalidation: {state, generation, attestation, affected, queue}`.
+
+**The source read is never re-run**: the source node keeps its attempt,
+its effect, its receipts and its accepted revision. The attestation says
+so explicitly — `claim: "… the previous acceptance does not cover this
+revision …"`.
+
+**The revalidation is bounded.** The core allowance is one material
+replacement generation per workflow; a definition may only tighten it.
+The affected consumers are revalidated in dependency order, each on one
+**material attempt**, whose attempt number is the next one and whose
+ticket carries the node's input generation. A material attempt that
+fails on quality opens no further attempt.
+
+**Nothing settles an invalidated attempt.** While the revalidation is
+pending, a candidate for an invalidated attempt is refused (`409
+WORKFLOW_NODE_INVALIDATED`), a candidate for a node the workflow is not
+working on is refused (`409 WORKFLOW_NODE_NOT_CURRENT`), and a decision
+for an invalidated attempt is refused (`409 WORKFLOW_NODE_INVALIDATED`).
+The old attempt keeps its history; nothing of it is stored.
+
+Refusals: `409 WORKFLOW_REVALIDATION_EFFECT_PRESENT` (the affected
+branch carries a business effect or a human judgement),
+`409 WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED`,
+`409 WORKFLOW_REVALIDATION_NO_CONSUMERS`, `409
+WORKFLOW_WAITING_TICKET_STALE`, `409 WORKFLOW_WAITING_NODE_NOT_CURRENT`,
+`409 WORKFLOW_NODE_INVALIDATED`, `409 WORKFLOW_NODE_NOT_CURRENT`,
+`409 WORKFLOW_SOURCE_NOT_PRODUCER`, `409 WORKFLOW_SOURCE_NOT_COMPLETED`,
+`409 CANCELLATION_ACTIVE`, `409 WORKFLOW_FINALIZED`, `409
+WORKFLOW_REVALIDATION_PENDING` (the acceptance), `422
+WORKFLOW_SOURCE_REFERENCE_INVALID`, `422
+WORKFLOW_SOURCE_REFERENCE_REJECTED`, `422
+WORKFLOW_SOURCE_REFERENCE_TOO_LARGE`.
+
+### `POST /v1/workflows/instances/{workId}/rework`
+
+Authorize the responsible owner's **one** controlled candidate rework
+after a terminal agent quality failure. The command is the runtime's own
+`authorize_rework`: same transaction, same compare-and-swap, same
+command receipts and the same replay rules as every other mutation.
+There is no `requestVersion` and no caller-supplied budget, force or
+rule override — the cap is a fixed core bound of one per workflow.
+
+```json
+{"actor": "coordinator", "node": "n01", "attempt": 4,
+ "inputDigest": "…", "reason": "the owner authorizes one controlled rework",
+ "commandId": "rework-1", "expectedVersion": 42}
+```
+
+The envelope is **exact**: the accepted fields are `actor` (or
+`actorId`), `workId`, `commandId`, `expectedVersion`, `node`, `attempt`,
+`inputDigest` and `reason` — nothing else. There is no `requestVersion`
+on this route, and any unknown field — a caller `budget`, `maxAttempts`,
+`forcePass`, a rule override, or a stray `requestVersion` — is a `400
+REWORK_INVALID` naming the refused fields, **before any command is
+issued and before anything is written**. A whitespace-only `reason` is
+`400 REWORK_INVALID` the same way: the owner's own words are required.
+
+* `node`, `attempt` and `inputDigest` name exactly the terminally
+  failed agent attempt — the values the `candidateRework` projection of
+  the instance view already publishes. A wrong attempt is `409
+  WORKFLOW_ATTEMPT_STALE`, a digest the failed attempt does not hold is
+  `422 WORKFLOW_INPUT_STALE`, another node is `409
+  WORKFLOW_REWORK_INELIGIBLE` and an unknown node is `404
+  WORKFLOW_NODE_UNKNOWN`.
+* `reason` is required: the owner's own words, bounded.
+* The `actor` must be the work's owner with `work.manage` — the agent,
+  a poller and a review may not authorize their own rework (`403
+  AUTHORITY_DENIED`).
+
+`200` the instance view with `rework: {node, attempt, state,
+inputDigest, grant{authorizedBy, authorizedAt, reason, node,
+fromAttempt, toAttempt, sessionId, terminal}, resultStateVersion}` —
+the new attempt's ticket, not the failed one. The view's
+`candidateRework` now reports `used: 1, eligible: false`, and exactly
+one new `agent_task` intent is pending under the workflow's original
+bound `sessionId`.
+
+The rework changes no standard: the old failure, its report and the
+terminal record stay byte for byte; the new candidate must pass the
+original validation and review honestly; nothing is reset (quality
+allowance, attempts, material generation, revisions, revalidation
+queue); a reworked-attempt failure is terminal. An exact duplicate
+replays the stored receipt, a reused key with another body is `409
+COMMAND_ID_REUSED`, a second authorization under any new key is `409
+WORKFLOW_REWORK_ALREADY_AUTHORIZED`, and a second approval on the same
+observed version is `409 STATE_VERSION_CONFLICT`. A cancelling work is
+`409 CANCELLATION_ACTIVE`; a waiting work, a non-agent terminal, an
+expiry, an unknown result and a success are `409
+WORKFLOW_REWORK_INELIGIBLE`; a business effect or a settled human
+judgement behind the failed node is `409 WORKFLOW_REWORK_EFFECT_PRESENT`.
+A frozen work is refused before any of this (`409 WORKFLOW_FINALIZED` at
+the bridge; the runtime's own closed-work boundary answers a direct
+command).
 
 ### `GET /v1/workflows/instances/{workId}/cancellation`
 
@@ -661,6 +934,21 @@ Every persisted report entry carries, at judgment time:
 review) or `HUMAN` (a decision). The report is returned in the read model
 under `nodes[].checkResults`, so a historical judgment is reconstructible
 from the stored record and not from the current state of the node.
+
+**`checkResults` is the current position, not a history window.** It holds
+**at most one entry per declared criterion** — the report of the judgment
+that covered that criterion last — in the order the definition declares
+the criteria. It is never a slice of the report history: an attempt that
+produced many reports (a node that waited, was judged again and again)
+serves the judgment that is in force, so a reader never has to pick a
+winner and never sees a stale verdict under a live criterion. The history
+itself is untouched — every report the attempt produced is in the store and
+every transition is in the event log; the read model only decides what it
+*serves*.
+
+A judgment that produced **two different verdicts** for the same fact is
+reported as `conflict`, with the reason that says so — neither of the two
+verdicts is presented as the truth, and the difference is never dropped.
 
 The automatic and wait nodes produce the same kind of report from the
 validator that judged their output. The report is checked at the core

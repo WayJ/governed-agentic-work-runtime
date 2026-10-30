@@ -1295,8 +1295,24 @@ class BoundaryPins(unittest.TestCase):
         # (authority and the duplicate-intent gate run before the workflow
         # cancellation hook). Both are disclosed in
         # docs/runtime-boundaries.md with their digests.
+        #
+        # Same-key idempotent retry (2026-10-25): reconcile re-arms ONE
+        # retry for an unknown outcome when the adapter owner declared and
+        # service-verified same-key idempotency for that capability
+        # (same_key_idempotent_retry_actions). Absence/unavailability of a
+        # lookup answer and rejections are never the justification; the
+        # unknown history is preserved and the armed retry passes every
+        # ordinary dispatch gate. See docs/runtime-boundaries.md.
+        #
+        # Live-dispatch lease (2026-10-26): dispatch registers an in-memory
+        # per-instance lease before the dispatched commit and releases it
+        # only after the receipt (or unknown) is persisted; this instance's
+        # reconcile skips a leased operation instead of treating an absent
+        # lookup as NO_AUTHORITATIVE_RESULT. Guards, CAS, authority, quality
+        # gates and the one-retry budget are untouched. See
+        # docs/runtime-boundaries.md and tests/test_dispatch_lease.py.
         "work_runtime/runtime.py":
-            "1edb3bc065a8e3d59c07e20d672d6ad5354d1c233ca26de7fe848b1156379d45",
+            "c920a2d8ebbd42863bb54ec7e07ad48eefc1c97f7d4034834d9350ba90805c07",
         "work_runtime/adapters.py":
             "ce132f24d84c17a083bcf0b61bf90e1c62ff75faf2ec52fe2c7348ab86b6985e",
         "work_runtime/file_adapter.py":

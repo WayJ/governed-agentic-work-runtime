@@ -1562,8 +1562,10 @@ class PreservationPins(CompensationCase):
         import work_runtime.runtime, work_runtime.adapters
         import work_runtime.adapter_contract, work_runtime.policy
         import inspect
+        # threading joined the stdlib set for the in-memory live-dispatch
+        # lease lock (2026-10-26); no third-party dependency exists.
         allowed = {"json", "sqlite3", "time", "uuid", "hashlib", "typing",
-                   "pathlib", "contextlib", "dataclasses"}
+                   "pathlib", "contextlib", "dataclasses", "threading"}
         for module in (work_runtime.runtime, work_runtime.adapters,
                        work_runtime.adapter_contract, work_runtime.policy):
             tree = inspect.getsource(module)

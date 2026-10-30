@@ -46,8 +46,8 @@ _NODE_REQUIRED = {
     "wait": ("match", "deadline_s"),
 }
 _NODE_OPTIONAL = ("inputs", "checks", "on_reject", "on_failure", "on_timeout",
-                  "deadline_s", "max_attempts", "distinct_from", "review",
-                  "authority", "description")
+                  "deadline_s", "max_attempts", "material_generations",
+                  "distinct_from", "review", "authority", "description")
 
 _SHAPE_TYPES = ("object", "array", "string", "integer", "number", "boolean", "null")
 _COMPARISONS = ("eq", "ne", "gt", "ge", "lt", "le")
@@ -480,6 +480,16 @@ def _lint_node(node_id: str, node: Any, findings: List[Dict[str, str]]) -> None:
                                    or node["max_attempts"] < 1):
         findings.append(_finding("NODE_FIELD_TYPE", path + ".max_attempts",
                                  "max_attempts must be a positive integer"))
+    if "material_generations" in node:
+        # The material budget is separate from the quality allowance: it
+        # bounds how often the material this node judges may be replaced
+        # and the node re-run. Zero means the node may not be revalidated.
+        generations = node.get("material_generations")
+        if not _is_int(generations) or generations < 0:
+            findings.append(_finding("NODE_FIELD_TYPE",
+                                     path + ".material_generations",
+                                     "material_generations must be a "
+                                     "nonnegative integer"))
     if "deadline_s" in node and (not _is_int(node["deadline_s"])
                                  or node["deadline_s"] < 1):
         findings.append(_finding("NODE_FIELD_TYPE", path + ".deadline_s",

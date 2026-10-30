@@ -6,11 +6,12 @@ are not authentication. Do not expose these methods as an unauthenticated API.
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Dict, Optional, Protocol
+from typing import Callable, Dict, Optional, Protocol, Tuple
 
 from .adapter_contract import receipt_is_valid, valid_contract
 from .policy import Policy, canonical, digest
@@ -109,6 +110,12 @@ class Runtime:
         # runtime stays usable without one and non-workflow works are
         # unaffected either way.
         self.workflow = None
+        # Live dispatches this instance still owns. In-memory and per
+        # instance on purpose: another instance on the same file — a restart,
+        # including one in this process — is a different coordinator and must
+        # keep treating the persisted dispatched row as uncertain.
+        self._live_dispatches: Dict[str, int] = {}
+        self._live_dispatches_guard = threading.Lock()
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as db:
             db.executescript("""
@@ -1111,7 +1118,17 @@ class Runtime:
                 "document_digest": op["document_digest"]}
 
     def dispatch(self, operation_id: str, adapter: Adapter, fault: Optional[Callable] = None) -> dict:
-        """Single coordinator only. Unknown outcomes must be reconciled, never dispatched again."""
+        """Single coordinator only. Unknown outcomes must be reconciled, never
+        dispatched again — except the one same-key idempotent retry that
+        reconcile arms for capabilities whose adapter owner declared and
+        service-verified same-key idempotency (see reconcile); that retry is
+        the same operation, same business key, same frozen document, and it
+        passes every gate below again.
+
+        The attempt is registered as a live dispatch of this instance before
+        the dispatched commit becomes visible and released only after the
+        outcome is persisted, so a reconcile running on another thread of the
+        same instance cannot mistake "no answer yet" for "no effect"."""
         with self._transaction() as db:
             op = self._get_op(db, operation_id)
             if op["status"] != "prepared" or op["dispatch_state"] == "cancelled":
@@ -1191,26 +1208,51 @@ class Runtime:
                 self._save(db, work, "DispatchHeld",
                            {"operation_id": op["id"], "reason": op["reason"]})
                 return op
+            self._live_dispatch_begin(operation_id)
             op["status"], op["dispatch_state"] = "dispatched", "in_flight"
             op["attempts"].append({"id": uuid.uuid4().hex, "status": "outcome_unknown"})
             self._save_op(db, op)
             self._save(db, work, "AttemptStarted", {"operation_id": op["id"]})
         try:
-            if contract is not None and contract.supports_action_context:
-                # Opted-in adapters receive the explicit action and the
-                # runtime-validated immutable link (or None for forward ops).
-                # Legacy adapters are called with exactly today's three
-                # positional arguments — no introspection, no TypeError probe.
-                result = adapter.execute(op["business_key"], op["document"],
-                                         op["document_digest"],
-                                         action=op["capability"], compensates=compensation)
-            else:
-                result = adapter.execute(op["business_key"], op["document"], op["document_digest"])
-        except Exception as error:
-            return self._unknown(operation_id, type(error).__name__)
-        if fault:
-            fault()  # Injection point: external effect committed, local outcome not recorded.
-        return self._resolve(operation_id, result)
+            try:
+                if contract is not None and contract.supports_action_context:
+                    # Opted-in adapters receive the explicit action and the
+                    # runtime-validated immutable link (or None for forward ops).
+                    # Legacy adapters are called with exactly today's three
+                    # positional arguments — no introspection, no TypeError probe.
+                    result = adapter.execute(op["business_key"], op["document"],
+                                             op["document_digest"],
+                                             action=op["capability"], compensates=compensation)
+                else:
+                    result = adapter.execute(op["business_key"], op["document"], op["document_digest"])
+            except Exception as error:
+                return self._unknown(operation_id, type(error).__name__)
+            if fault:
+                fault()  # Injection point: external effect committed, local outcome not recorded.
+            return self._resolve(operation_id, result)
+        finally:
+            # Released only after the outcome is persisted (or the process would
+            # have died with it): a reconciler never sees a live call answered.
+            self._live_dispatch_end(operation_id)
+
+    def _live_dispatch_begin(self, operation_id: str) -> None:
+        """Register the attempt this instance is about to make visible."""
+        with self._live_dispatches_guard:
+            self._live_dispatches[operation_id] = threading.get_ident()
+
+    def _live_dispatch_end(self, operation_id: str) -> None:
+        with self._live_dispatches_guard:
+            self._live_dispatches.pop(operation_id, None)
+
+    def _live_dispatch_held(self, operation_id: str) -> bool:
+        """Whether this instance still owns the call of that operation.
+
+        The answer is an in-memory fact about this instance, never a claim
+        about the store: another instance reading the same file has no lease
+        and keeps the persisted dispatched row uncertain.
+        """
+        with self._live_dispatches_guard:
+            return operation_id in self._live_dispatches
 
     def _link_still_valid(self, db, work, policy, op) -> bool:
         """Dispatch-time revalidation of the immutable link (belt and braces).
@@ -1242,33 +1284,148 @@ class Runtime:
             op = self._get_op(db, operation_id)
             if op["status"] == "outcome_unknown" and op.get("reason") == reason:
                 return op  # Repeated reconciliation with the same finding writes nothing.
+            if op["status"] == "outcome_unknown":
+                op["unknown_history"] = list(op.get("unknown_history", [])) + [
+                    {"status": op["status"], "reason": op.get("reason"),
+                     "dispatch_state": op.get("dispatch_state"),
+                     "at": int(time.time())}]
             op["status"], op["reason"] = "outcome_unknown", reason
             self._save_op(db, op)
             self._save(db, self._work(db, op["work_id"]), "OutcomeUnknown", {"operation_id": op["id"]})
             return op
 
     def reconcile(self, operation_id: str, adapter: Adapter) -> dict:
+        """Settle an uncertain operation against the adapter's record.
+
+        An operation this instance is dispatching right now is not uncertain:
+        no answer exists yet because the call has not returned, so a lookup
+        miss is not a finding and nothing is written. The lease is dropped
+        once the outcome is persisted; after that, and for every other
+        instance and process, an absent answer keeps the ordinary quarantine.
+        """
         op = self.get_operation(operation_id)
         if op["status"] not in ("dispatched", "outcome_unknown"):
             return op
+        if self._live_dispatch_held(operation_id):
+            return op
         self._accepted_source(self.get_work(op["work_id"]))
+        lookup_error = None
+        result = None
         try:
             result = adapter.lookup(op["business_key"])
         except Exception as error:
-            return self._unknown(operation_id, type(error).__name__)
+            lookup_error = type(error).__name__
         if result is not None:
             return self._resolve(operation_id, result)
+        if self._same_key_retry_armed(op, adapter):
+            return self._arm_same_key_retry(operation_id, adapter, lookup_error)
+        if lookup_error is not None:
+            return self._unknown(operation_id, lookup_error)
         with self._transaction() as db:
             op = self._get_op(db, operation_id)
             work = self._work(db, op["work_id"])
             if (op["status"] == "outcome_unknown" and op.get("reason") == "NO_AUTHORITATIVE_RESULT"
                     and work["status"] == "needs_attention"):
                 return op  # Idempotent recovery: the escalation is already durable.
+            if op["status"] == "outcome_unknown":
+                op["unknown_history"] = list(op.get("unknown_history", [])) + [
+                    {"status": op["status"], "reason": op.get("reason"),
+                     "dispatch_state": op.get("dispatch_state"),
+                     "at": int(time.time())}]
             op["status"] = "outcome_unknown"
             op["reason"] = "NO_AUTHORITATIVE_RESULT"
             self._save_op(db, op)
             work["status"] = "needs_attention"
             self._save(db, work, "ReconciliationRequired", {"operation_id": op["id"]})
+            return op
+
+    @staticmethod
+    def _declared_retry_actions(adapter: Adapter) -> Tuple[str, ...]:
+        """Same-key retry actions the adapter owner declared and verified.
+
+        Absent descriptor keeps the adapter legacy (no retry actions); a
+        malformed descriptor is refused by contract validation at dispatch.
+        """
+        contract = _declared_contract(adapter)
+        if contract is None:
+            return ()
+        return tuple(getattr(contract, "same_key_idempotent_retry_actions", ()))
+
+    def _same_key_retry_armed(self, op: dict, adapter: Adapter) -> bool:
+        """Whether this unknown outcome may consume the single same-key retry.
+
+        The justification is only the adapter owner's declared, verified
+        same-key idempotency for this capability — never the absence or the
+        unavailability of a lookup answer, and never a rejection. Compensa-
+        tions never retry: their pairing is bound to the original intent.
+        """
+        if op.get("compensates") is not None:
+            return False
+        if op.get("capability") not in self._declared_retry_actions(adapter):
+            return False
+        return op.get("same_key_retries", 0) == 0
+
+    def _arm_same_key_retry(self, operation_id: str, adapter: Adapter,
+                            lookup_error) -> dict:
+        """Re-arm the single declared same-key idempotent retry.
+
+        Same operation id, same business key, same frozen document: the
+        external side sees at most one effect for that key either way. The
+        prior unknown state is preserved in ``unknown_history`` instead of
+        being overwritten, the re-arm is an audited event, and the armed
+        retry passes through every ordinary dispatch gate (cancellation,
+        subject staleness, revisions, authority, policy). A work in
+        needs_attention returns to routing only when this was its last
+        unresolved effect; unrelated attention is never cleared here.
+        """
+        with self._transaction() as db:
+            op = self._get_op(db, operation_id)
+            if op["status"] not in ("dispatched", "outcome_unknown"):
+                return op
+            if (op.get("same_key_retries", 0) != 0
+                    or not self._same_key_retry_armed(op, adapter)):
+                return op  # A concurrent reconciler armed it, or the answer arrived.
+            work = self._work(db, op["work_id"])
+            history = list(op.get("unknown_history", []))
+            history.append({"status": op["status"], "reason": op.get("reason"),
+                            "dispatch_state": op.get("dispatch_state"),
+                            "lookup": "unavailable" if lookup_error else "absent",
+                            "at": int(time.time())})
+            op["unknown_history"] = history
+            op["same_key_retries"] = 1
+            op["status"], op["dispatch_state"] = "prepared", "ready"
+            op["reason"] = "SAME_KEY_RETRY_ARMED"
+            self._save_op(db, op)
+            unresolved = 0
+            for row in db.execute(
+                    "SELECT body FROM operations WHERE work_id=?",
+                    (work["id"],)).fetchall():
+                other = json.loads(row[0])
+                if other["id"] == op["id"]:
+                    continue
+                if (other.get("status") not in ("confirmed_succeeded",
+                                                "confirmed_failed")
+                        and other.get("dispatch_state") != "cancelled"):
+                    unresolved += 1
+            restored = False
+            if work["status"] == "needs_attention" and unresolved == 0:
+                row = db.execute(
+                    "SELECT type, body FROM events WHERE work_id=?"
+                    " ORDER BY version DESC LIMIT 1", (work["id"],)).fetchone()
+                last_type = row[0] if row else None
+                last_body = json.loads(row[1]) if row else {}
+                # Only an attention this operation's own quarantine produced
+                # may be lifted here; anything else stays for its owner. An
+                # unprovable attribution keeps needs_attention.
+                if (last_type == "ReconciliationRequired"
+                        and last_body.get("operation_id") == op["id"]):
+                    work["status"] = "active"
+                    restored = True
+            self._save(db, work, "SameKeyRetryArmed",
+                       {"operation_id": op["id"], "budget": 1,
+                        "lookup": "unavailable" if lookup_error else "absent",
+                        "unresolved_siblings": unresolved,
+                        "work_restored": restored})
             return op
 
     def _resolve(self, operation_id, result):

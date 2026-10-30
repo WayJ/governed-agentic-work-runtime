@@ -29,7 +29,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .policy import canonical, digest as content_digest
 from .runtime import CommandError
-from .workflow import WorkflowError
+from .workflow import (MATERIAL_WAIT_REQUEST_VERSION, WorkflowError,
+                       _rework_authorization_view)
 
 API_PREFIX = "/v1/workflows"
 MAX_BODY_BYTES = 1 << 20
@@ -40,6 +41,13 @@ MAX_LIST_LIMIT = 64
 SECRET_FIELDS = ("token", "secret", "password", "passwd", "credential",
                  "authorization", "api_key", "apikey", "cookie", "session_key")
 
+# The exact rework envelope the private route accepts. There is no
+# requestVersion on this route, and nothing that could carry a caller
+# budget or an override: an unknown key is a 400 before any command.
+REWORK_ENVELOPE_FIELDS = frozenset(
+    {"actor", "actorId", "workId", "commandId", "expectedVersion",
+     "node", "attempt", "inputDigest", "reason"})
+
 # Engine rejection code -> HTTP status. Unknown codes are reported as 422
 # (a business rejection) rather than as a server fault.
 STATUS_BY_CODE = {
@@ -47,6 +55,7 @@ STATUS_BY_CODE = {
     "WORKFLOW_TEMPLATE_UNKNOWN": 404,
     "WORKFLOW_INTENT_UNKNOWN": 404,
     "WORKFLOW_NODE_UNKNOWN": 404,
+    "WORK_UNKNOWN": 404,
     "WORKFLOW_TEMPLATE_IMMUTABLE": 409,
     "WORKFLOW_ALREADY_BOUND": 409,
     "WORKFLOW_ATTEMPT_STALE": 409,
@@ -89,7 +98,31 @@ STATUS_BY_CODE = {
     "WORKFLOW_TERMINAL_NOT_COMPLETED": 409,
     "WORKFLOW_TERMINAL_NOT_DECLARED": 409,
     "WORKFLOW_NODE_UNSETTLED": 409,
+    "WORKFLOW_NODE_NOT_CURRENT": 409,
+    "WORKFLOW_NODE_NOT_WAITABLE": 409,
+    "WORKFLOW_NODE_WAITING": 409,
+    "WORKFLOW_NOT_WAITING": 409,
+    "WORKFLOW_MATERIAL_NOT_DEPENDENCY": 422,
+    "WORKFLOW_MATERIAL_TOO_LARGE": 422,
+    "WORKFLOW_ADOPTION_LIMIT_EXCEEDED": 422,
+    "INPUT_DEPENDENCIES_REQUIRE_REVALIDATION": 422,
+    "WORKFLOW_SOURCE_REFERENCE_INVALID": 422,
+    "WORKFLOW_SOURCE_REFERENCE_TOO_LARGE": 422,
+    "WORKFLOW_SOURCE_NOT_PRODUCER": 409,
+    "WORKFLOW_SOURCE_NOT_COMPLETED": 409,
+    "WORKFLOW_WAITING_TICKET_STALE": 409,
+    "WORKFLOW_REVALIDATION_EFFECT_PRESENT": 409,
+    "WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED": 409,
+    "WORKFLOW_REVALIDATION_NO_CONSUMERS": 409,
+    "WORKFLOW_REVALIDATION_PENDING": 409,
+    "WORKFLOW_SOURCE_REFERENCE_REJECTED": 422,
+    "WORKFLOW_NODE_INVALIDATED": 409,
+    "WORKFLOW_NODE_NOT_CURRENT": 409,
+    "WORKFLOW_WAITING_NODE_NOT_CURRENT": 409,
     "WORKFLOW_NODE_NOT_COMPLETED": 409,
+    "WORKFLOW_REWORK_ALREADY_AUTHORIZED": 409,
+    "WORKFLOW_REWORK_INELIGIBLE": 409,
+    "WORKFLOW_REWORK_EFFECT_PRESENT": 409,
     "WORKFLOW_QUALITY_UNSETTLED": 409,
     "WORKFLOW_CHECK_UNSATISFIED": 409,
     "WORKFLOW_EFFECT_UNRESOLVED": 409,
@@ -817,6 +850,343 @@ class WorkflowService:
                           "resultStateVersion": receipt.get("result_state_version")}
         return 200, redact(view)
 
+    def request_material_wait(self, work_id: str,
+                              body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Park the current agent node for business material.
+
+        The bridge owns no waiting engine of its own: it issues the
+        runtime's own command, so the wait is admitted by the same
+        compare-and-swap, the same command dedup and the same receipt store
+        as every other mutation. The body states the version of the request
+        it speaks, and a version the bridge does not know is refused instead
+        of half-understood.
+        """
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
+        node_id = body.get("node")
+        attempt = body.get("attempt")
+        digest_value = body.get("inputDigest")
+        reason = body.get("reason")
+        if not isinstance(node_id, str) or not node_id:
+            return 400, _error("MATERIAL_WAIT_INVALID", "node is required")
+        if type(attempt) is not int:
+            return 400, _error("MATERIAL_WAIT_INVALID", "attempt is required")
+        if not isinstance(digest_value, str) or not digest_value:
+            return 400, _error("MATERIAL_WAIT_INVALID",
+                               "inputDigest is required: the wait is pinned to "
+                               "the inputs the node holds now")
+        if not isinstance(reason, str) or not reason:
+            return 400, _error("MATERIAL_WAIT_INVALID", "reason is required")
+        version = self._request_version(body)
+        if version is None:
+            return 400, _error("MATERIAL_WAIT_VERSION_UNSUPPORTED",
+                               "requestVersion 1 is the supported version")
+        actor, error = self._request_actor(body)
+        if error is not None:
+            return 400, error
+        if not self._body_names_this_work(work_id, body):
+            return 400, _error("WORK_MISMATCH",
+                               "the request body names another work")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        receipt = self._material_command(
+            actor, command_id, work_id, "request_material_wait",
+            {"node": node_id, "attempt": attempt, "input_digest": digest_value,
+             "reason": reason, "request_version": version}, expected_version)
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(
+                receipt.get("code", "REJECTED"),
+                "The material wait was not recorded", receipt.get("blockers"))
+        self._settle(work_id)
+        status, view = self.instance(work_id)
+        view["materialWait"] = {"node": node_id, "attempt": attempt,
+                                "wait": receipt.get("wait"),
+                                "resultStateVersion": receipt.get("result_state_version")}
+        return 200, redact(view)
+
+    def adopt_material(self, work_id: str,
+                       body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Adopt externally provided material under an active wait."""
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
+        node_id = body.get("node")
+        attempt = body.get("attempt")
+        name = body.get("name")
+        value = body.get("object")
+        if not isinstance(node_id, str) or not node_id:
+            return 400, _error("MATERIAL_ADOPT_INVALID", "node is required")
+        if type(attempt) is not int:
+            return 400, _error("MATERIAL_ADOPT_INVALID", "attempt is required")
+        if not isinstance(name, str) or not name:
+            return 400, _error("MATERIAL_ADOPT_INVALID", "name is required")
+        if not isinstance(value, dict):
+            return 400, _error("MATERIAL_ADOPT_INVALID", "object must be an object")
+        version = self._request_version(body)
+        if version is None:
+            return 400, _error("MATERIAL_WAIT_VERSION_UNSUPPORTED",
+                               "requestVersion 1 is the supported version")
+        actor, error = self._request_actor(body)
+        if error is not None:
+            return 400, error
+        if not self._body_names_this_work(work_id, body):
+            return 400, _error("WORK_MISMATCH",
+                               "the request body names another work")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        receipt = self._material_command(
+            actor, command_id, work_id, "adopt_material",
+            {"node": node_id, "attempt": attempt, "name": name, "object": value,
+             "request_version": version}, expected_version)
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(
+                receipt.get("code", "REJECTED"),
+                "The material was not adopted", receipt.get("blockers"))
+        self._settle(work_id)
+        status, view = self.instance(work_id)
+        view["materialAdoption"] = {"node": node_id, "attempt": attempt,
+                                    "adoption": receipt.get("adoption"),
+                                    "wait": receipt.get("wait"),
+                                    "resultStateVersion": receipt.get("result_state_version")}
+        return 200, redact(view)
+
+    def resume_material_wait(self, work_id: str,
+                             body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Resume the waiting node behind the dependency gate."""
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
+        node_id = body.get("node")
+        attempt = body.get("attempt")
+        if not isinstance(node_id, str) or not node_id:
+            return 400, _error("MATERIAL_RESUME_INVALID", "node is required")
+        if type(attempt) is not int:
+            return 400, _error("MATERIAL_RESUME_INVALID", "attempt is required")
+        version = self._request_version(body)
+        if version is None:
+            return 400, _error("MATERIAL_WAIT_VERSION_UNSUPPORTED",
+                               "requestVersion 1 is the supported version")
+        actor, error = self._request_actor(body)
+        if error is not None:
+            return 400, error
+        if not self._body_names_this_work(work_id, body):
+            return 400, _error("WORK_MISMATCH",
+                               "the request body names another work")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        receipt = self._material_command(
+            actor, command_id, work_id, "resume_material_wait",
+            {"node": node_id, "attempt": attempt, "request_version": version},
+            expected_version)
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(
+                receipt.get("code", "REJECTED"),
+                "The material wait was not resumed", receipt.get("blockers"))
+        self._settle(work_id)
+        status, view = self.instance(work_id)
+        view["materialResume"] = {"node": node_id, "attempt": attempt,
+                                  "state": receipt.get("state"),
+                                  "inputDigest": receipt.get("input_digest"),
+                                  "wait": receipt.get("wait"),
+                                  "resultStateVersion": receipt.get("result_state_version")}
+        return 200, redact(view)
+
+    def replace_material(self, work_id: str,
+                         body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Replace the archived source material and revalidate its consumers.
+
+        The bridge owns no replacement engine of its own: it issues the
+        runtime's own command, so the compare-and-swap, the command dedup
+        and the receipts are the ones every other mutation already has.
+
+        The body carries the **frozen source reference** the platform
+        acquired and froze — a manifest, never the material, never a
+        location and never a credential. The core wraps it in the same
+        envelope the source output carries and writes it as a new revision.
+        """
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
+        node_id = body.get("node")
+        reference = body.get("sourceReference")
+        reason = body.get("reason")
+        waiting_node = body.get("waitingNode")
+        waiting_ticket = body.get("waitingTicket")
+        if not isinstance(node_id, str) or not node_id:
+            return 400, _error("MATERIAL_REPLACE_INVALID",
+                               "node is required: the source node whose "
+                               "material is replaced")
+        if not isinstance(reference, dict) or not reference:
+            return 400, _error("MATERIAL_REPLACE_INVALID",
+                               "sourceReference is required: the frozen "
+                               "reference the platform acquired")
+        if not isinstance(reason, str) or not reason:
+            return 400, _error("MATERIAL_REPLACE_INVALID", "reason is required")
+        if waiting_node is not None and not isinstance(waiting_node, str):
+            return 400, _error("MATERIAL_REPLACE_INVALID",
+                               "waitingNode must be a node id or absent")
+        if waiting_ticket is not None and not isinstance(waiting_ticket, str):
+            return 400, _error("MATERIAL_REPLACE_INVALID",
+                               "waitingTicket must be the ticket the manager "
+                               "observed or absent")
+        version = self._request_version(body)
+        if version is None:
+            return 400, _error("MATERIAL_WAIT_VERSION_UNSUPPORTED",
+                               "requestVersion 1 is the supported version")
+        actor, error = self._request_actor(body)
+        if error is not None:
+            return 400, error
+        if not self._body_names_this_work(work_id, body):
+            return 400, _error("WORK_MISMATCH",
+                               "the request body names another work")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        receipt = self._material_command(
+            actor, command_id, work_id, "replace_material",
+            {"node": node_id, "source_reference": reference, "reason": reason,
+             "request_version": version, "waiting_node": waiting_node,
+             "waiting_ticket": waiting_ticket}, expected_version)
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(
+                receipt.get("code", "REJECTED"),
+                "The source material was not replaced", receipt.get("blockers"))
+        self._settle(work_id)
+        status, view = self.instance(work_id)
+        plan = view.get("materialRevalidation") or {}
+        view["materialReplacement"] = {
+            "node": node_id,
+            "attestation": plan.get("attestation"),
+            "affected": receipt.get("affected"),
+            "generation": receipt.get("generation"),
+            "resultStateVersion": receipt.get("result_state_version")}
+        return 200, redact(view)
+
+    def authorize_rework(self, work_id: str,
+                         body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Authorize the owner's one controlled candidate rework.
+
+        The bridge owns no rework engine of its own: it issues the
+        runtime's own command, so the compare-and-swap, the command
+        dedup and the receipts are the ones every other mutation already
+        has. The body names the terminally failed agent node, the failed
+        attempt and the failed input digest — the workbench reads all
+        three from the ``candidateRework`` projection of the instance
+        view — and a reason the responsible owner typed.
+        """
+        if self._finalized(work_id):
+            return 409, _error("WORKFLOW_FINALIZED",
+                               "The workflow was accepted and frozen; it accepts "
+                               "no further mutation")
+        # the envelope is exact: no caller budget, no force, no rule
+        # override and no requestVersion may ride this route, not even
+        # as an ignored extra — an unknown field is refused before any
+        # command is issued and nothing is written
+        unknown = sorted(set(body) - REWORK_ENVELOPE_FIELDS)
+        if unknown:
+            return 400, _error("REWORK_INVALID",
+                               "unknown fields are refused: "
+                               + ", ".join(unknown))
+        node_id = body.get("node")
+        attempt = body.get("attempt")
+        digest_value = body.get("inputDigest")
+        reason = body.get("reason")
+        if not isinstance(node_id, str) or not node_id:
+            return 400, _error("REWORK_INVALID",
+                               "node is required: the terminally failed "
+                               "agent node")
+        if type(attempt) is not int:
+            return 400, _error("REWORK_INVALID",
+                               "attempt is required: the failed attempt")
+        if not isinstance(digest_value, str) or not digest_value:
+            return 400, _error("REWORK_INVALID",
+                               "inputDigest is required: the failed "
+                               "attempt's current input digest")
+        if not isinstance(reason, str) or not reason.strip():
+            return 400, _error("REWORK_INVALID",
+                               "reason is required: the owner's own words")
+        actor, error = self._request_actor(body)
+        if error is not None:
+            return 400, error
+        if not self._body_names_this_work(work_id, body):
+            return 400, _error("WORK_MISMATCH",
+                               "the request body names another work")
+        command_id = self._command_id(body)
+        if command_id is None:
+            return 400, _error("COMMAND_ID_REQUIRED",
+                               "commandId is required and must be stable")
+        try:
+            expected_version = self._expected_version(body)
+        except ValueError as error:
+            return 400, _error("EXPECTED_VERSION_INVALID", str(error))
+        if expected_version is None:
+            return 400, _error("EXPECTED_VERSION_REQUIRED",
+                               "expectedVersion is required for a compare-and-swap "
+                               "mutation")
+        receipt = self._material_command(
+            actor, command_id, work_id, "authorize_rework",
+            {"node": node_id, "attempt": attempt,
+             "input_digest": digest_value, "reason": reason},
+            expected_version)
+        if receipt.get("decision") != "accepted":
+            return _status_for(receipt), _error(
+                receipt.get("code", "REJECTED"),
+                "The rework was not authorized", receipt.get("blockers"))
+        self._settle(work_id)
+        status, view = self.instance(work_id)
+        view["rework"] = {"node": node_id,
+                          "attempt": receipt.get("attempt"),
+                          "state": receipt.get("state"),
+                          "inputDigest": receipt.get("input_digest"),
+                          "grant": _rework_authorization_view(
+                              receipt.get("grant")),
+                          "resultStateVersion": receipt.get("result_state_version")}
+        return 200, redact(view)
+
     def finalize(self, work_id: str, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         """Accept a successful workflow and freeze it.
 
@@ -1235,6 +1605,69 @@ class WorkflowService:
             raise ValueError("expectedVersion must be an integer")
         return version
 
+    @staticmethod
+    def _request_actor(body: Dict[str, Any]):
+        """The principal a material request claims to act as.
+
+        The trusted platform wire may name it `actor` or `actorId`; both
+        name the same thing. A body that carries **two different** ones is
+        refused rather than guessed at, and a body that names neither is
+        refused. The principal is only an assertion: the core decides
+        whether it may act.
+        """
+        actor = body.get("actor")
+        actor_id = body.get("actorId")
+        if actor is not None and actor_id is not None and actor != actor_id:
+            return None, _error("ACTOR_CONFLICT",
+                                "the request names two different actors")
+        claimed = actor if actor is not None else actor_id
+        if not isinstance(claimed, str) or not claimed:
+            return None, _error("ACTOR_REQUIRED", "actor is required")
+        return claimed, None
+
+    @staticmethod
+    def _body_names_this_work(work_id: str, body: Dict[str, Any]) -> bool:
+        """Whether a request body agrees with the work of the path.
+
+        The path is authoritative. A body that names **another** work is
+        refused rather than ignored: the request would be about one work
+        and applied to another.
+        """
+        named = body.get("workId")
+        return named is None or named == work_id
+
+    def _material_command(self, actor: str, command_id: str, work_id: str,
+                          kind: str, payload: Dict[str, Any],
+                          expected_version: int) -> Dict[str, Any]:
+        """Issue one material-wait command and classify a missing work.
+
+        A work that does not exist is a missing work, never a fact about
+        effects: the command never ran, so there is no receipt and nothing
+        was written. A reader that lost the answer consults the command
+        receipt.
+        """
+        try:
+            return self.engine.command(actor, command_id, work_id, kind,
+                                        payload, expected_version,
+                                        now=self.now())
+        except CommandError:
+            return {"decision": "rejected", "code": "WORK_UNKNOWN"}
+
+    @staticmethod
+    def _request_version(body: Dict[str, Any]) -> Optional[int]:
+        """The version of the material-wait request the caller speaks.
+
+        The bridge knows exactly one version. A request that states another
+        one is refused rather than half-understood, so a caller never
+        believes a shape was honoured that was not.
+        """
+        version = body.get("requestVersion")
+        if version is None:
+            return None
+        if type(version) is not int or version != MATERIAL_WAIT_REQUEST_VERSION:
+            return None
+        return version
+
     def _finalized(self, work_id: str) -> bool:
         """Whether the work carries an accepted, frozen workflow."""
         try:
@@ -1288,6 +1721,8 @@ def _intent_view(intent: Dict[str, Any]) -> Dict[str, Any]:
         "authority": intent.get("authority"),
         "subject": intent.get("subject"),
         "inputs": intent.get("inputs") or [],
+        "inputDigest": intent.get("input_digest"),
+        "inputGeneration": intent.get("input_generation", 0),
         "checks": intent.get("checks") or [],
         "deadlineAt": intent.get("deadline_at"),
         "createdAt": intent.get("created_at"),
@@ -1430,6 +1865,16 @@ class WorkflowRequestHandler(BaseHTTPRequestHandler):
                 return service.cancellation(work_id)
             if method == "POST" and tail == ["finalize"]:
                 return service.finalize(work_id, body)
+            if method == "POST" and tail == ["material", "wait"]:
+                return service.request_material_wait(work_id, body)
+            if method == "POST" and tail == ["material", "adopt"]:
+                return service.adopt_material(work_id, body)
+            if method == "POST" and tail == ["material", "resume"]:
+                return service.resume_material_wait(work_id, body)
+            if method == "POST" and tail == ["material", "replace"]:
+                return service.replace_material(work_id, body)
+            if method == "POST" and tail == ["rework"]:
+                return service.authorize_rework(work_id, body)
             if method == "GET" and tail == ["completion"]:
                 return service.completion(work_id)
             if (method == "GET" and len(tail) == 4 and tail[0] == "objects"

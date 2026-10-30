@@ -258,7 +258,10 @@ submits a candidate with `submit_node_result {node, attempt, object, result}`:
 * the attempt must be the node's current attempt (`WORKFLOW_ATTEMPT_STALE`);
 * the candidate must be bound to the **input digest** the node currently
   pins (`WORKFLOW_INPUT_STALE`): a candidate produced from a superseded
-  input is refused;
+  input is refused. For a node that never waited, the digest is the
+  digest of its pinned inputs, unchanged; a node that was **resumed**
+  carries its input generation in the digest, so the ticket moves on the
+  resume — see [§13](#13-the-material-wait);
 * the payload's `object` must be the node's declared output object
   (`WORKFLOW_OBJECT_MISMATCH`);
 * the result is validated by the shape descriptor and by the registered
@@ -601,6 +604,8 @@ version bump, no event.
 | node ready | the node instance opens, its inputs and subject are resolved and pinned, and its kind-specific work starts |
 | input or subject missing | the node is `blocked` with a bounded finding (`INPUT_MISSING`, `SUBJECT_MISSING`); it re-resolves on the next pass |
 | a decision or a candidate is missing | the node keeps waiting; a deadline turns it into `expired` |
+| the node waits for material | the node stays `waiting`: the routing pass settles nothing and opens nothing, the result acceptance is refused, and the wait survives a restart until the manager adopts the material and resumes (see [§13](#13-the-material-wait)) |
+| the material was replaced | the affected consumers are revalidated in dependency order, each on one **material** attempt; the source read is never re-run and no effect is replayed (see [§14](#14-the-controlled-source-replacement-and-the-transitive-revalidation)) |
 | human decision `rejected` | the node's `on_reject` branch is taken |
 | agent candidate invalid | the node fails with `WORKFLOW_RESULT_INVALID` and the same node is re-opened as a **new attempt**; the bounded `max_attempts` decides when the work escalates to `needs_attention` (`WorkflowReworkLimitExceeded`) |
 | operation confirmed failed | the node fails; `on_failure` is taken |
@@ -616,6 +621,130 @@ Rework increments the attempt, keeps the old attempt and its evidence on the
 record, and invalidates the affected approval by exact version. A callback
 for a completed, superseded or cancelled attempt is refused
 (`WORKFLOW_ATTEMPT_STALE`): it can never revive a finished instance.
+
+### The cursor names the node the work is working on
+
+The work's cursor (`currentNode`) names the node whose attempt the work is
+actually working on. The routing moves the cursor to the successor **only
+when that successor's attempt was really opened**.
+
+When a routing cannot open the successor — the node's quality allowance is
+spent — the work escalates (`needs_attention`, `WorkflowReworkLimitExceeded`
+naming the node that could not be opened) and the cursor **stays on the node
+that completed**. The work is not moved onto a node whose attempt was never
+opened, and the successor's own attempt — a terminal one that was *already
+routed from* — is never routed from a second time. So:
+
+* a decision is routed from **exactly once**: a rejection that sent the work
+  back is never consumed again, and the work never walks past the node it
+  could not open;
+* the escalation is **stable**: the next pass finds the same node, tries the
+  same successor, refuses it the same way and writes nothing at all — no
+  second event, no state version move, no new attempt;
+* the work that was done is **kept**: the reworked candidate stays the
+  output of the attempt that produced it, and the old decision keeps its own
+  history.
+
+The allowance that was spent is the node's own: the quality allowance
+accumulates **per node** (see [§14](#14-the-controlled-source-replacement-and-the-transitive-revalidation)),
+and a definition that wants the work to come back declares the allowance its
+node needs.
+
+### One judgment is one judgment, however often the pass runs
+
+A pass that re-judges the **same** decision is still one judgment. The
+criterion report of a decision is merged into the node's own evidence
+**once**: the identity of a judgment is its content — the criterion, the
+verdict, the reason, the evidence it points at, the digests it was made
+against and the actor who made it — and **not** the moment the routing
+pass re-derived it. So a node that waits for a missing named output
+(`WORKFLOW_OUTPUT_MISSING`) keeps exactly the same evidence and the same
+audit trail however often the pass runs: the pass writes nothing at all,
+because nothing changed — no second report, no second
+`WorkflowOutputMissing` event, no state version move.
+
+A **different** judgment is judged and recorded again, and nothing is
+swallowed: a new decision, a revised subject or different inputs produce a
+different report and are merged again, a new attempt starts with an empty
+evidence of its own, and a decision that carries the named record still
+completes the node. The waiting itself is unchanged: a missing output is
+never mistaken for an acceptance.
+
+### The decision is judged after it is verified
+
+A decision is admitted as evidence and is still waiting for the trusted
+verifier when the command returns. The routing pass therefore waits for
+the verifier instead of settling the node on the **previous** decision:
+
+* the engine asks the runtime's verifier to judge the admitted evidence
+  before its own settle pass, so the routing follows the decision that was
+  made — never the one before it;
+* while a decision for this node, attempt and subject is still pending
+  verification, the settle settles **nothing**: an unverified proof is
+  neither routed on nor passed over in favour of an older decision. The
+  node keeps waiting, and the deferral writes nothing.
+
+Nothing is relaxed for it: the authority, the compare-and-swap, the attempt
+rules and the output requirements are untouched, an unverified or invalid
+proof never becomes an approval, and the decision before it stays on the
+record — its evidence, its report and its event.
+
+### The read model shows the judgment that is in force
+
+`instance()` and `attempts()` serve the **current position** of an attempt,
+not an arbitrary window of its history: one entry per declared criterion,
+in the declaration order, taken from the judgment that covered that
+criterion last. The engine records the judgments it applied — the
+decision, the output validation, the independent review — so the position
+is never guessed from a timestamp and never mixes criteria, attempts or
+material.
+
+The history itself is untouched: every report an attempt produced stays in
+`check_results`, every transition stays in the event log, and nothing is
+cleaned. A reader that folds the reports by hand therefore never has to
+pick a winner — there is at most one entry per criterion.
+
+A judgment that does not agree with **itself** is a conflict, not a
+repetition. The identity of a judgment is the fact it judged — a
+decision's proof, or a material and the validator that judged it — and the
+report follows from that fact. A second, different report under the same
+identity is a disagreement about the same fact: the criteria that
+disagree are named, and the read model reports them as `conflict` rather
+than showing one of the two verdicts as if it were the truth. Nothing is
+swallowed, and the repeated re-derivation of one judgment stays one
+judgment.
+
+### A named output is bound to the decision that produced it
+
+The named record a decision carries is written **inside the decision's own
+compare-and-swap guarded command**, and the decision's evidence is
+verified after that command. A decision the family refuses has therefore
+already written its record — and a record that is not bound to a decision
+could satisfy the output requirement of a decision that never carried it.
+
+So the record is **bound** to the decision that carried it. The command
+writes it and keeps it as a *candidate* on the node; the settle adopts it
+only when the decision the node follows is that very decision — that is,
+when it is verified. The adoption sets the node's output, the binding
+(which now names the decision), the quality, the output judgment and the
+`WorkflowOutputAccepted` event.
+
+What follows from it:
+
+* the record of an **unverified** or **family-refused** decision never
+  becomes the node's output, never satisfies another decision's output
+  requirement and is never a downstream basis. The node waits — with the
+  missing-output finding, explicitly — for the record of the decision it
+  follows;
+* a later legitimate decision brings its **own** record: lifting the wait
+  does not make a refused record reusable;
+* the history is never rewritten: the object row and the evidence stay,
+  and the candidate remains on the record as a diagnostic — it is never
+  silently chosen as the current output.
+
+A **legacy** node keeps its output, read-only. A legacy node whose output
+cannot be bound to a decision waits — the association is never invented,
+and no timestamp is used to guess it.
 
 ## 5. Obligations stay authoritative
 
@@ -652,6 +781,11 @@ id, without a second session and without a poll loop.
 Intents are cancelled when their node is cancelled, when the object they
 pinned is superseded, or when the work is cancelled.
 
+An intent identity is stable per attempt: `wf:<workId>:<node>:<attempt>:<kind>`.
+A node that is **resumed** asks again under a **new** identity
+(`…:<kind>:<generation>`), so an acknowledgement of the withdrawn prompt
+can never swallow the resumed one.
+
 An adapter that receives only the native business key has no intent to read:
 it holds a key, not a node. [The native action context](#11-the-native-action-context)
 answers what that key is.
@@ -684,6 +818,9 @@ The exact wire contract, with the request and response fixtures, is
 | `POST` | `/v1/workflows/intents/{intentId}/ack` | acknowledge an intent |
 | `POST` | `/v1/workflows/instances/{workId}/cancel` | request the cancellation (the runtime's own command) |
 | `GET` | `/v1/workflows/instances/{workId}/cancellation` | the safe cancellation state |
+| `POST` | `/v1/workflows/instances/{workId}/material/wait` | park the current agent node for business material |
+| `POST` | `/v1/workflows/instances/{workId}/material/adopt` | adopt externally provided material under the wait |
+| `POST` | `/v1/workflows/instances/{workId}/material/resume` | resume the waiting node behind the dependency gate |
 | `POST` | `/v1/workflows/instances/{workId}/cancel/finalize` | close a cancelled work (the runtime's own command) |
 | `POST` | `/v1/workflows/instances/{workId}/advance` | settle on demand |
 
@@ -1222,7 +1359,385 @@ The work's ledger, its state version and its requirement evaluation may
 still change under the runtime's ordinary late-evidence rules, and the
 snapshot does not follow them.
 
-## 13. What is deliberately not here
+## 13. The material wait
+
+Business material is not candidate quality. A manager may park the
+workflow's **current agent node** because the material it needs is
+missing, adopt the supplemented material when it arrives, and resume the
+node — all without spending the node's quality allowance and without
+re-running anything behind the wait.
+
+The wait is a **core lifecycle state**, not a host convention: GAWR owns
+it, persists it and refuses everything that would contradict it.
+
+### The three commands
+
+They are ordinary runtime commands: a compare-and-swap on
+`state_version`, a durable receipt under `(actor, commandId)`, one
+transaction, and a replay that is admitted only while the manager
+authority still holds.
+
+| command | payload | effect |
+|---|---|---|
+| `request_material_wait` | `{node, attempt, input_digest, reason, request_version}` | the node instance enters the state `waiting` |
+| `adopt_material` | `{node, attempt, name, object, request_version}` | the named material becomes a **new immutable revision**; the wait accepts it |
+| `resume_material_wait` | `{node, attempt, request_version}` | the same attempt continues behind the dependency gate |
+
+`request_version` is `1`. A caller that states another version is
+refused: a request is never half-understood.
+
+The manager is the work's owner with `work.manage` — the same trusted
+local configuration every other management mutation uses. The transport
+grants nothing: the core decides.
+
+### What the wait does
+
+* It parks the **current** node, and only an **agent** node in the state
+  `running`, pinned to the exact attempt and the exact `input_digest` the
+  caller observed. A wait decided against a moved work is refused
+  (`WORKFLOW_NODE_NOT_CURRENT`, `WORKFLOW_ATTEMPT_STALE`,
+  `WORKFLOW_INPUT_STALE`).
+* It **keeps the attempt**. No rework attempt is opened, no
+  `max_attempts` is raised, and the node's quality allowance is not
+  spent: a workflow that waited may still complete on the attempt it
+  started with.
+* It **withdraws the agent's durable intent** and refuses result
+  acceptance: a candidate submitted while the node waits is refused
+  (`WORKFLOW_NODE_WAITING`) and nothing is stored.
+* It **persists across a restart**. The routing pass is a no-op for a
+  waiting node, so a pass changes nothing: no version bump, no event, no
+  re-opened node.
+* It **suspends the deadline**. A waiting node does not expire; the
+  deadline is recomputed from the resume.
+* The work reports `workflowStatus: "waiting"`. The read model names the
+  reason, the requester, the exact dependencies the wait accepted and the
+  adoptions that followed (`materialWait`).
+
+### What the adoption does
+
+The adopted material becomes a **new immutable revision** of the named
+object. The historical revisions and the decisions that were made on them
+stay on the record, nothing is superseded, and the adoption re-runs
+nothing: the node keeps waiting until the manager resumes it.
+
+The adoption is bounded: the body is at most 64 KiB of canonical JSON
+and a wait carries at most sixteen adoptions. Only the material the wait
+is actually about may be adopted — an adoption of anything else would be
+a silent write (`WORKFLOW_MATERIAL_NOT_DEPENDENCY`).
+
+### The dependency gate
+
+The resume is admitted only when **every dependency the wait accepted is
+still the object's current revision and digest**. Two facts are checked:
+
+* the material moved under the wait (`_dependency_drift`), and
+* the **completed upstream nodes** no longer cover the material
+  (`_completed_acceptance`).
+
+The second one is not producer-only. A completed node accepted one exact
+revision of what it judged, and the guard inspects **the completed nodes
+that pinned a changed object**, not only the one that produced it: a node
+that judged material that moved on holds an acceptance that no longer
+covers what it judged, and everything it produced rests on it. The chain
+of production behind the wait's dependencies is walked, so a change
+further up the chain is caught before the material is reused.
+
+Both refuse with `INPUT_DEPENDENCIES_REQUIRE_REVALIDATION` and the
+exact drift as findings:
+
+```json
+[{"name": "intake", "node": "n01", "attempt": 1,
+  "accepted": {"revision": 1, "digest": "…"},
+  "current": {"revision": 2, "digest": "…"}}]
+```
+
+The wait is **retained** on a refusal: the node keeps waiting, and the
+manager decides — adopt the material again, or cancel.
+
+**An adoption may not bless material a completed node accepted or
+judged.** A node that completed accepted one exact revision of what it
+judged; writing a new revision of such an object would be material no
+completed node ever accepted, and that acceptance would be stale the
+moment it was written. Such an adoption is refused with the same code and
+the same findings. Material that **no** completed node accepted — material
+supplied from outside the workflow — may be adopted.
+
+### The resume, the ticket and the identity
+
+The resume continues the **same attempt**. The inputs are resolved and
+judged again, so material that no longer passes its declared validator
+**blocks** the node (`SHAPE_TYPE`, the validator's own codes) instead of
+running on it.
+
+Two things move on a resume, even when the material did not change:
+
+* the **input ticket** — the `input_digest` of a node that was resumed
+  covers the declared inputs **and the node's input generation**, and the
+  generation moves on every resume. A result ticket issued before the
+  wait therefore never satisfies the node after it, even when the object
+  values are equal (`WORKFLOW_INPUT_STALE`). A node that never waited
+  keeps **exactly** the ticket it was given: the digest of its pinned
+  inputs, unchanged, so an upgrade never invalidates a pinned ticket or
+  a review that bound it;
+* the **intent identity** — the node asks again under a new identity
+  (`wf:<work>:<node>:<attempt>:<kind>:<generation>`). An acknowledgement
+  of the withdrawn prompt can never swallow the resumed one: the two are
+  two different tasks on the record.
+
+### The limits of this slice
+
+* **No transitive invalidation.** The engine does not rewind a completed
+  upstream node. When the material of a completed upstream moved on, the
+  wait stays refused and the upstream needs a separate, bounded
+  revalidation. A generic rewind engine is deliberately out of scope.
+* **`revise_object` is not invalidation.** It cancels the node instances
+  that are `running`, `blocked` or `submitted` and pins the superseded
+  object; a **waiting** instance is not among them, so a revision during
+  a wait leaves the wait in place and the dependency gate — not the
+  revision — decides the resume.
+* **No node is ever re-run silently.** A wait never opens an attempt, a
+  resume never opens one either, and a side-effect node is never
+  re-entered by a wait.
+* The wait is refused on a cancelling work (`CANCELLATION_ACTIVE`), and
+  a cancellation cancels the waiting node (`WORK_CANCELLED`) instead of
+  restarting it.
+* The workflow acceptance refuses a waiting workflow: a waiting node is
+  never terminal, so the workflow is not finished.
+
+## 14. The controlled source replacement and the transitive revalidation
+
+A manager may replace the archived material of a running workflow and
+revalidate the consumers that judged it — **in the same workflow and
+session**. The replacement is a bounded, pre-effect intervention: it is
+admitted before any effect is produced, it never re-runs the source
+read, and it never replays a business effect.
+
+The command is `replace_material`, an ordinary runtime command: a
+compare-and-swap on `state_version`, a durable receipt under
+`(actor, commandId)`, one transaction, and a replay admitted only while
+the manager authority still holds.
+
+| payload | meaning |
+|---|---|
+| `node` | the **source node** — the node whose completed attempt produced the material. The core derives the object from that node, so a caller cannot name an arbitrary object. |
+| `source_reference` | the **frozen reference** the platform acquired. A manifest, never the material. |
+| `reason` | why the material is replaced. |
+| `waiting_node`, `waiting_ticket` | the node that waits and the ticket the manager observed. When given, the node must be the **current** one and it must really wait for material (`WORKFLOW_WAITING_NODE_NOT_CURRENT`), and the ticket must still be its current one (`WORKFLOW_WAITING_TICKET_STALE`). The pair may be left out — the manager may replace the material of a workflow that waits for nothing — but the platform that replaces material on a waiting work always sends both. |
+| `request_version` | `1`. |
+
+### The source read is never re-run
+
+The core never re-proposes the source node's operation, never
+re-dispatches it and never reuses its operation key. The platform
+acquires the archive; the core receives only the frozen reference.
+
+The accepted historical version of the source node stays exactly as it
+is, and the **attestation** says so: the previous acceptance does not
+cover the new revision.
+
+```json
+{"kind": "business-material-snapshot", "referenceId": "…", "workflowId": "…",
+ "sourceNode": "…", "documentDigest": "…", "snapshotDigest": "…",
+ "scope": "…"}
+```
+
+The reference is **opaque** to the core: it never resolves it and never
+fetches anything. The core checks three things and refuses the rest —
+that it names the kind it claims, that it names the work and the source
+it belongs to, and that it carries no raw material, no location and no
+credential (`WORKFLOW_SOURCE_REFERENCE_INVALID`). It is at most 4 KiB
+(`WORKFLOW_SOURCE_REFERENCE_TOO_LARGE`).
+
+**The published validation judges it.** The reference stays opaque, but
+the definition's own rules decide whether the envelope is a material
+this source may produce: the new revision is judged by the **shape** and
+the **pinned validator** the source node declares for its output, before
+anything is written (`WORKFLOW_SOURCE_REFERENCE_REJECTED`). A manifest
+that misses a required field or carries a malformed one is refused
+there, so no revision, no invalidation and no material generation is
+spent on it.
+
+The new revision of the source object is the reference in the **same
+envelope the source output carries** — `{"sourceReference": <manifest>}` —
+so the declared structural validator of the source output still judges
+it.
+
+### The closure
+
+The affected consumers are computed over the **stored instances**, not
+over the published graph: a node is a consumer when it judged the
+material, or what was derived from it. A node that is still working on
+the material is in the closure too — its acceptance is not settled, but
+its work is bound to material that is being replaced.
+
+The closure holds **only the consumers that were instantiated**. A node
+without history has nothing to invalidate: it proceeds through the
+ordinary routing and its own budget, and it is never a material attempt.
+
+The chain is ordered: a consumer comes after the node whose output it
+judged, so the re-run judges the material in the right order.
+
+### The material budget
+
+The **core allowance is one material replacement generation per
+workflow**. It is a core bound — not a caller-supplied number, and not a
+quality counter. A definition may only **tighten** it: a node that
+declares `material_generations: 0` may not be revalidated at all
+(`WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED`).
+
+A definition published before the field existed keeps the core
+allowance: the live definition is **not** mutated to make a
+revalidation possible.
+
+### The material attempt
+
+The revalidated node runs again on a **material attempt**:
+
+* the attempt number is **monotonic** and never reused, and every
+  attempt records the **trigger** that opened it (`initial`, `quality`,
+  `material`), so the history of a node is never ambiguous;
+* the **quality allowance** (`max_attempts`) counts the attempts that
+  are *not* material attempts. It is never raised and never reset by a
+  revalidation. The count is **cumulative per node**: every attempt the node
+  has made counts, whatever generation it was made in — a revalidation does
+  not give the node a fresh quality budget, and the node's spent attempts
+  are the node's spent attempts forever;
+* the **material allowance** counts the revalidations;
+* a material attempt has **no automatic further retry**: when it fails
+  on quality, the node fails and nothing else is opened;
+* the ticket of a material attempt carries the node's input generation,
+  so a result ticket issued before the replacement never satisfies the
+  node after it — a node that never waited keeps exactly the ticket it
+  was given.
+
+A wait that was bound to the replaced material ends with the recorded
+reason `MATERIAL_REPLACED`; its record stays on the attempt it was
+opened on, and the node runs again. A consumer that is still working on
+the replaced material is withdrawn the same way.
+
+**Nothing settles an invalidated attempt.** A candidate, a decision or a
+review made on the material that was replaced is refused **at once**:
+
+* a candidate for an invalidated attempt is refused
+  (`WORKFLOW_NODE_INVALIDATED`), and a candidate for a node the
+  workflow is not working on is refused too
+  (`WORKFLOW_NODE_NOT_CURRENT`) — nothing of it is stored;
+* a decision for an invalidated attempt is refused
+  (`WORKFLOW_NODE_INVALIDATED`);
+* the settlement of an invalidated attempt never happens, so the review
+  of an earlier attempt never completes it and no check of it is
+  materialized.
+
+The old attempt keeps its history: its candidate, its checks and its
+receipts stay on the record, and only its state and its reason say that
+it was withdrawn.
+
+### The status transition and the stale-waiting reconciliation
+
+The accepted replacement ends the wait it invalidates: a work whose
+`workflow_status` was `waiting` — because its current node was parked
+for exactly the material being replaced — returns to `active` **by the
+acceptance itself**, so a platform that imports an agent intent only for
+an active workflow finds the corrected status after the replacement. A
+work that waits for nothing keeps the status it had.
+
+A replacement accepted before this transition existed could leave a
+persisted `waiting` status behind while the revalidation had already
+opened the head of its queue on a material attempt: the work is working
+but looks parked, and the original session never resumes. One **normal
+advance** reconciles exactly that state — only while a revalidation is
+`revalidating`, only for the head of its queue, only when that node's
+current attempt is a **material** attempt that is really `running`,
+`submitted` or `blocked`, and never when the current node genuinely
+waits for material, is cancelling or is finalized (those are turned away
+before the pass). The correction is recorded once as
+`WorkflowMaterialRevalidationResumed`; a pass that finds nothing to
+repair writes nothing, and repeated passes produce no event and no
+version churn. No script and no manual store edit is involved: a
+deployed store is repaired by the ordinary routing pass alone.
+
+### What blocks the revalidation
+
+| the replacement is refused when | code |
+|---|---|
+| the affected branch carries a prepared, unknown or confirmed business effect — the branch is never rewound behind one, and the effect is never replayed under its old key | `WORKFLOW_REVALIDATION_EFFECT_PRESENT` |
+| the branch carries a **human judgement** — an approval granted on the material that is being replaced is a business fact the revalidation would contradict | `WORKFLOW_REVALIDATION_EFFECT_PRESENT` |
+| the material budget is spent, or a definition denies the revalidation of that node | `WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED` |
+| the ticket the manager observed is no longer current | `WORKFLOW_WAITING_TICKET_STALE` |
+| the source node produced no material, or has not completed | `WORKFLOW_SOURCE_NOT_PRODUCER`, `WORKFLOW_SOURCE_NOT_COMPLETED` |
+| nothing consumed the material | `WORKFLOW_REVALIDATION_NO_CONSUMERS` |
+| the work is cancelling or finalized | `CANCELLATION_ACTIVE`, `WORKFLOW_FINALIZED` |
+
+While a revalidation is pending, the **acceptance refuses** the workflow
+(`WORKFLOW_REVALIDATION_PENDING`): the material and the judgements would
+not belong together.
+
+### The owner's one controlled candidate rework
+
+When the routing has stopped terminally at a **failed agent node** — the
+exhausted shape in practice: the quality allowance spent, the material
+attempt failed `WORKFLOW_RESULT_INVALID` with the revalidation queue
+still pending — the trusted work manager may authorize **one**
+controlled candidate rework per workflow
+(`authorize_rework`, `{node, attempt, input_digest, reason}`). The
+authorization is a management decision, never an execution one: the
+agent, a poller and a review may not issue it, and the core never
+issues it on its own.
+
+What it does, in one transaction:
+
+* the old failure, its candidate report and the terminal record stay
+  byte for byte; the authorization (author, reason, the exact failed
+  attempt and the original terminal) is appended;
+* a new **monotonic** attempt opens with the trigger `rework`, its own
+  ticket (the input generation moves), the same pinned inputs, the same
+  published rules and the original bound session's agent intent;
+* the work returns to `active` at that node, and the pending
+  `material_revalidation` queue is untouched — when the reworked attempt
+  completes, the queue continues through the ordinary routing;
+* **nothing is reset**: the quality allowance, the spent attempts, the
+  material generation and every published revision are what they were.
+  A rework attempt spends no allowance — it is neither a quality attempt
+  nor a material attempt. The quality allowance stays the **cumulative
+  per-node** count it was: the rework adds nothing to it, and a definition
+  that wants a node to be asked again declares the allowance that node
+  needs.
+
+The new candidate must pass honestly: the original output validation,
+the declared PROGRAM checks and any declared independent review judge it
+exactly as they judged every earlier attempt, and the root platform's
+metadata corrections never excuse the candidate's quality. The reworked
+attempt judges the **material the failure judged**: a declared input or
+subject that moved to a new revision after the failure is drift, and
+the authorization is refused with it
+(`INPUT_DEPENDENCIES_REQUIRE_REVALIDATION`) rather than silently
+adopting the new material. If the reworked attempt fails, it fails
+**terminally**: there is no automatic retry and no second
+authorization. Old tickets cannot reach the new attempt — a late old
+candidate is `WORKFLOW_ATTEMPT_STALE`, the review of the old attempt
+never settles the new one, and an old acknowledgement touches nothing.
+
+What is never eligible: a work that waits (a genuine wait is not a
+failure), a terminal that is not a failed `WORKFLOW_RESULT_INVALID`
+agent attempt (an expiry, an unknown result, a cancellation, a
+success), a cancelling or frozen work, and a downstream branch that
+carries a business effect or a settled human judgement
+(`WORKFLOW_REWORK_EFFECT_PRESENT` — the same protected boundary the
+replacement applies; in a legal history the replacement that produced
+the terminal failure has already refused such a branch, so the guard is
+defensive depth, not a reachable path). A second authorization — new
+key, later retry, whoever asks — is `WORKFLOW_REWORK_ALREADY_AUTHORIZED`;
+an exact duplicate replays the stored receipt, a reused key with another
+body is `COMMAND_ID_REUSED`, and two approvals on the same observed
+version resolve to one acceptance and one `STATE_VERSION_CONFLICT`.
+
+Every instance view carries the `candidateRework` projection —
+`{cap: 1, used, eligible, failed{node, attempt, outcome, reason,
+inputDigest}, grant}` — so a workbench can show the failure, the count
+and the exact ticket an authorization must name. The projection is an
+observation, never an authority: it grants nothing.
+
+## 15. What is deliberately not here
 
 * No authentication, no tenant isolation, no distributed leases or fencing.
   Principals are trusted local configuration.

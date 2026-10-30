@@ -1,0 +1,375 @@
+# Report — controlled source replacement and transitive revalidation
+
+Task `task_cd5a605af6fc`, dispatch `ctx_cb2dc3e63fc1`.
+Branch `WayJ/gawr-material-wait`, baseline `ed0efd9` (the material-wait slice).
+
+## What was built
+
+A trusted manager can replace the archived source material of a running
+workflow and revalidate the consumers that judged it — in the same
+workflow and session. The replacement is a bounded, pre-effect
+intervention: the **source read is never re-run**, no business effect is
+ever replayed, the quality allowance is never raised, and the number of
+material generations is bounded by a fixed core allowance that a
+definition may only tighten.
+
+| id | deliverable | outcome |
+|---|---|---|
+| C1 | `work_runtime/workflow.py` — the command `replace_material`, the consumer/transitive closure, the attestation, the material attempt, the queue-driven revalidation | shipped |
+| C2 | `work_runtime/workflow_spec.py` — the optional node field `material_generations` | shipped |
+| C3 | `work_runtime/workflow_server.py` — the route `POST …/material/replace`, the status table, the view | shipped |
+| C4 | `tests/test_workflow_material_revalidation.py` — 26 tests over a real store (19 in the slice, 7 in the review-fix wave) | shipped |
+| C5 | `tests/test_workflow_material_revalidation_http.py` — 17 tests over a real service on a real store (14 in the slice, 3 in the review-fix wave) | shipped |
+| C6 | docs — `workflow-runtime.md` (§14), `workflow-api-contract.md`, `verification.md` (W154–W167) | shipped |
+| C7 | `tests/test_workflow_spec.py` — 4 lint tests for the material budget | shipped |
+
+`work_runtime/runtime.py` and `work_runtime/adapters.py` are **untouched**:
+the command rides the existing `WORKFLOW_COMMANDS` seam, so there is no
+schema change and no new table. The byte pin in
+`tests/test_publishing_compensation.py` still holds.
+
+## The design
+
+### One command, one transaction
+
+`replace_material` is an ordinary runtime command: a compare-and-swap on
+`state_version`, a durable receipt under `(actor, commandId)`, one
+transaction, and a replay admitted only while the manager authority
+still holds.
+
+The **source read is never re-run**. The core never re-proposes the
+source node's operation, never re-dispatches it and never reuses its
+operation key. The platform acquires the archive; the core receives only
+the frozen manifest and records it as a new revision of the material the
+source node produced. The source node keeps its attempt, its effect, its
+receipts and its accepted revision — and the **attestation** says so
+explicitly: the previous acceptance does not cover the new revision.
+
+### The closure
+
+Computed over the **stored instances**, not over the published graph: a
+node is a consumer when it judged the material or what was derived from
+it; a node still working on the material is in the closure too. The
+closure holds **only the consumers that were instantiated** — a node
+without history has nothing to invalidate and proceeds through the
+ordinary routing. The chain is ordered: a consumer comes after the node
+whose output it judged.
+
+### The two allowances, separate and never raised
+
+| | bound | counts |
+|---|---|---|
+| the quality allowance | `max_attempts` (declared) | the attempts that are **not** material attempts |
+| the material allowance | **one generation per workflow** (a core bound) | the revalidations |
+
+A definition may only **tighten** the material allowance: a node that
+declares `material_generations: 0` may not be revalidated. A definition
+published before the field existed keeps the core allowance — the live
+safety template is **not** mutated to make a revalidation possible.
+
+The attempt number stays **monotonic** and is never reused, and every
+attempt records the **trigger** that opened it (`initial`, `quality`,
+`material`), so the history of a node is never ambiguous. A material
+attempt that fails on quality opens **no further attempt**.
+
+### What blocks the revalidation
+
+A prepared, unknown or confirmed business effect in the affected branch
+(`WORKFLOW_REVALIDATION_EFFECT_PRESENT`) — and a **human judgement** in
+that branch, because an approval granted on the replaced material is a
+business fact the revalidation would contradict. Also: an exhausted
+budget, a stale ticket, a source that produced nothing, a work that is
+cancelling or finalized, and an acceptance while a revalidation is
+pending (`WORKFLOW_REVALIDATION_PENDING`).
+
+## The coordinator's three adjustments (all in)
+
+1. **The live definition is preserved.** The core allowance is one
+   generation per workflow, a core bound rather than a caller-supplied
+   number; a definition may only tighten it. A legacy template without
+   the field works, and the tests cover it
+   (`test_the_core_allowance_carries_a_legacy_definition`) and the
+   used-up node (`test_a_used_up_node_gets_a_fresh_material_attempt`:
+   three quality attempts used, the material attempt is number 4).
+2. **The frozen manifest is the platform's.** The core accepts the
+   bounded manifest as an opaque reference (≤ 4 KiB, no invented
+   `archiveId`/`revision`/`capturedAt`), validates the kind, the work and
+   the source, refuses a raw location, a credential or the raw material,
+   and writes it wrapped as `{"sourceReference": <manifest>}` — the same
+   envelope the source output carries, so the declared structural
+   validator still judges it.
+3. **The closure holds only instantiated consumers**, a material attempt
+   has no automatic further retry, and a human approval in the affected
+   branch blocks the revalidation.
+
+## RED/GREEN evidence
+
+| step | RED | GREEN |
+|---|---|---|
+| the definition's budget | 3 of 4 lint tests fail (`NODE_FIELD_UNKNOWN`) | `test_workflow_spec.MaterialGenerationLintTests` → 4 tests, OK |
+| the replacement | 5 tests fail (`COMMAND_UNSUPPORTED`) | `test_the_manager_replaces_the_source_material`, `test_the_source_read_is_never_rerun`, `test_a_refused_replacement_mutates_nothing` → OK |
+| the material attempt | 4 failures + 1 error: the cursor routed past the invalidated node, the wait was not invalidated, the ticket did not move | `test_the_affected_chain_re_runs_on_material_attempts` → OK |
+| the coordinator's adjustments | the global ticket formula, the producer-only guard, the invented manifest fields and the automatic retry after a material failure | `test_the_core_allowance_carries_a_legacy_definition`, `test_a_used_up_node_gets_a_fresh_material_attempt`, `test_a_human_approval_in_the_branch_blocks_the_revalidation`, `test_every_consumer_of_the_source_is_invalidated` → OK |
+| the bridge | the route answered 404 | `PYTHONPATH=.:tests python3 -m unittest test_workflow_material_revalidation_http` → **14 tests, OK** |
+| the whole slice | — | `PYTHONPATH=.:tests python3 -m unittest test_workflow_material_revalidation test_workflow_material_revalidation_http` → **33 tests, OK** |
+| the full suite | the baseline before this slice was 1556 tests, OK (skipped=2) | **1593 tests, OK (skipped=2)** — 1556 + 33 new in the two revalidation files + 4 new lint tests in `tests/test_workflow_spec.py`; the byte pin of `runtime.py` still holds |
+| the full suite, after the review-fix wave | 1593 before the wave | **1603 tests, OK (skipped=2)** — 1593 + 9 new (6 core + 3 service) + 1 positive path; the byte pin of `runtime.py` still holds |
+
+The gates: `python3 scripts/check_docs.py` (127 files, 682 links, 0
+broken); `python3 -m compileall -q work_runtime tests scripts`;
+`python3 -m work_runtime demo`; `python3 scripts/check_site.py`.
+
+## The exact wire
+
+```
+POST /v1/workflows/instances/{workId}/material/replace
+{
+  "actor": "platform",              // or "actorId"; two different ones → 400 ACTOR_CONFLICT
+  "commandId": "replace-1",
+  "expectedVersion": 17,
+  "requestVersion": 1,              // any other value → 400 MATERIAL_WAIT_VERSION_UNSUPPORTED
+  "node": "s00",                    // the source node
+  "sourceReference": {              // the frozen manifest, ≤ 4 KiB
+    "kind": "business-material-snapshot",
+    "referenceId": "REF-2", "workflowId": "W-1", "sourceNode": "s00",
+    "documentDigest": "…", "snapshotDigest": "…", "scope": "records"
+  },
+  "reason": "the archive was refreshed",
+  "waitingNode": "n03",             // optional
+  "waitingTicket": "…"              // optional; must still be current
+}
+```
+
+`200` the instance view with:
+
+* `materialReplacement: {node, attestation, affected, generation, resultStateVersion}`,
+* `materialRevalidation: {state, generation, attestation, affected, queue}`,
+* `attestation: {kind, adoptedBy, adoptedAt, sourceNode, sourceAttempt, object, from{revision,digest}, to{revision,digest}, claim, reason}`,
+* `nodes[].trigger` (`initial` / `quality` / `material`),
+  `nodes[].materialGeneration`, `nodes[].inputGeneration`.
+
+Refusals: `400` MATERIAL_REPLACE_INVALID / MATERIAL_WAIT_VERSION_UNSUPPORTED
+/ ACTOR_REQUIRED / ACTOR_CONFLICT / WORK_MISMATCH / COMMAND_ID_REQUIRED /
+EXPECTED_VERSION_REQUIRED; `403` AUTHORITY_DENIED; `404` WORK_UNKNOWN /
+WORKFLOW_NODE_UNKNOWN; `409` STATE_VERSION_CONFLICT / COMMAND_ID_REUSED /
+CANCELLATION_ACTIVE / WORKFLOW_FINALIZED / WORKFLOW_SOURCE_NOT_PRODUCER /
+WORKFLOW_SOURCE_NOT_COMPLETED / WORKFLOW_WAITING_TICKET_STALE /
+WORKFLOW_REVALIDATION_EFFECT_PRESENT /
+WORKFLOW_REVALIDATION_BUDGET_EXHAUSTED / WORKFLOW_REVALIDATION_NO_CONSUMERS
+/ WORKFLOW_REVALIDATION_PENDING; `422` WORKFLOW_SOURCE_REFERENCE_INVALID /
+WORKFLOW_SOURCE_REFERENCE_TOO_LARGE.
+
+## The review-fix wave
+
+The coordinator reviewed this slice and required three fixes. All three
+are in, with their own RED/GREEN evidence.
+
+### (1) The published validation judges the new reference
+
+The new `{sourceReference: <manifest>}` is now judged by the
+**published** validation of the source node's output — the declared
+`shape` and the pinned `validator` — **before** `_write_object` and
+before a material generation is spent. A manifest that misses a
+required field, or one whose scope is malformed, is refused
+(`WORKFLOW_SOURCE_REFERENCE_REJECTED`, 422) with the shape's or the
+validator's own codes as the findings. Nothing is written: no revision,
+no invalidation, no event, and the material generation is still
+available for the next request.
+
+The reference stays **opaque**: the core never resolves it and never
+fetches anything. The published rules decide whether the envelope is a
+material this source may produce; the platform decides what it points
+at.
+
+### (2) Nothing settles an invalidated attempt
+
+While a revalidation is pending:
+
+| what arrives | what happens | code |
+|---|---|---|
+| a candidate for an invalidated attempt | refused at once, nothing stored | `WORKFLOW_NODE_INVALIDATED` (409) |
+| a candidate for a node the workflow is not working on | refused at once | `WORKFLOW_NODE_NOT_CURRENT` (409) |
+| a decision for an invalidated attempt | refused at once, nothing written | `WORKFLOW_NODE_INVALIDATED` (409) |
+| the review of an invalidated attempt | never settles the node; no check of it is materialized | — |
+
+The old attempt keeps its history: its candidate, its output reference
+and its checks stay on the record, and only its state and its reason
+say that it was withdrawn (`MATERIAL_REPLACED`).
+
+A consumer that is still working keeps its state `running` and its old
+`input_digest` until the cursor reaches it — the invalidation happens
+when its material attempt opens, not before.
+
+### (3) The waiting node must be the current one
+
+`waitingNode` and `waitingTicket`, when supplied, must name the
+**current** node and it must really wait for material: a digest match
+alone is not enough, because the node the manager looked at may be a
+node that has moved on (`WORKFLOW_WAITING_NODE_NOT_CURRENT`, 409). A
+stale ticket is `WORKFLOW_WAITING_TICKET_STALE` (409). The pair may be
+left out — the manager may replace the material of a workflow that waits
+for nothing — but a platform that replaces material on a waiting work
+always sends both.
+
+### The positive path: replace, revalidate, finish, accept
+
+The coordinator asked for the acceptance path that a review could not
+find. It is covered now by
+`PositiveRevalidationTestCase`: the controlled replacement, the
+revalidation of every affected consumer, the normal successor, the
+finished workflow and the **granted** acceptance.
+
+The provenance is exact. The proof carries:
+
+* `objects` — the material as it stands: `sources` revision 2, the
+  manager's attested adoption;
+* `nodes` — the source node's own historical output: `sources`
+  revision 1, the revision it accepted;
+* `materialRevalidation` — the explicit attestation: the source node,
+  the revision it accepted, the revision the manager adopted, and the
+  claim that the previous acceptance does not cover the new one.
+
+The two revisions are never presented as covering one another, and **no
+stale-input check was relaxed** to make the path work: the acceptance
+was already sound, and the gap was the missing regression.
+
+### The review-fix RED/GREEN
+
+| step | RED | GREEN |
+|---|---|---|
+| the published validation judges the new reference | a manifest missing a required field and one with a malformed scope were both **accepted** (2 failures) | `PublishedValidationTestCase` → 2 tests, OK |
+| nothing settles an invalidated attempt | the old downstream result was **accepted** and stored (1 failure) | `InvalidatedAttemptTestCase` → 1 test, OK |
+| the invalidated decision | the old decision was **accepted** (1 failure) | `InvalidatedDecisionTestCase` → 1 test, OK |
+| the waiting node | a node that was not the current waiting one was accepted (1 failure) | `WaitingNodeTestCase` → 1 test, OK |
+| the review of an invalidated attempt | the old review settled nothing, but the case was not covered | `PendingReviewTestCase` → 1 test, OK |
+| the service | the same three refusals at the HTTP surface (3 failures) | `test_workflow_material_revalidation_http` → 17 tests, OK |
+| the acceptance path | **no regression existed** — the acceptance was sound, the coverage was missing | `PositiveRevalidationTestCase` → 1 test, OK |
+
+### The new refusal codes
+
+| code | status | meaning |
+|---|---|---|
+| `WORKFLOW_SOURCE_REFERENCE_REJECTED` | 422 | the published validation refused the new reference |
+| `WORKFLOW_NODE_INVALIDATED` | 409 | the attempt was invalidated by a material replacement |
+| `WORKFLOW_NODE_NOT_CURRENT` | 409 | the node is not the one the workflow is working on |
+| `WORKFLOW_WAITING_NODE_NOT_CURRENT` | 409 | the stated waiting node is not the current waiting node |
+
+### The scope boundary (corrected)
+
+An earlier summary of this slice said that the "pre-effect transitive
+revalidation" was still to be dispatched. That was **wrong**: the
+pre-effect revalidation **is implemented** — it is this slice.
+
+What is intentionally **not** built is a **post-effect amendment**: a
+replacement of the material of a branch that has already produced a
+business effect. Such a branch is refused
+(`WORKFLOW_REVALIDATION_EFFECT_PRESENT`) — the effect is never replayed
+under its old operation key, and the effect is never rewritten. There is
+no after-effect change workflow in this design, and none is planned
+here: the safety of the effect boundary is the reason the refusal
+exists, not a gap to be filled later.
+
+## The remaining risks
+
+* **The revalidation re-runs agents, not effects.** The affected
+  consumers are agent nodes here; a branch that contains an effect is
+  refused, so no effect is ever produced twice. A revalidated *agent*
+  may produce a new candidate that passes the validator — that is the
+  point of the revalidation, and the manager owns the decision.
+* **The material reference is opaque.** The core never resolves it and
+  never fetches anything: the platform acquires the archive, the core
+  records the manifest. The core does not check that the archive holds
+  the material the manifest names.
+* **The one-generation allowance is per workflow.** A second replacement
+  in the same workflow is refused, whatever the reason; a workflow that
+  needs two refreshes needs a new work.
+* **The closure is data-driven.** It follows what the nodes judged, not
+  what the graph says. A node that will consume the material later, and
+  that has no history yet, is not invalidated — it runs normally on the
+  new material.
+* **The source node's own acceptance is not re-derived.** The
+  replacement does not re-run the source read, so the source node's
+  accepted revision 1 remains the fact it was; the new revision is the
+  manager's attestation, and the two are never merged.
+
+## The commits
+
+| commit | content |
+|---|---|
+| `9e73f30` | feat: a manager replaces the source material under an attestation |
+| `2656341` | feat: a revalidated node runs on a material attempt, not a quality one |
+| `3d51368` | fix: the material budget is a fixed core allowance the definition may tighten |
+| `6dd8dd2` | test: the closure, the effects and the legacy definition |
+| `154969c` | test: the old review, the old acknowledgement and the restart |
+| `1d73419` | feat: the bridge exposes the controlled source replacement |
+| `dcd5f05` | docs: the controlled replacement, the material budget and the limits |
+| `5a11431` | docs: the plan records the delivered design and the three adjustments |
+| `d148c36` | docs: the report carries the authoritative count of the suite |
+| `7f74bdb` | fix: the published validation judges the new reference, and nothing settles an invalidated attempt |
+| `6609bef` | test: the accepted workflow after a controlled revalidation |
+| `4dd7408` | docs: the report records the review-fix evidence |
+| `2f77fda` | fix: the replacement returns a waiting work to active, and one advance repairs the stale status |
+
+## The lifecycle fix wave (2026-10-24)
+
+A deployed instance exposed it: `request_material_wait` set
+`workflow_status = waiting`, a later `POST /material/replace` was
+accepted and the revalidation opened the head's material attempt — but
+the status stayed `waiting`, because `_replace_material` set the cursor
+without a status transition and neither `_open_attempt` nor `_activate`
+writes one. A platform dispatcher that imports an agent intent only for
+an active workflow therefore never resumed the original session.
+
+Two narrow repairs, both in `work_runtime/workflow.py`:
+
+1. **The acceptance is the transition.** `_replace_material` returns a
+   `waiting` work to `active` — only `waiting → active`, and only
+   because the replacement invalidates exactly the wait that set it. A
+   work that waits for nothing keeps the status it had.
+2. **One normal advance reconciles the persisted pre-fix shape.** For a
+   store where the replacement was already accepted under the old code,
+   `advance` repairs a stale `waiting` — only while the revalidation is
+   `revalidating`, only for the head of its queue, only when that
+   node's current attempt is a **material** attempt that is really
+   `running`, `submitted` or `blocked`, and never when the current node
+   genuinely waits for material (a cancelling or finalized work is
+   turned away before the pass). The correction is recorded once as
+   `WorkflowMaterialRevalidationResumed`; a pass that finds nothing to
+   repair writes nothing. No SQL patch, no new generation, no re-run of
+   the source, the replacement or an adoption, and no counter reset.
+
+`work_runtime/runtime.py` and `work_runtime/adapters.py` are untouched.
+
+### The lifecycle-fix RED/GREEN
+
+| step | RED | GREEN |
+|---|---|---|
+| the transition | the raw accepted command left `workflow_status = waiting` (1 failure) | `ReplacementStatusTransitionTestCase` → OK |
+| the stale persisted shape | the next normal advance was a no-op over `waiting` (1 failure) | `StaleWaitingRepairTestCase` → the repair fires once, the objects/operations/intents/generation/queue are unchanged, and the second pass is byte-stable |
+| the HTTP surface | the view answered `workflowStatus: waiting` after replace and advance (1 failure) | `ReplacementLifecycleHttpTestCase` → `active`, the head on a material attempt, exactly one new pending `agent_task` intent for the original bound session |
+| the genuine wait | — (guard pin, green before and after) | `test_a_genuine_wait_of_the_current_node_is_never_overridden` → the ordinary park keeps `waiting` across passes, no repair event |
+
+3 failures, 1 green guard observed against `2f77fda^`; after the fix the
+focused regressions are green: `test_workflow_material_revalidation`
+(**29 tests**, 26 + 3), `test_workflow_material_revalidation_http`
+(**18 tests**, 17 + 1), plus the adjacent `test_workflow_material_wait`
+(60), `test_workflow_material_wait_http` (19), `test_workflow_spec` (35)
+— **161 tests, OK** — and `test_workflow_engine`,
+`test_workflow_finalization`, `test_workflow_http` — **114 tests, OK**.
+Gates: `check_docs.py` (127 files, 682 links, 0 broken), `compileall`,
+`demo` — all clean. The full-suite count moves 1603 → 1607; the byte pin
+of `runtime.py` still holds.
+
+The stale persisted shape is manufactured **in the test store only**
+(`force_stale_waiting_status` rewrites the work row exactly as the
+pre-fix command left it); production code never writes the store outside
+its ordinary command and routing paths.
+
+### The exact wire impact
+
+None. No route, field, code or status value changes: a replacement that
+already behaved correctly behaves identically, and the only observable
+difference is the corrected `workflowStatus` on the paths above.
+
+Nothing was merged and nothing was pushed: the branch is left for the
+integration worker.

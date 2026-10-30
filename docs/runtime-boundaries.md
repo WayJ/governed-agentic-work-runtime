@@ -18,6 +18,13 @@ regressions that pin each guarantee live in `tests/test_boundaries.py`.
   production-safety claim**. RFC coverage is partial (see
   [RFC-003](RFC-003-runtime-protocol.md)); this document records what the code
   actually does.
+- Each `Runtime` instance keeps an **in-memory live-dispatch lease**: from the
+  commit of `dispatched`/`in_flight` until the outcome is persisted, its own
+  `reconcile` does not look that operation up — a call this instance is still
+  making has no answer yet, and an absent lookup there is not a finding. The
+  lease is per instance, never persisted and never cross-instance: a second
+  instance on the same file, including a same-process one, is treated as a
+  restart and keeps the ordinary quarantine for the same row.
 
 ## Three identity layers
 
@@ -77,6 +84,7 @@ New boundaries that the workflow adds:
 | superseded material | a new revision of the inputs, the subject or the candidate a node pinned supersedes that node, so a review of a superseded candidate cannot complete it | `tests/test_workflow_node_quality.py` — `SupersedeTests` |
 | action effect policy | the default is one effect per node; the opt-in `per_revision` is declared in the immutable published definition and pinned by digest, and admits a new effect only for a new revision with a new digest of the subject and only after the previous effect is settled; the same subject never repeats an effect, an unsettled operation is reconciled before any new write, and a succeeded effect whose output failed validation is never bypassed; a new admission owns a new operation with a new business key and an exact node linkage | `tests/test_workflow_effect_policy.py` — `PerRevisionPathTests`, `RefusalTests`, `DefaultPolicyTests` |
 | routing | one deterministic pass; a pass that changes nothing writes nothing; rework increments the attempt and invalidates the affected approval by exact version; a late callback is refused | `tests/test_workflow_engine.py` — `RoutingTests` |
+| routing cursor | the cursor names the node whose attempt the work is working on: it moves to the next node only when that node's attempt was really opened. A spent quality allowance is a stable escalation (`needs_attention`, `WorkflowReworkLimitExceeded`): the cursor stays on the node that completed, the attempt that was already routed from is never routed from again, and the work that was done is kept | `tests/test_workflow_reject_return.py` — `ExhaustedAllowanceTestCase`, `ReturnedDecisionTestCase` |
 | bridge | a generic `/v1/workflows` surface with bounded read models, durable intent ids, a single-coordinator file lock and a log that never carries a body | `tests/test_workflow_http.py` |
 | creation resume | the bridge owns one `workflow_creates` table in the runtime store; the preparation of every stage is written ahead of the stage in one transaction, so a replay re-issues the identical command instead of recomputing a compare-and-swap version; a command id belongs to one request, and two callers of one creation are serialized | `tests/test_workflow_create_resume.py` — `CreateReplayTests`, `PreparationStoreTests`; `tests/test_workflow_http.py` — `CreateReplayTests` |
 | workflow acceptance | `finalize_workflow_success` is issued by the protected runner only; under one transaction it verifies the recorded terminal, the completed nodes, the validated quality, the passed criteria, the settled effects and the settled obligations, and only then freezes the work and writes the exact final snapshot; a failed, expired, cancelled, output-invalid, unfinished, unsettled or cancelled workflow is never frozen; the frozen work accepts no later revision, cancellation, result, decision or effect, and the frozen workflow is never routed again | `tests/test_workflow_finalization.py` — `SuccessfulAcceptanceTests`, `RefusalTests`, `FrozenStateTests`, `HttpFinalizationTests` |
@@ -315,12 +323,17 @@ registry fixed at construction.
    value, an explicit `None`, or an incomplete `AdapterContract` instance) is
    malformed, never silently legacy.
 3. It persists `status="dispatched"`, `dispatch_state="in_flight"` and a new
-   attempt with `outcome_unknown` **before** the external call. A process death
-   anywhere after this commit is therefore treated as "the effect may have
-   happened" and must be reconciled, never assumed absent.
+   attempt with `outcome_unknown` **before** the external call, and registers
+   the in-memory live-dispatch lease inside the same transaction, so the lease
+   never postdates the visible state. A process death anywhere after this
+   commit is therefore treated as "the effect may have happened" and must be
+   reconciled, never assumed absent.
 4. `adapter.execute(business_key, document, document_digest)` then runs outside
-   the transaction; a crash between commit and call still leaves an inspectable
-   uncertain state (see limitations). An opted-in adapter is called instead as
+   the transaction while the lease is held; the lease is released in a
+   `finally` only after the returned receipt is persisted (`_resolve`) or the
+   exception is recorded as unknown (`_unknown`), never between the effect and
+   its local record. A crash between commit and call still leaves an
+   inspectable uncertain state (see limitations). An opted-in adapter is called instead as
    `execute(business_key, document, document_digest, action=capability,
    compensates=link_or_None)` — the dispatch decision reads the declared
    contract only (no signature introspection, no TypeError probing), so legacy
@@ -743,6 +756,13 @@ Guarantees:
   `state_version` bump, no operation mutation (reason transitions are still
   recorded — a *changed* failure reason writes a new event). A supervisor may
   loop `recover()` safely.
+- **A live dispatch of this instance is not reconciled.** `reconcile` on a
+  leased operation returns the current operation without a lookup and without
+  writes, on every thread — including the background recover/pump loop running
+  while an in-process dispatch is between its commit and its receipt. A fresh
+  instance (restart, or a second instance on the same file) has no lease and
+  isolates as before; this protects a live call without weakening what a
+  restart sees. Pinned in `tests/test_dispatch_lease.py`.
 
 ## Recorded limitations
 
@@ -840,3 +860,26 @@ Accepted-evidence collision guarantees are pinned in
 | closed work keeps closure under conflict | `test_closed_work_conflict_preserves_closure` |
 | malformed body fields degrade to null snapshots | `test_malformed_conflict_body_degrades_to_null` |
 | publishing family conflict mirror | `test_publishing_legacy_conflict_resolves` |
+
+## Same-key idempotent retry for unknown outcomes
+
+`Runtime.reconcile` keeps its quarantine default: an unknown outcome is never
+re-dispatched on the strength of an absent lookup answer or a rejection —
+absence does not prove the original request settled, and a refusal is not a
+bound receipt. The one exception is *declared, service-verified same-key
+idempotency*: an adapter owner may list capabilities in
+`AdapterContract.same_key_idempotent_retry_actions` (default empty, and the
+list must be a subset of the declared `actions`) asserting that the effect is
+deduplicated by its business key and that a replay under that key returns the
+first effect's receipt, verified against the real service. For those
+capabilities reconcile re-arms **one** retry per operation (`same_key_retries`,
+persisted; crashes and concurrency cannot reset or double it): the same
+operation id, the same business key and the same frozen document, with the
+prior unknown states preserved in `unknown_history` and an audited
+`SameKeyRetryArmed` event. The armed retry passes every ordinary dispatch gate
+(cancellation, subject staleness, plan/contract revisions, authority, policy
+blockers); compensations never retry; a work returns from `needs_attention`
+only when this operation's own quarantine produced the attention and nothing
+else of the work is unresolved. An invalid receipt on the retry is
+quarantined, never faked. Guarantees are pinned in
+`tests/test_same_key_retry.py`.
