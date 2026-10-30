@@ -50,7 +50,7 @@ The package has zero runtime dependencies. Optional development installation: `p
 | `tests/test_intervention_demo.py` | Intervention demo harness, `inspect --policy-versions` and CLI tests |
 | `tests/test_ui_demo.py` | Sample-seed shape/realism/hygiene tests over stored SQLite truth |
 | `tests/test_ui_cli.py` | `ui`/`ui-demo` CLI lazy-import, startup-error and serve-lifecycle tests |
-| `scripts/check_docs.py` | Local Markdown link checker — the documentation contracts gate; ignores fenced examples, inline code, reference definitions inside fences and external URLs |
+| `scripts/check_docs.py` | Local Markdown link checker — the documentation contracts gate; ignores fenced examples, inline code, reference definitions inside fences and external URLs, and skips the historical source material under `docs/ideas/` (root `idea.md` and the retired `上一次建议.md` are skipped the same way) |
 | `scripts/verify_install.py` | Fresh-venv install and outside-checkout demo verification |
 | `tests/test_docs.py` | Link checker behavior and repository documentation contracts |
 | `docs/RFC-*.md` | Candidate semantics and protocol |

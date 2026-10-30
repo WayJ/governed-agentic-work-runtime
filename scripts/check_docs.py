@@ -28,6 +28,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 EXCLUDED_DIRS = {".git", ".agents", ".claude", ".venv", "__pycache__", "build", "dist"}
 EXCLUDED_FILES = {"idea.md", "上一次建议.md"}
+# Historical source material that moved into docs/ideas: personal
+# notes whose links point at the author's own machine, never the repo.
+EXCLUDED_PATHS = ("docs/ideas",)
 
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
@@ -118,6 +121,8 @@ def iter_markdown_files(root):
         if len(relative.parts) == 1 and relative.name in EXCLUDED_FILES:
             continue
         if any(part in EXCLUDED_DIRS or part.endswith(".egg-info") for part in relative.parts):
+            continue
+        if "/".join(relative.parts[:-1]) in EXCLUDED_PATHS:
             continue
         files.append(path)
     return files

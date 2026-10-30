@@ -33,8 +33,8 @@ date: 2026-10-17
 
 | id | decision | rationale | date | evidence |
 |---|---|---|---|---|
-| D96 | First real external write path = GitHub REST API behind the credential-holding adapter host; runner-ups recorded: self-hosted PostgreSQL (best inspectability, needs an optional client dependency) and Stripe test mode (payout narrative, account + network dependency) | Real third-party production API; stdlib-only client preserves zero runtime dependencies; real credentials (fine-grained PAT) exercise the host; receipts queryable by id and by business key with real eventual-consistency lookup semantics; already reachable in this toolchain and CI | 2026-10-17 | [Advice](../../../上一次建议.md), [E15 Q4](2026-10-17-third-family-command-surface-freeze.md) |
-| D97 | The real adapter reuses the E15 third family (or an existing family); no new local demo family | The advice warns against an eighth local demo; the real path exists to test crash recovery and the cancellation window, not to add demo surface | 2026-10-17 | [Advice](../../../上一次建议.md) |
+| D96 | First real external write path = GitHub REST API behind the credential-holding adapter host; runner-ups recorded: self-hosted PostgreSQL (best inspectability, needs an optional client dependency) and Stripe test mode (payout narrative, account + network dependency) | Real third-party production API; stdlib-only client preserves zero runtime dependencies; real credentials (fine-grained PAT) exercise the host; receipts queryable by id and by business key with real eventual-consistency lookup semantics; already reachable in this toolchain and CI | 2026-10-17 | [Advice](../../ideas/2026-10-17-上一次建议.md), [E15 Q4](2026-10-17-third-family-command-surface-freeze.md) |
+| D97 | The real adapter reuses the E15 third family (or an existing family); no new local demo family | The advice warns against an eighth local demo; the real path exists to test crash recovery and the cancellation window, not to add demo surface | 2026-10-17 | [Advice](../../ideas/2026-10-17-上一次建议.md) |
 
 ## Asset Disposition
 
