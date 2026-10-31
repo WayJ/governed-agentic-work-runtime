@@ -205,6 +205,14 @@ There is no negation, no user expression and no natural-language predicate.
   source (`WORKFLOW_AUTHORITY_UNKNOWN`), a required check is not covered by
   any node (`WORKFLOW_REQUIRED_CHECKS_MISSING`) or a capability is not
   supported by the policy (`WORKFLOW_CAPABILITY_UNSUPPORTED`).
+* **Binding is the work owner's own act.** Only the work's manager — the
+  current owner holding `work.manage` — may bind a definition; any other
+  principal is refused `AUTHORITY_DENIED`, and the refusal leaves the work
+  untouched: no binding, no state-version bump, no `WorkflowBound` event.
+  The same predicate governs the replay of a stored binding receipt, so a
+  binding that was once legal stops being replayable the moment the
+  ownership moves. A legacy work with no owner keeps the grant-only rule:
+  any principal holding `work.manage` may bind it.
 * A binding is therefore always checkable against the exact bytes it pinned:
   a mutable runtime cannot weaken a published definition, because the
   definition that was bound is immutable and the binding records its digest.
@@ -403,9 +411,10 @@ key is stable and a replay re-associates the existing operation instead of
 creating a second one.
 
 The action is proposed by the work **owner** — binding a published definition
-is the owner's authorization of its action nodes — and the configured
-`runner` is recorded on the node instance for audit. The external call
-happens outside the routing transaction, exactly like every other dispatch.
+is the owner's authorization of its action nodes, and only the owner may bind
+(§2) — and the configured `runner` is recorded on the node instance for
+audit. The external call happens outside the routing transaction, exactly
+like every other dispatch.
 
 An operation whose outcome is unknown is **looked up, never repeated**
 (`runtime.reconcile`).

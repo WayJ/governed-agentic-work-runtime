@@ -620,6 +620,20 @@ Evidence writers keep their existing source-specific authority — ownership
 never gates evidence intake. Authorization is principal *configuration*,
 still not authentication.
 
+**Binding a published workflow definition is the owner's own act**, and the
+rule is the same one the other management mutations use: only the current
+owner holding `work.manage` may `bind_workflow`, and any other principal is
+refused `AUTHORITY_DENIED` with the Work left untouched — no binding, no
+state-version bump, no `WorkflowBound` event. The bound definition's action
+nodes are proposed in the owner's name, and the binder's `participants` map
+becomes the assignment snapshot of the decision nodes, so a binding made by
+somebody else would let a non-owner speak for the Work and decide who may
+decide. The replay of a stored binding receipt asks the same question, so a
+binding stops being replayable as soon as the ownership moves. The engine
+routes the workflow commands before the runtime's own manager gate, so this
+check lives in the engine's binding handler itself; a legacy Work with no
+owner keeps the grant-only rule, as everywhere else in the runtime.
+
 `transfer_owner` (payload exactly `owner` and `reason`, both nonempty
 strings; accepted by the current owner with `work.manage` or a
 `work.intervene` administrator) reassigns accountability atomically: it
