@@ -238,19 +238,28 @@ Ran 1 test in 0.007s
 OK
 ```
 
-`git diff --name-only 5265332..HEAD` lists exactly five files:
+`git diff --name-only 5265332..HEAD` lists exactly six files:
 `work_runtime/workflow.py`, `tests/test_workflow_bind_authority.py`,
 `docs/workflow-runtime.md`, `docs/runtime-boundaries.md`,
-`docs/tech-debt-tracker.md`. `work_runtime/runtime.py`,
-`work_runtime/adapters.py`, `work_runtime/file_adapter.py` and
-`work_runtime/policy.py` are untouched, and so is
-`work_runtime/workflow_server.py`.
+`docs/tech-debt-tracker.md` and this report,
+`.agents/notes/2026-10-31-bind-workflow-authority-report.md`.
+`work_runtime/runtime.py`, `work_runtime/adapters.py`,
+`work_runtime/file_adapter.py` and `work_runtime/policy.py` are untouched,
+and so is `work_runtime/workflow_server.py`.
 
 **The contracts** — `python3 scripts/check_docs.py`:
 
 ```
-checked 128 markdown files, 682 local links, 0 broken
+checked 127 markdown files, 682 local links, 0 broken
 ```
+
+(The file count is 127 at every commit of the slice and in a clean
+checkout: `scripts/check_docs.py` excludes `.agents/`, so this report is
+never counted. An earlier run of this gate during the slice reported 128
+because the worker's own untracked scratch ledger —
+`.superpowers/sdd/.../progress.md`, outside the excluded directories — was
+still on disk; the scratch directory was deleted at the end of the run, and
+the count is 127 again.)
 
 **The site** — `python3 scripts/check_site.py`:
 
@@ -287,7 +296,8 @@ owner of the work it creates, so the gate does not touch it.)
 |---|---|
 | `ad162bf` | `fix(workflow): binding a definition is the owner's own act` — D1 (the gate in `work_runtime/workflow.py`), D2 (`tests/test_workflow_bind_authority.py`), D3 (`docs/workflow-runtime.md`), D4 (`docs/runtime-boundaries.md`), D5 (`docs/tech-debt-tracker.md`, the TD-2 row) |
 | `d837746` | `docs: the report on the bind_workflow owner authority` — D6 (this report) |
-| the commit after it | `docs: the refusal order, precisely` — the measured payload-shape order of §7 |
+| `b81a617` | `docs: the refusal order, precisely` — the measured payload-shape order of §7 |
+| this commit | `docs: the contracts count and the changed-file list, corrected` — the two factual corrections of §5 |
 
 Branch `WayJ/fix-bind-workflow-owner`, based on `5265332`. Nothing was
 merged, pushed or rebased; `main` is still at `5265332`.
