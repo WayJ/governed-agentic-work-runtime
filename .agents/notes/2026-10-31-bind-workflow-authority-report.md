@@ -286,7 +286,8 @@ owner of the work it creates, so the gate does not touch it.)
 | commit | content |
 |---|---|
 | `ad162bf` | `fix(workflow): binding a definition is the owner's own act` — D1 (the gate in `work_runtime/workflow.py`), D2 (`tests/test_workflow_bind_authority.py`), D3 (`docs/workflow-runtime.md`), D4 (`docs/runtime-boundaries.md`), D5 (`docs/tech-debt-tracker.md`, the TD-2 row) |
-| this commit | `docs: the report on the bind_workflow owner authority` — D6 (this report) |
+| `d837746` | `docs: the report on the bind_workflow owner authority` — D6 (this report) |
+| the commit after it | `docs: the refusal order, precisely` — the measured payload-shape order of §7 |
 
 Branch `WayJ/fix-bind-workflow-owner`, based on `5265332`. Nothing was
 merged, pushed or rebased; `main` is still at `5265332`.
@@ -323,7 +324,15 @@ merged, pushed or rebased; `main` is still at `5265332`.
   before `WORKFLOW_ALREADY_BOUND`, `CONTRACT_NOT_ACTIVE` and the template
   checks, so a non-owner learns that the work exists and that it is not
   theirs, but not whether a definition was already bound. That ordering is
-  what the sibling handlers use, and it is what the plan prescribed.
+  what the sibling handlers use, and it is what the plan prescribed. The
+  **payload-shape** validation still comes first, exactly as in the sibling
+  handlers: a malformed payload is answered with the same `WorkflowError`
+  for the owner and for a non-owner, and the message says nothing about
+  the work. Measured on this branch: a non-owner with a malformed payload
+  gets `WorkflowError: bind_workflow requires exactly template_id,
+  template_version and parameters ...`, the owner with the same payload gets
+  the identical error, and the non-owner with a well-formed payload gets
+  `AUTHORITY_DENIED`.
 * **`workflow_server.py`'s Host/Origin gap is untouched** (TD-2, D5). It is
   a hardening item with its own slice, out of scope here.
 * **No claim of distributed exactly-once or production safety** is made or
