@@ -649,6 +649,14 @@ class WorkflowEngine:
             raise WorkflowError("bind_workflow requires exactly template_id, "
                                 "template_version and parameters, and may carry "
                                 "an optional session_id and participants map")
+        # Binding a published definition is the owner's own authorization of
+        # that definition's action nodes: the engine proposes their
+        # operations in the owner's name, and the binder's participants map
+        # becomes the assignment snapshot of the decision nodes. Only the
+        # work's manager may bind — the same predicate the replay path
+        # already applies to this command, so the two cannot drift apart.
+        if not self.runtime._manager(actor, work):
+            return self.runtime._reject("AUTHORITY_DENIED", version)
         if work.get("workflow"):
             return self.runtime._reject("WORKFLOW_ALREADY_BOUND", version)
         if not work.get("contract"):
